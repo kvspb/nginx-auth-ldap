@@ -379,8 +379,7 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 	ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: Session initialization failed");
 	return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: Session initialized (%s:%i)",
-	ludpp->lud_host, ludpp->lud_port);
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: Session initialized", NULL);
 
     /// Bind to the server
     rc = ldap_simple_bind_s(ld, (const char *) conf->bind_dn.data, (const char *) conf->bind_dn_passwd.data);
@@ -390,7 +389,7 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 	ldap_unbind_s(ld);
 	return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: Bind successful");
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: Bind successful", NULL);
 
     /// Create filter for search users by uid
     filter = ngx_pcalloc(r->pool, ngx_strlen(ludpp->lud_filter) + uinfo->username.len + 11);
@@ -476,7 +475,7 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 			"LDAP: ldap_simple_bind_s error: %d, %s", rc, ldap_err2string(rc));
 		    pass = 0;
 		}
-		ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: User bind successful");
+		ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: User bind successful", NULL);
 	    }
 	}
 	ldap_memfree(dn);
