@@ -4,8 +4,6 @@
  * Based on nginx's 'ngx_http_auth_basic_module.c' by Igor Sysoev,
  * 'ngx_http_auth_pam_module.c' by Sergio Talens-Oliag and other more
  *
- * @todo LDAP SSL  (ldaps://)
- * @todo LDAP search cache
  */
 
 #include <ngx_config.h>
@@ -25,9 +23,13 @@ typedef struct {
 typedef struct {
     LDAPURLDesc *ludpp;
     ngx_str_t realm;
-    //ngx_str_t		url;
+
     ngx_str_t bind_dn;
     ngx_str_t bind_dn_passwd;
+
+    ngx_str_t group_attribute;
+    ngx_flag_t group_attribute_dn;
+
     ngx_array_t *require_group;
     ngx_array_t *require_user;
     ngx_flag_t satisfy_all;
@@ -90,7 +92,22 @@ static ngx_command_t ngx_http_auth_ldap_commands[] = {
         NGX_HTTP_LOC_CONF_OFFSET,
         0,
         NULL },
-    ngx_null_command };
+    {
+        ngx_string("auth_ldap_group_attribute"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_HTTP_LMT_CONF | NGX_CONF_TAKE1,
+        ngx_conf_set_str_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_auth_ldap_loc_conf_t, group_attribute),
+        NULL },
+    {
+        ngx_string("auth_ldap_group_attribute_is_dn"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_FLAG,
+        ngx_conf_set_flag_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_auth_ldap_loc_conf_t, group_attribute_dn),
+        NULL },
+    ngx_null_command
+};
 
 static ngx_http_module_t ngx_http_auth_ldap_module_ctx = {
     NULL, /* preconfiguration */
@@ -168,6 +185,13 @@ ngx_http_auth_ldap_url(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
 	}
 	return NGX_CONF_ERROR;
     }
+
+    if (alcf->ludpp->lud_attrs == NULL)
+    {
+	ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "LDAP: No attrs in auth_ldap_url.");
+	return NGX_CONF_ERROR;
+    }
+
     return NGX_CONF_OK;
 }
 
@@ -240,7 +264,8 @@ ngx_http_auth_basic_create_loc_conf(ngx_conf_t *cf) {
     if (conf == NULL) {
 	return NULL;
     }
-    conf->satisfy_all = 0;
+    conf->satisfy_all = NGX_CONF_UNSET;
+    conf->group_attribute_dn = NGX_CONF_UNSET;
     return conf;
 }
 
@@ -251,6 +276,10 @@ ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
 
     ngx_conf_merge_str_value(conf->bind_dn, prev->bind_dn, "");
     ngx_conf_merge_str_value(conf->bind_dn_passwd, prev->bind_dn_passwd, "");
+    ngx_conf_merge_str_value(conf->group_attribute, prev->group_attribute, "member");
+
+    ngx_conf_merge_value(conf->satisfy_all, prev->satisfy_all,0);
+    ngx_conf_merge_value(conf->group_attribute_dn, prev->group_attribute_dn,1);
 
     if (conf->require_user == NULL) {
 	conf->require_user = prev->require_user;
@@ -392,14 +421,15 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: Bind successful", NULL);
 
     /// Create filter for search users by uid
-    filter = ngx_pcalloc(r->pool, ngx_strlen(ludpp->lud_filter) + uinfo->username.len + 11);
-    p = ngx_sprintf(filter, "(&%s(uid=%s))", ludpp->lud_filter, uinfo->username.data);
+    filter = ngx_pcalloc(r->pool, ngx_strlen(ludpp->lud_filter)+ ngx_strlen("(&(=))")
+	    + ngx_strlen(ludpp->lud_attrs[0]) + uinfo->username.len +1);
+    p = ngx_sprintf(filter, "(&%s(%s=%s))", ludpp->lud_filter,ludpp->lud_attrs[0], uinfo->username.data);
     *p = 0;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: filter %s", (const char*) filter);
 
     /// Search the directory
-    rc = ldap_search_ext_s(ld, ludpp->lud_dn, ludpp->lud_scope, (const char*) filter, ludpp->lud_attrs, 0,
+    rc = ldap_search_ext_s(ld, ludpp->lud_dn, ludpp->lud_scope, (const char*) filter, NULL, 0,
 	NULL, NULL, &timeOut, 0, &searchResult);
 
     if (rc != LDAP_SUCCESS) {
@@ -436,14 +466,23 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 	    }
 
 	    /// Check require group
-	    bvalue.bv_val = dn;
-	    bvalue.bv_len = ngx_strlen(dn);
+	    if (conf->group_attribute_dn == 1)
+	    {
+		bvalue.bv_val = dn;
+		bvalue.bv_len = ngx_strlen(dn);
+	    } else {
+		bvalue.bv_val = (char*) uinfo->username.data;
+		bvalue.bv_len = uinfo->username.len;
+	    }
+
 	    value = conf->require_group->elts;
 	    for (i = 0; i < conf->require_group->nelts; i++) {
 		ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: compare with: %s",
 		    value[i].data);
 
-		rc = ldap_compare_ext_s(ld, (const char*) value[i].data, "member", &bvalue, NULL, NULL);
+		rc = ldap_compare_ext_s(ld, (const char*) value[i].data,
+			(const char*) conf->group_attribute.data,
+			&bvalue, NULL, NULL);
 
 		if (rc != LDAP_COMPARE_TRUE && rc != LDAP_COMPARE_FALSE) {
 		    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: ldap_search_ext_s: %d, %s", rc,
