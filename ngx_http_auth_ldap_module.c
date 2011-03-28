@@ -22,6 +22,7 @@ typedef struct {
 
 typedef struct {
     LDAPURLDesc *ludpp;
+    ngx_str_t url;
     ngx_str_t realm;
 
     ngx_str_t bind_dn;
@@ -138,6 +139,8 @@ static char *
 ngx_http_auth_ldap_url(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_auth_ldap_loc_conf_t *alcf = conf;
     ngx_str_t *value;
+    u_char *p;
+
     value = cf->args->elts;
 
     int rc = ldap_url_parse((const char*) value[1].data, &alcf->ludpp);
@@ -183,14 +186,19 @@ ngx_http_auth_ldap_url(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
 	    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "LDAP: Invalid or missing extensions.");
 	    break;
 	}
-	return NGX_CONF_ERROR;
+		return NGX_CONF_ERROR;
     }
 
-    if (alcf->ludpp->lud_attrs == NULL)
-    {
-	ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "LDAP: No attrs in auth_ldap_url.");
-	return NGX_CONF_ERROR;
+    if (alcf->ludpp->lud_attrs == NULL) {
+    	ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "LDAP: No attrs in auth_ldap_url.");
+    	return NGX_CONF_ERROR;
     }
+
+    alcf->url.len=ngx_strlen(alcf->ludpp->lud_scheme) + ngx_strlen(alcf->ludpp->lud_host)+11; // 11 = len("://:/") + len("65535") + len("\0")
+    alcf->url.data = ngx_pcalloc(cf->pool, alcf->url.len);
+    p=ngx_sprintf(alcf->url.data, "%s://%s:%d/", (const char*)alcf->ludpp->lud_scheme,
+    		(const char*)alcf->ludpp->lud_host, alcf->ludpp->lud_port);
+    *p = 0;
 
     return NGX_CONF_OK;
 }
@@ -274,6 +282,7 @@ ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
     ngx_http_auth_ldap_loc_conf_t *prev = parent;
     ngx_http_auth_ldap_loc_conf_t *conf = child;
 
+    ngx_conf_merge_str_value(conf->url, prev->url, "ldap://localhost/");
     ngx_conf_merge_str_value(conf->bind_dn, prev->bind_dn, "");
     ngx_conf_merge_str_value(conf->bind_dn_passwd, prev->bind_dn_passwd, "");
     ngx_conf_merge_str_value(conf->group_attribute, prev->group_attribute, "member");
@@ -296,7 +305,8 @@ ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
     return NGX_CONF_OK;
 }
 
-static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r) {
+static ngx_int_t
+ngx_http_auth_ldap_handler(ngx_http_request_t *r) {
     int rc;
     ngx_http_auth_ldap_ctx_t *ctx;
     ngx_http_auth_ldap_loc_conf_t *alcf;
@@ -329,7 +339,8 @@ static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r) {
 /**
  * Get login and password from http request.
  */
-static ngx_ldap_userinfo* ngx_http_auth_ldap_get_user_info(ngx_http_request_t *r) {
+static ngx_ldap_userinfo*
+ngx_http_auth_ldap_get_user_info(ngx_http_request_t *r) {
     size_t len;
     ngx_ldap_userinfo* uinfo;
     u_char *uname_buf, *p;
@@ -356,7 +367,8 @@ static ngx_ldap_userinfo* ngx_http_auth_ldap_get_user_info(ngx_http_request_t *r
     return uinfo;
 }
 
-static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
+static ngx_int_t
+ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
     ngx_str_t *passwd, ngx_http_auth_ldap_loc_conf_t *conf) {
 
     LDAP *ld;
@@ -399,15 +411,17 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
     }
 
     /// Get the URL scheme ( either ldap or ldaps )
-    /// @todo: LDAPS
     if (0 == ngx_strcmp(ludpp->lud_scheme, "ldaps"))
 	isSecure = 1;
 
-    ld = ldap_init(ludpp->lud_host, ludpp->lud_port ? ludpp->lud_port : LDAP_PORT);
-    if (ld == NULL) {
-	ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: Session initialization failed");
-	return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: URL: %s", conf->url.data);
+
+    rc = ldap_initialize(&ld, (const char*)conf->url.data);
+    if (rc != LDAP_SUCCESS) {
+    	ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: Session initializing failed: %d, %s, (%s)",
+    			rc, ldap_err2string(rc), (const char*)conf->url.data);
+    	return NGX_HTTP_INTERNAL_SERVER_ERROR;
+	}
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: Session initialized", NULL);
 
     /// Bind to the server
@@ -529,7 +543,8 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
     return NGX_OK;
 }
 
-static ngx_int_t ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm) {
+static ngx_int_t
+ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm) {
     r->headers_out.www_authenticate = ngx_list_push(&r->headers_out.headers);
     if (r->headers_out.www_authenticate == NULL) {
 	return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -574,7 +589,8 @@ ngx_http_auth_ldap(ngx_conf_t *cf, void *post, void *data) {
     return NGX_CONF_OK;
 }
 
-static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf) {
+static ngx_int_t
+ngx_http_auth_ldap_init(ngx_conf_t *cf) {
     ngx_http_handler_pt *h;
     ngx_http_core_main_conf_t *cmcf;
 
