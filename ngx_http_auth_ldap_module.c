@@ -282,6 +282,10 @@ ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
     ngx_http_auth_ldap_loc_conf_t *prev = parent;
     ngx_http_auth_ldap_loc_conf_t *conf = child;
 
+    if (conf->realm.data == NULL) {
+        conf->realm = prev->realm;
+    }
+
     ngx_conf_merge_str_value(conf->url, prev->url, "ldap://localhost/");
     ngx_conf_merge_str_value(conf->bind_dn, prev->bind_dn, "");
     ngx_conf_merge_str_value(conf->bind_dn_passwd, prev->bind_dn_passwd, "");
