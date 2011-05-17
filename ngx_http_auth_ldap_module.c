@@ -394,7 +394,9 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
     ngx_uint_t i;
     ngx_str_t *value;
     ngx_ldap_userinfo *uinfo;
-    ngx_uint_t pass = 0;
+
+    ngx_flag_t pass = NGX_CONF_UNSET;
+
     char *dn;
     u_char *p, *filter;
 
@@ -449,7 +451,6 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 	            + 1);
     p = ngx_sprintf(filter, "(&%s(%s=%s))", ludpp->lud_filter, ludpp->lud_attrs[0], uinfo->username.data);
     *p = 0;
-
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: filter %s", (const char*) filter);
 
     /// Search the directory
@@ -469,64 +470,68 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 	    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: result DN %s", dn);
 
 	    /// Check require user
-	    value = conf->require_user->elts;
-	    for (i = 0; i < conf->require_user->nelts; i++) {
-		ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: compare with: %s", value[i].data);
-		if (ngx_strncmp(value[i].data, dn, value[i].len) == 0) {
-		    pass = 1;
-		    if (conf->satisfy_all == 0) {
-			break;
-		    }
-		} else {
-		    if (conf->satisfy_all == 1) {
-			ldap_memfree(dn);
-			ldap_msgfree(searchResult);
-			ldap_unbind_s(ld);
-			return ngx_http_auth_ldap_set_realm(r, &conf->realm);
+	    if (conf->require_user != NULL) {
+		value = conf->require_user->elts;
+		for (i = 0; i < conf->require_user->nelts; i++) {
+		    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: compare with: %s", value[i].data);
+		    if (ngx_strncmp(value[i].data, dn, value[i].len) == 0) {
+			pass = 1;
+			if (conf->satisfy_all == 0) {
+			    break;
+			}
+		    } else {
+			if (conf->satisfy_all == 1) {
+			    ldap_memfree(dn);
+			    ldap_msgfree(searchResult);
+			    ldap_unbind_s(ld);
+			    return ngx_http_auth_ldap_set_realm(r, &conf->realm);
+			}
 		    }
 		}
 	    }
 
 	    /// Check require group
-	    if (conf->group_attribute_dn == 1) {
-		bvalue.bv_val = dn;
-		bvalue.bv_len = ngx_strlen(dn);
-	    } else {
-		bvalue.bv_val = (char*) uinfo->username.data;
-		bvalue.bv_len = uinfo->username.len;
-	    }
-
-	    value = conf->require_group->elts;
-	    for (i = 0; i < conf->require_group->nelts; i++) {
-		ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: compare with: %s", value[i].data);
-
-		rc = ldap_compare_ext_s(ld, (const char*) value[i].data, (const char*) conf->group_attribute.data,
-		        &bvalue, NULL, NULL);
-
-		if (rc != LDAP_COMPARE_TRUE && rc != LDAP_COMPARE_FALSE) {
-		    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: ldap_search_ext_s: %d, %s", rc,
-			    ldap_err2string(rc));
-		    ldap_memfree(dn);
-		    ldap_msgfree(searchResult);
-		    ldap_unbind_s(ld);
-		    return NGX_HTTP_INTERNAL_SERVER_ERROR;
-		}
-
-		if (rc == LDAP_COMPARE_TRUE) {
-		    pass = 1;
-		    if (conf->satisfy_all == 0) {
-			break;
-		    }
+	    if (conf->require_group != NULL) {
+		if (conf->group_attribute_dn == 1) {
+		    bvalue.bv_val = dn;
+		    bvalue.bv_len = ngx_strlen(dn);
 		} else {
-		    if (conf->satisfy_all == 1) {
-			pass = 0;
-			break;
+		    bvalue.bv_val = (char*) uinfo->username.data;
+		    bvalue.bv_len = uinfo->username.len;
+		}
+
+		value = conf->require_group->elts;
+		for (i = 0; i < conf->require_group->nelts; i++) {
+		    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: compare with: %s", value[i].data);
+
+		    rc = ldap_compare_ext_s(ld, (const char*) value[i].data, (const char*) conf->group_attribute.data,
+			    &bvalue, NULL, NULL);
+
+		    if (rc != LDAP_COMPARE_TRUE && rc != LDAP_COMPARE_FALSE) {
+			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: ldap_search_ext_s: %d, %s", rc,
+			        ldap_err2string(rc));
+			ldap_memfree(dn);
+			ldap_msgfree(searchResult);
+			ldap_unbind_s(ld);
+			return NGX_HTTP_INTERNAL_SERVER_ERROR;
+		    }
+
+		    if (rc == LDAP_COMPARE_TRUE) {
+			pass = 1;
+			if (conf->satisfy_all == 0) {
+			    break;
+			}
+		    } else {
+			if (conf->satisfy_all == 1) {
+			    pass = 0;
+			    break;
+			}
 		    }
 		}
 	    }
 
-	    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: result DN1 %d", conf->require_valid_user);
-	    if (pass == 1 || (conf->require_valid_user == 1)) {
+	    /// Check valid user
+	    if ( pass != 0 || (conf->require_valid_user == 1 && conf->satisfy_all == 0 && pass == 0)) {
 		/// Bind user to the server
 		rc = ldap_simple_bind_s(ld, dn, (const char *) uinfo->password.data);
 		if (rc != LDAP_SUCCESS) {
@@ -535,7 +540,8 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 		    pass = 0;
 		} else {
 		    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: User bind successful", NULL);
-		    pass = 1;
+		    if (conf->require_valid_user == 1)
+			pass = 1;
 		}
 	    }
 
@@ -546,10 +552,11 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
     ldap_msgfree(searchResult);
     ldap_unbind_s(ld);
 
-    if (pass == 0) {
-	return ngx_http_auth_ldap_set_realm(r, &conf->realm);
+    if (pass == 1) {
+	return NGX_OK;
     }
-    return NGX_OK;
+
+    return ngx_http_auth_ldap_set_realm(r, &conf->realm);
 }
 
 static ngx_int_t ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm) {
