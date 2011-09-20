@@ -507,7 +507,7 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 		    rc = ldap_compare_ext_s(ld, (const char*) value[i].data, (const char*) conf->group_attribute.data,
 			    &bvalue, NULL, NULL);
 
-		    if (rc != LDAP_COMPARE_TRUE && rc != LDAP_COMPARE_FALSE) {
+		    if (rc != LDAP_COMPARE_TRUE && rc != LDAP_COMPARE_FALSE && rc != LDAP_NO_SUCH_ATTRIBUTE ) {
 			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: ldap_search_ext_s: %d, %s", rc,
 			        ldap_err2string(rc));
 			ldap_memfree(dn);
