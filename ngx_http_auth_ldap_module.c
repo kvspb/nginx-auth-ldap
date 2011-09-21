@@ -21,6 +21,12 @@ typedef struct {
 } ngx_ldap_userinfo;
 
 typedef struct {
+    ngx_str_t	value;
+    ngx_array_t	*lengths;
+    ngx_array_t	*values;
+} ngx_ldap_require_t;
+
+typedef struct {
     LDAPURLDesc *ludpp;
     ngx_str_t url;
     ngx_str_t realm;
@@ -31,8 +37,8 @@ typedef struct {
     ngx_str_t group_attribute;
     ngx_flag_t group_attribute_dn;
 
-    ngx_array_t *require_group;
-    ngx_array_t *require_user;
+    ngx_array_t *require_group;		/* array of ngx_ldap_require_t */
+    ngx_array_t *require_user;		/* array of ngx_ldap_require_t */
     ngx_flag_t require_valid_user;
     ngx_flag_t satisfy_all;
 } ngx_http_auth_ldap_loc_conf_t;
@@ -123,7 +129,8 @@ static ngx_http_module_t ngx_http_auth_ldap_module_ctx = {
 };
 
 ngx_module_t ngx_http_auth_ldap_module = {
-        NGX_MODULE_V1, &ngx_http_auth_ldap_module_ctx, /* module context */
+        NGX_MODULE_V1,
+        &ngx_http_auth_ldap_module_ctx, /* module context */
         ngx_http_auth_ldap_commands, /* module directives */
         NGX_HTTP_MODULE, /* module type */
         NULL, /* init master */
@@ -226,20 +233,22 @@ ngx_http_auth_ldap_satisfy(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
 
 static char *
 ngx_http_auth_ldap_require(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
-    ngx_http_auth_ldap_loc_conf_t *alcf = conf;
 
-    ngx_str_t *value, *rule;
+    ngx_http_script_compile_t   sc;
+    ngx_http_auth_ldap_loc_conf_t *alcf = conf;
+    ngx_str_t *value;
+
     value = cf->args->elts;
 
     if (alcf->require_user == NULL) {
-	alcf->require_user = ngx_array_create(cf->pool, 4, sizeof(ngx_str_t));
+	alcf->require_user = ngx_array_create(cf->pool, 4, sizeof(ngx_ldap_require_t));
 	if (alcf->require_user == NULL) {
 	    return NGX_CONF_ERROR;
 	}
     }
 
     if (alcf->require_group == NULL) {
-	alcf->require_group = ngx_array_create(cf->pool, 4, sizeof(ngx_str_t));
+	alcf->require_group = ngx_array_create(cf->pool, 4, sizeof(ngx_ldap_require_t));
 	if (alcf->require_group == NULL) {
 	    return NGX_CONF_ERROR;
 	}
@@ -249,22 +258,42 @@ ngx_http_auth_ldap_require(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
 	alcf->require_valid_user = 1;
     }
 
-    if (ngx_strcmp(value[1].data, "user") == 0) {
-	rule = ngx_array_push(alcf->require_user);
-	if (rule == NULL) {
-	    return NGX_CONF_ERROR;
-	}
-	rule->data = value[2].data;
-	rule->len = value[2].len;
-    }
+    if (ngx_strcmp(value[1].data, "user") == 0 || ngx_strcmp(value[1].data, "group") == 0)
+    {
+	ngx_int_t n;
+	ngx_ldap_require_t *rule = NULL;
 
-    if (ngx_strcmp(value[1].data, "group") == 0) {
-	rule = ngx_array_push(alcf->require_group);
+	if (ngx_strcmp(value[1].data, "user") == 0) {
+	    rule = ngx_array_push(alcf->require_user);
+	}
+
+	if (ngx_strcmp(value[1].data, "group") == 0) {
+	    rule = ngx_array_push(alcf->require_group);
+	}
+
 	if (rule == NULL) {
 	    return NGX_CONF_ERROR;
 	}
-	rule->data = value[2].data;
-	rule->len = value[2].len;
+
+	rule->value.data = value[2].data;
+	rule->value.len = value[2].len;
+	rule->values = NULL;
+	rule->lengths = NULL;
+
+	n = ngx_http_script_variables_count(&value[2]);
+	if(n > 0) {
+	    ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
+	    sc.cf = cf;
+	    sc.source = &value[2];
+	    sc.lengths = &rule->lengths;
+	    sc.values = &rule->values;
+	    sc.complete_lengths = 1;
+	    sc.complete_values = 1;
+
+	    if (ngx_http_script_compile(&sc) != NGX_OK) {
+		return NGX_CONF_ERROR;
+	    }
+	}
     }
 
     return NGX_CONF_OK;
@@ -392,7 +421,7 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
     int rc;
     int isSecure = 0;
     ngx_uint_t i;
-    ngx_str_t *value;
+    ngx_ldap_require_t *value;
     ngx_ldap_userinfo *uinfo;
 
     ngx_flag_t pass = NGX_CONF_UNSET;
@@ -473,8 +502,26 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 	    if (conf->require_user != NULL) {
 		value = conf->require_user->elts;
 		for (i = 0; i < conf->require_user->nelts; i++) {
-		    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: compare with: %s", value[i].data);
-		    if (ngx_strncmp(value[i].data, dn, value[i].len) == 0) {
+		    ngx_str_t val;
+		    if (value[i].lengths == NULL)
+		    {
+			val = value[i].value;
+		    }
+		    else
+		    {
+			if (ngx_http_script_run(r, &val, value[i].lengths->elts, 0,
+				value[i].values->elts) == NULL)
+			{
+			    ldap_memfree(dn);
+			    ldap_msgfree(searchResult);
+			    ldap_unbind_s(ld);
+			    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+			}
+			val.data[val.len] = '\0';
+		    }
+
+		    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: compare with: %s", val.data);
+		    if (ngx_strncmp(val.data, dn, val.len) == 0) {
 			pass = 1;
 			if (conf->satisfy_all == 0) {
 			    break;
@@ -501,20 +548,39 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 		}
 
 		value = conf->require_group->elts;
-		for (i = 0; i < conf->require_group->nelts; i++) {
-		    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: compare with: %s", value[i].data);
 
-		    rc = ldap_compare_ext_s(ld, (const char*) value[i].data, (const char*) conf->group_attribute.data,
+		for (i = 0; i < conf->require_group->nelts; i++) {
+		    ngx_str_t val;
+		    if (value[i].lengths == NULL)
+		    {
+			val = value[i].value;
+		    }
+		    else
+		    {
+			if (ngx_http_script_run(r, &val, value[i].lengths->elts, 0,
+				value[i].values->elts) == NULL)
+			{
+			    ldap_memfree(dn);
+			    ldap_msgfree(searchResult);
+			    ldap_unbind_s(ld);
+			    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+			}
+			val.data[val.len] = '\0';
+		    }
+
+		    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: group compare with: %s", val.data);
+
+		    rc = ldap_compare_ext_s(ld, (const char*) val.data, (const char*) conf->group_attribute.data,
 			    &bvalue, NULL, NULL);
 
-		    if (rc != LDAP_COMPARE_TRUE && rc != LDAP_COMPARE_FALSE && rc != LDAP_NO_SUCH_ATTRIBUTE ) {
+		    /*if (rc != LDAP_COMPARE_TRUE && rc != LDAP_COMPARE_FALSE && rc != LDAP_NO_SUCH_ATTRIBUTE ) {
 			ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: ldap_search_ext_s: %d, %s", rc,
 			        ldap_err2string(rc));
 			ldap_memfree(dn);
 			ldap_msgfree(searchResult);
 			ldap_unbind_s(ld);
 			return NGX_HTTP_INTERNAL_SERVER_ERROR;
-		    }
+		    }*/
 
 		    if (rc == LDAP_COMPARE_TRUE) {
 			pass = 1;
