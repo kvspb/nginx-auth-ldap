@@ -359,7 +359,7 @@ static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r) {
     ctx = ngx_http_get_module_ctx(r, ngx_http_auth_ldap_module);
 
     if (ctx) {
-	return ngx_http_auth_ldap_authenticate(r, ctx, &ctx->passwd, alcf);
+    	return ngx_http_auth_ldap_authenticate(r, ctx, &ctx->passwd, alcf);
     }
 
     rc = ngx_http_auth_basic_user(r);
@@ -436,6 +436,11 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
     if (uinfo == NULL) {
 	return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
+
+	if (uinfo->password.len == 0)
+	{
+		return ngx_http_auth_ldap_set_realm(r, &conf->realm);
+	}
 
     /// Set LDAP version to 3 and set connection timeout.
     ldap_set_option(NULL, LDAP_OPT_PROTOCOL_VERSION, &version);
