@@ -419,7 +419,6 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
     int reqcert = LDAP_OPT_X_TLS_ALLOW;
 
     int rc;
-    int isSecure = 0;
     ngx_uint_t i;
     ngx_ldap_require_t *value;
     ngx_ldap_userinfo *uinfo;
@@ -448,10 +447,6 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 	        ldap_err2string(rc));
 	return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
-
-    /// Get the URL scheme ( either ldap or ldaps )
-    if (0 == ngx_strcmp(ludpp->lud_scheme, "ldaps"))
-	isSecure = 1;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: URL: %s", conf->url.data);
 
