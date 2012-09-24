@@ -1,11 +1,9 @@
-How to install
-==============
+# How to install
 
-FreeBSD
---------------
+## FreeBSD
 
 ```bash
-cd ~ && git clone https://code.google.com/p/nginx-auth-ldap/  
+cd ~ && git clone https://github.com/kvspb/nginx-auth-ldap.git
 cp -R /usr/ports/www/nginx ~/nginx-ldap
 ```
 
@@ -26,8 +24,7 @@ cd ~/nginx-ldap
 make install clean
 ```
 
-Linux
---------------
+## Linux
 
 ```bash
 cd ~ && git clone https://code.google.com/p/nginx-auth-ldap/  
