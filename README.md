@@ -27,7 +27,7 @@ make install clean
 ## Linux
 
 ```bash
-cd ~ && git clone https://code.google.com/p/nginx-auth-ldap/  
+cd ~ && git clone https://github.com/kvspb/nginx-auth-ldap.git   
 ```
 
 in nginx source folder
