@@ -3,25 +3,14 @@
 ## FreeBSD
 
 ```bash
-cd ~ && git clone https://github.com/kvspb/nginx-auth-ldap.git
-cp -R /usr/ports/www/nginx ~/nginx-ldap
+cd /usr/ports/www/nginx && make config install clean
 ```
 
-edit ~/nginx-ldap/Makefile add CONFIGURE_ARGS --add-module=path_to_http_auth_ldap_module
+Check HTTP_AUTH_LDAP options
 
-```bash
-HAS_CONFIGURE= yes
-CONFIGURE_ARGS+=--prefix=${ETCDIR} \
-....
---user=${WWWOWN} --group=${WWWGRP} \
---add-module=path_to_http_auth_ldap_module
+
 ```
-
-install modified port
-
-```bash
-cd ~/nginx-ldap
-make install clean
+[*] HTTP_AUTH_LDAP        3rd party http_auth_ldap module 
 ```
 
 ## Linux
