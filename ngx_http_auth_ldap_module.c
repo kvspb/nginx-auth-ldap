@@ -476,8 +476,8 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
     /// Create filter for search users by uid
     filter = ngx_pcalloc(
 	    r->pool,
-	    ludpp->lud_filter != NULL ? ngx_strlen(ludpp->lud_filter) : 0 + ngx_strlen("(&(=))") + ngx_strlen(ludpp->lud_attrs[0]) + uinfo->username.len
-	            + 1);
+	    (ludpp->lud_filter != NULL ? ngx_strlen(ludpp->lud_filter) : ngx_strlen("(objectClass=*)")) + ngx_strlen("(&(=))")  + ngx_strlen(ludpp->lud_attrs[0])
+               + uinfo->username.len + 1);
     p = ngx_sprintf(filter, "(&%s(%s=%s))", ludpp->lud_filter != NULL ? ludpp->lud_filter : "(objectClass=*)", ludpp->lud_attrs[0], uinfo->username.data);
     *p = 0;
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: filter %s", (const char*) filter);
