@@ -448,9 +448,8 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 
     rc = ldap_set_option(NULL, LDAP_OPT_X_TLS_REQUIRE_CERT, &reqcert);
     if (rc != LDAP_OPT_SUCCESS) {
-	ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: unable to set require cert option: %s",
+	ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "LDAP: unable to set require cert option: %s",
 	        ldap_err2string(rc));
-	return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: URL: %s", conf->url.data);
