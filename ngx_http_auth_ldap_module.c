@@ -30,11 +30,6 @@
 #include <ldap.h>
 
 typedef struct {
-    ngx_str_t username;
-    ngx_str_t password;
-} ngx_ldap_userinfo;
-
-typedef struct {
     ngx_str_t   value;
     ngx_array_t *lengths;
     ngx_array_t *values;
@@ -79,9 +74,8 @@ static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf);
 static void * ngx_http_auth_ldap_create_loc_conf(ngx_conf_t *);
 static char * ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *, void *, void *);
 static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request_t *r, ngx_http_auth_ldap_server_t *server,
-        ngx_ldap_userinfo *uinfo, ngx_http_auth_ldap_loc_conf_t *conf);
+        ngx_http_auth_ldap_loc_conf_t *conf);
 static ngx_int_t ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm);
-static ngx_ldap_userinfo * ngx_http_auth_ldap_get_user_info(ngx_http_request_t *);
 static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_loc_conf_t *conf,
         ngx_http_auth_ldap_conf_t *mconf);
 static char * ngx_http_auth_ldap(ngx_conf_t *cf, void *post, void *data);
@@ -506,38 +500,6 @@ static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r) {
 }
 
 /**
- * Get login and password from http request.
- */
-static ngx_ldap_userinfo*
-ngx_http_auth_ldap_get_user_info(ngx_http_request_t *r) {
-    size_t len;
-    ngx_ldap_userinfo* uinfo;
-    u_char *uname_buf, *p;
-
-    uinfo = ngx_palloc(r->pool, sizeof(ngx_ldap_userinfo));
-
-    for (len = 0; len < r->headers_in.user.len; len++) {
-        if (r->headers_in.user.data[len] == ':') {
-            break;
-        }
-    }
-
-    uname_buf = ngx_palloc(r->pool, len + 1);
-    if (uname_buf == NULL) {
-        return NULL;
-    }
-    p = ngx_cpymem(uname_buf, r->headers_in.user.data, len);
-    *p = '\0';
-
-    uinfo->username.data = uname_buf;
-    uinfo->username.len = len;
-    uinfo->password.data = r->headers_in.passwd.data;
-    uinfo->password.len = r->headers_in.passwd.len;
-
-    return uinfo;
-}
-
-/**
  * Read user credentials from request, set LDAP parameters and call authentication against required servers
  */
 static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_loc_conf_t *conf,
@@ -551,18 +513,12 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 
     int version = LDAP_VERSION3;
     int reqcert = LDAP_OPT_X_TLS_ALLOW;
-    ngx_ldap_userinfo *uinfo;
     struct timeval timeOut = { 10, 0 };
     ngx_flag_t pass = NGX_CONF_UNSET;
 
-    uinfo = ngx_http_auth_ldap_get_user_info(r);
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP username: %s", uinfo->username.data);
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP username: %V", &r->headers_in.user);
 
-    if (uinfo == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    if (uinfo->password.len == 0)
+    if (r->headers_in.passwd.len == 0)
     {
         return ngx_http_auth_ldap_set_realm(r, &conf->realm);
     }
@@ -586,7 +542,7 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
             server = &servers[i];
             if (server->alias.len == alias->len && ngx_strncmp(server->alias.data, alias->data, server->alias.len) == 0) {
                 found = 1;
-                pass = ngx_http_auth_ldap_authenticate_against_server(r, server, uinfo, conf);
+                pass = ngx_http_auth_ldap_authenticate_against_server(r, server, conf);
                 if (pass == 1) {
                     return NGX_OK;
                 } else if (pass == NGX_HTTP_INTERNAL_SERVER_ERROR) {
@@ -609,7 +565,7 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
  * Actual authentication against LDAP server
  */
 static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request_t *r, ngx_http_auth_ldap_server_t *server,
-        ngx_ldap_userinfo *uinfo, ngx_http_auth_ldap_loc_conf_t *conf) {
+        ngx_http_auth_ldap_loc_conf_t *conf) {
 
     LDAPURLDesc *ludpp = server->ludpp;
     int rc;
@@ -652,9 +608,9 @@ static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request
     filter = ngx_pcalloc(
         r->pool,
         (ludpp->lud_filter != NULL ? ngx_strlen(ludpp->lud_filter) : ngx_strlen("(objectClass=*)")) + ngx_strlen("(&(=))")  + ngx_strlen(ludpp->lud_attrs[0])
-               + uinfo->username.len + 1);
+               + r->headers_in.user.len + 1);
 
-    p = ngx_sprintf(filter, "(&%s(%s=%s))", ludpp->lud_filter != NULL ? ludpp->lud_filter : "(objectClass=*)", ludpp->lud_attrs[0], uinfo->username.data);
+    p = ngx_sprintf(filter, "(&%s(%s=%V))", ludpp->lud_filter != NULL ? ludpp->lud_filter : "(objectClass=*)", ludpp->lud_attrs[0], &r->headers_in.user);
     *p = 0;
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: filter %s", (const char*) filter);
 
@@ -716,8 +672,8 @@ static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request
                     bvalue.bv_val = dn;
                     bvalue.bv_len = ngx_strlen(dn);
                 } else {
-                    bvalue.bv_val = (char*) uinfo->username.data;
-                    bvalue.bv_len = uinfo->username.len;
+                    bvalue.bv_val = (char*) r->headers_in.user.data;
+                    bvalue.bv_len = r->headers_in.user.len;
                 }
 
                 value = server->require_group->elts;
@@ -769,7 +725,7 @@ static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request
             /// Check valid user
             if ( pass != 0 || (server->require_valid_user == 1 && server->satisfy_all == 0 && pass == 0)) {
                 /// Bind user to the server
-                rc = ldap_simple_bind_s(ld, dn, (const char *) uinfo->password.data);
+                rc = ldap_simple_bind_s(ld, dn, (const char *) r->headers_in.passwd.data);
                 if (rc != LDAP_SUCCESS) {
                     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: ldap_simple_bind_s error: %d, %s", rc,
                         ldap_err2string(rc));
