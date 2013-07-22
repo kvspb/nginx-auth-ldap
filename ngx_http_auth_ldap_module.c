@@ -43,6 +43,7 @@ typedef struct {
     ngx_array_t *require_group;     /* array of ngx_http_complex_value_t */
     ngx_array_t *require_user;      /* array of ngx_http_complex_value_t */
     ngx_flag_t require_valid_user;
+    ngx_http_complex_value_t require_valid_user_dn;
     ngx_flag_t satisfy_all;
 } ngx_http_auth_ldap_server_t;
 
@@ -373,14 +374,20 @@ static char *
 ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server) {
 
     ngx_str_t *value;
-    ngx_http_complex_value_t* rule = NULL;
+    ngx_http_complex_value_t* target = NULL;
     ngx_http_compile_complex_value_t ccv;
 
     value = cf->args->elts;
 
     if (ngx_strcmp(value[1].data, "valid_user") == 0) {
         server->require_valid_user = 1;
-        return NGX_CONF_OK;
+        if (cf->args->nelts < 3) {
+            return NGX_CONF_OK;
+        }
+        if (server->require_valid_user_dn.value.data != NULL) {
+            return "is duplicate";
+        }
+        target = &server->require_valid_user_dn;
     } else if (ngx_strcmp(value[1].data, "user") == 0) {
         if (server->require_user == NULL) {
             server->require_user = ngx_array_create(cf->pool, 4, sizeof(ngx_http_complex_value_t));
@@ -388,7 +395,7 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
                 return NGX_CONF_ERROR;
             }
         }
-        rule = ngx_array_push(server->require_user);
+        target = ngx_array_push(server->require_user);
     } else if (ngx_strcmp(value[1].data, "group") == 0) {
         if (server->require_group == NULL) {
             server->require_group = ngx_array_create(cf->pool, 4, sizeof(ngx_http_complex_value_t));
@@ -396,17 +403,17 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
                 return NGX_CONF_ERROR;
             }
         }
-        rule = ngx_array_push(server->require_group);
+        target = ngx_array_push(server->require_group);
     }
 
-    if (rule == NULL) {
+    if (target == NULL) {
        return NGX_CONF_ERROR;
     }
 
     ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
     ccv.cf = cf;
     ccv.value = &value[2];
-    ccv.complex_value = rule;
+    ccv.complex_value = target;
     if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
@@ -560,7 +567,8 @@ static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request
     int rc;
     LDAP *ld;
     LDAPMessage *searchResult;
-    char *dn;
+    char* ldn = NULL;
+    ngx_str_t dn;
     u_char *p, *filter;
     ngx_http_complex_value_t *value;
     ngx_uint_t i;
@@ -593,129 +601,139 @@ static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request
     }
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: Bind successful", NULL);
 
-    /// Create filter for search users by uid
-    filter = ngx_pcalloc(
-        r->pool,
-        (ludpp->lud_filter != NULL ? ngx_strlen(ludpp->lud_filter) : ngx_strlen("(objectClass=*)")) + ngx_strlen("(&(=))")  + ngx_strlen(ludpp->lud_attrs[0])
-               + r->headers_in.user.len + 1);
-
-    p = ngx_sprintf(filter, "(&%s(%s=%V))", ludpp->lud_filter != NULL ? ludpp->lud_filter : "(objectClass=*)", ludpp->lud_attrs[0], &r->headers_in.user);
-    *p = 0;
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: filter %s", (const char*) filter);
-
-    /// Search the directory
-    rc = ldap_search_ext_s(ld, ludpp->lud_dn, ludpp->lud_scope, (const char*) filter, NULL, 0, NULL, NULL, &timeOut, 0,
-        &searchResult);
-
-    if (rc != LDAP_SUCCESS) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: ldap_search_ext_s: %d, %s", rc, ldap_err2string(rc));
-        ldap_msgfree(searchResult);
-        ldap_unbind_s(ld);
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    if (ldap_count_entries(ld, searchResult) > 0) {
-    dn = ldap_get_dn(ld, searchResult);
-        if (dn != NULL) {
-            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: result DN %s", dn);
-
-            /// Check require user
-            if (server->require_user != NULL) {
-                value = server->require_user->elts;
-                for (i = 0; i < server->require_user->nelts; i++) {
-                    ngx_str_t val;
-                    if (ngx_http_complex_value(r, &value[i], &val) != NGX_OK) {
-                        ldap_memfree(dn);
-                        ldap_msgfree(searchResult);
-                        ldap_unbind_s(ld);
-                        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-                    }
-
-                    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: compare with: %V", &val);
-                    if (ngx_strncmp(val.data, dn, val.len) == 0) {
-                        pass = 1;
-                        if (server->satisfy_all == 0) {
-                            break;
-                        }
-                    } else {
-                        if (server->satisfy_all == 1) {
-                            ldap_memfree(dn);
-                            ldap_msgfree(searchResult);
-                            ldap_unbind_s(ld);
-                            return 0;
-                        }
-                    }
-                }
-            }
-
-            /// Check require group
-            if (server->require_group != NULL) {
-                if (server->group_attribute_dn == 1) {
-                    bvalue.bv_val = dn;
-                    bvalue.bv_len = ngx_strlen(dn);
-                } else {
-                    bvalue.bv_val = (char*) r->headers_in.user.data;
-                    bvalue.bv_len = r->headers_in.user.len;
-                }
-
-                value = server->require_group->elts;
-
-                for (i = 0; i < server->require_group->nelts; i++) {
-                    ngx_str_t val;
-                    if (ngx_http_complex_value(r, &value[i], &val) != NGX_OK) {
-                        ldap_memfree(dn);
-                        ldap_msgfree(searchResult);
-                        ldap_unbind_s(ld);
-                        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-                    }
-
-                    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: group compare with: %V", &val);
-
-                    rc = ldap_compare_ext_s(ld, (const char*) val.data, (const char*) server->group_attribute.data,
-                        &bvalue, NULL, NULL);
-
-                    /*if (rc != LDAP_COMPARE_TRUE && rc != LDAP_COMPARE_FALSE && rc != LDAP_NO_SUCH_ATTRIBUTE ) {
-                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: ldap_search_ext_s: %d, %s", rc,
-                            ldap_err2string(rc));
-                    ldap_memfree(dn);
-                    ldap_msgfree(searchResult);
-                    ldap_unbind_s(ld);
-                    return NGX_HTTP_INTERNAL_SERVER_ERROR;
-                    }*/
-
-                    if (rc == LDAP_COMPARE_TRUE) {
-                        pass = 1;
-                        if (server->satisfy_all == 0) {
-                            break;
-                        }
-                    } else {
-                        if (server->satisfy_all == 1) {
-                            pass = 0;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            /// Check valid user
-            if ( pass != 0 || (server->require_valid_user == 1 && server->satisfy_all == 0 && pass == 0)) {
-                /// Bind user to the server
-                rc = ldap_simple_bind_s(ld, dn, (const char *) r->headers_in.passwd.data);
-                if (rc != LDAP_SUCCESS) {
-                    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: ldap_simple_bind_s error: %d, %s", rc,
-                        ldap_err2string(rc));
-                    pass = 0;
-                } else {
-                    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: User bind successful", NULL);
-                    if (server->require_valid_user == 1) pass = 1;
-                }
-            }
-
+    if (server->require_valid_user_dn.value.data != NULL) {
+        // Construct user DN
+        if (ngx_http_complex_value(r, &server->require_valid_user_dn, &dn) != NGX_OK) {
+            ldap_unbind_s(ld);
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
-        ldap_memfree(dn);
+    } else {
+        /// Create filter for search users by uid
+        filter = ngx_pcalloc(
+            r->pool,
+            (ludpp->lud_filter != NULL ? ngx_strlen(ludpp->lud_filter) : ngx_strlen("(objectClass=*)")) +
+            ngx_strlen("(&(=))") + ngx_strlen(ludpp->lud_attrs[0]) + r->headers_in.user.len + 1);
+
+        p = ngx_sprintf(filter, "(&%s(%s=%V))",
+                ludpp->lud_filter != NULL ? ludpp->lud_filter : "(objectClass=*)",
+                ludpp->lud_attrs[0], &r->headers_in.user);
+        *p = 0;
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: filter %s", (const char*) filter);
+
+        /// Search the directory
+        rc = ldap_search_ext_s(ld, ludpp->lud_dn, ludpp->lud_scope, (const char*) filter, NULL, 0, NULL, NULL, &timeOut, 0,
+            &searchResult);
+
+        if (rc != LDAP_SUCCESS) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: ldap_search_ext_s: %d, %s", rc, ldap_err2string(rc));
+            ldap_msgfree(searchResult);
+            ldap_unbind_s(ld);
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+
+        if (ldap_count_entries(ld, searchResult) > 0) {
+            ldn = ldap_get_dn(ld, searchResult);
+        }
+        ldap_msgfree(searchResult);
+
+        if (!ldn) {
+            ldap_unbind_s(ld);
+            return 0;
+        }
+
+        dn.data = (u_char*) ldn;
+        dn.len = ngx_strlen(ldn);
     }
 
-    ldap_msgfree(searchResult);
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: result DN %V", &dn);
+
+    /// Check require user
+    if (server->require_user != NULL) {
+        value = server->require_user->elts;
+        for (i = 0; i < server->require_user->nelts; i++) {
+            ngx_str_t val;
+            if (ngx_http_complex_value(r, &value[i], &val) != NGX_OK) {
+                ldap_memfree(ldn);
+                ldap_unbind_s(ld);
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: compare with: %V", &val);
+            if (val.len == dn.len && ngx_memcmp(val.data, dn.data, val.len) == 0) {
+                pass = 1;
+                if (server->satisfy_all == 0) {
+                    break;
+                }
+            } else {
+                if (server->satisfy_all == 1) {
+                    ldap_memfree(ldn);
+                    ldap_unbind_s(ld);
+                    return 0;
+                }
+            }
+        }
+    }
+
+    /// Check require group
+    if (server->require_group != NULL) {
+        if (server->group_attribute_dn == 1) {
+            bvalue.bv_val = (char*) dn.data;
+            bvalue.bv_len = dn.len;
+        } else {
+            bvalue.bv_val = (char*) r->headers_in.user.data;
+            bvalue.bv_len = r->headers_in.user.len;
+        }
+
+        value = server->require_group->elts;
+        for (i = 0; i < server->require_group->nelts; i++) {
+            ngx_str_t val;
+            if (ngx_http_complex_value(r, &value[i], &val) != NGX_OK) {
+                ldap_memfree(ldn);
+                ldap_unbind_s(ld);
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: group compare with: %V", &val);
+            rc = ldap_compare_ext_s(ld, (const char*) val.data, (const char*) server->group_attribute.data,
+                &bvalue, NULL, NULL);
+
+            /*if (rc != LDAP_COMPARE_TRUE && rc != LDAP_COMPARE_FALSE && rc != LDAP_NO_SUCH_ATTRIBUTE) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: ldap_search_ext_s: %d, %s", rc,
+                    ldap_err2string(rc));
+            ldap_memfree(ldn);
+            ldap_unbind_s(ld);
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }*/
+
+            if (rc == LDAP_COMPARE_TRUE) {
+                pass = 1;
+                if (server->satisfy_all == 0) {
+                    break;
+                }
+            } else {
+                if (server->satisfy_all == 1) {
+                    pass = 0;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Check valid user
+    if (pass != 0 || (server->require_valid_user == 1 && server->satisfy_all == 0 && pass == 0)) {
+        /// Bind user to the server
+        rc = ldap_simple_bind_s(ld, (const char *) dn.data, (const char *) r->headers_in.passwd.data);
+        if (rc != LDAP_SUCCESS) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: ldap_simple_bind_s error: %d, %s", rc,
+                ldap_err2string(rc));
+            pass = 0;
+        } else {
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: User bind successful", NULL);
+            if (server->require_valid_user == 1) pass = 1;
+        }
+    }
+
+    ldap_memfree(ldn);
     ldap_unbind_s(ld);
 
     return pass;
