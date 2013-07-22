@@ -76,7 +76,7 @@ static char * ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_ldap_server *
 static char * ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf);
 static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf);
-static void * ngx_http_auth_basic_create_loc_conf(ngx_conf_t *);
+static void * ngx_http_auth_ldap_create_loc_conf(ngx_conf_t *);
 static char * ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *, void *, void *);
 static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request_t *r, ngx_ldap_server *server,
         ngx_ldap_userinfo *uinfo, ngx_http_auth_ldap_loc_conf_t *conf);
@@ -122,7 +122,7 @@ static ngx_http_module_t ngx_http_auth_ldap_module_ctx = {
     NULL, /* init main configuration */
     NULL, //ngx_http_auth_ldap_create_server_conf, /* create server configuration */
     NULL, //ngx_http_auth_ldap_merge_server_conf, /* merge server configuration */
-    ngx_http_auth_basic_create_loc_conf, /* create location configuration */
+    ngx_http_auth_ldap_create_loc_conf, /* create location configuration */
     ngx_http_auth_ldap_merge_loc_conf /* merge location configuration */
 };
 
@@ -448,7 +448,7 @@ ngx_http_auth_ldap_create_conf(ngx_conf_t *cf)
  * Create location conf
  */
 static void *
-ngx_http_auth_basic_create_loc_conf(ngx_conf_t *cf) {
+ngx_http_auth_ldap_create_loc_conf(ngx_conf_t *cf) {
     ngx_http_auth_ldap_loc_conf_t *conf;
     conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_auth_ldap_loc_conf_t));
     if (conf == NULL) {
