@@ -218,7 +218,7 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         server->bind_dn_passwd = value[1];
     } else if(ngx_strcmp(value[0].data, "group_attribute") == 0) {
         server->group_attribute = value[1];
-    } else if(ngx_strcmp(value[0].data, "group_attribute_is_dn") == 0 && ngx_strcmp(value[1].data, "on")) {
+    } else if(ngx_strcmp(value[0].data, "group_attribute_is_dn") == 0 && ngx_strcmp(value[1].data, "on") == 0) {
         server->group_attribute_dn = 1;
     } else if(ngx_strcmp(value[0].data, "require") == 0) {
         return ngx_http_auth_ldap_parse_require(cf, server);
