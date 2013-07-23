@@ -72,8 +72,7 @@ static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request
 static ngx_int_t ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm);
 static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_loc_conf_t *conf,
         ngx_http_auth_ldap_conf_t *mconf);
-static char * ngx_http_auth_ldap(ngx_conf_t *cf, void *post, void *data);
-static ngx_conf_post_handler_pt ngx_http_auth_ldap_p = ngx_http_auth_ldap;
+static char * ngx_http_auth_ldap(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 static ngx_command_t ngx_http_auth_ldap_commands[] = {
     {
@@ -87,10 +86,10 @@ static ngx_command_t ngx_http_auth_ldap_commands[] = {
     {
         ngx_string("auth_ldap"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_HTTP_LMT_CONF | NGX_CONF_TAKE1,
-        ngx_conf_set_str_slot,
+        ngx_http_auth_ldap,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_auth_ldap_loc_conf_t, realm),
-        &ngx_http_auth_ldap_p
+        0,
+        NULL
     },
     {
         ngx_string("auth_ldap_servers"),
@@ -223,32 +222,26 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
  * Parse auth_ldap directive
  */
 static char *
-ngx_http_auth_ldap(ngx_conf_t *cf, void *post, void *data) {
-    ngx_str_t *realm = data;
+ngx_http_auth_ldap(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
 
-    size_t len;
-    u_char *basic, *p;
+    ngx_str_t *value = cf->args->elts;
+    ngx_http_auth_ldap_loc_conf_t *cnf = conf;
+    u_char *p;
 
-    if (ngx_strcmp(realm->data, "off") == 0) {
-        realm->len = 0;
-        realm->data = (u_char *) "";
-
+    if (ngx_strcmp(value[1].data, "off") == 0) {
+        ngx_str_set(&cnf->realm, "");
         return NGX_CONF_OK;
     }
 
-    len = sizeof("Basic realm=\"") - 1 + realm->len + 1;
-
-    basic = ngx_pcalloc(cf->pool, len);
-    if (basic == NULL) {
+    cnf->realm.len = sizeof("Basic realm=\"") - 1 + value[1].len + 1;
+    cnf->realm.data = ngx_pcalloc(cf->pool, cnf->realm.len);
+    if (cnf->realm.data == NULL) {
         return NGX_CONF_ERROR;
     }
 
-    p = ngx_cpymem(basic, "Basic realm=\"", sizeof("Basic realm=\"") - 1);
-    p = ngx_cpymem(p, realm->data, realm->len);
+    p = ngx_cpymem(cnf->realm.data, "Basic realm=\"", sizeof("Basic realm=\"") - 1);
+    p = ngx_cpymem(p, value[1].data, value[1].len);
     *p = '"';
-
-    realm->len = len;
-    realm->data = basic;
 
     return NGX_CONF_OK;
 }
