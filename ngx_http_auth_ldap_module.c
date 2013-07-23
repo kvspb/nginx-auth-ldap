@@ -47,17 +47,15 @@ typedef struct {
 } ngx_http_auth_ldap_server_t;
 
 typedef struct {
-    ngx_str_t realm;
-    ngx_array_t *servers;
-} ngx_http_auth_ldap_loc_conf_t;
+    ngx_array_t *servers;        /* array of ngx_http_auth_ldap_server_t */
+} ngx_http_auth_ldap_main_conf_t;
 
 typedef struct {
-    ngx_array_t *servers;     /* array of ngx_http_auth_ldap_server_t */
-    ngx_hash_t srv;
-} ngx_http_auth_ldap_conf_t;
+    ngx_str_t realm;
+    ngx_array_t *servers;       /* array of ngx_http_auth_ldap_server_t* */
+} ngx_http_auth_ldap_loc_conf_t;
 
-
-static void * ngx_http_auth_ldap_create_conf(ngx_conf_t *cf);
+static void * ngx_http_auth_ldap_create_main_conf(ngx_conf_t *cf);
 static char * ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char * ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
@@ -70,9 +68,9 @@ static char * ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *, void *, void *);
 static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request_t *r, ngx_http_auth_ldap_server_t *server,
         ngx_http_auth_ldap_loc_conf_t *conf);
 static ngx_int_t ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm);
-static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_loc_conf_t *conf,
-        ngx_http_auth_ldap_conf_t *mconf);
+static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_loc_conf_t *conf);
 static char * ngx_http_auth_ldap(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char * ngx_http_auth_ldap_servers(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 static ngx_command_t ngx_http_auth_ldap_commands[] = {
     {
@@ -94,9 +92,9 @@ static ngx_command_t ngx_http_auth_ldap_commands[] = {
     {
         ngx_string("auth_ldap_servers"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_HTTP_LMT_CONF | NGX_CONF_ANY,
-        ngx_conf_set_str_array_slot,
+        ngx_http_auth_ldap_servers,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_auth_ldap_loc_conf_t, servers),
+        0,
         NULL
     },
     ngx_null_command
@@ -105,7 +103,7 @@ static ngx_command_t ngx_http_auth_ldap_commands[] = {
 static ngx_http_module_t ngx_http_auth_ldap_module_ctx = {
     NULL, /* preconfiguration */
     ngx_http_auth_ldap_init, /* postconfiguration */
-    ngx_http_auth_ldap_create_conf, /* create main configuration */
+    ngx_http_auth_ldap_create_main_conf, /* create main configuration */
     NULL, /* init main configuration */
     NULL, //ngx_http_auth_ldap_create_server_conf, /* create server configuration */
     NULL, //ngx_http_auth_ldap_merge_server_conf, /* merge server configuration */
@@ -135,11 +133,11 @@ ngx_module_t ngx_http_auth_ldap_module = {
 static char *
 ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    char                        *rv;
-    ngx_str_t                   *value, name;
-    ngx_conf_t                  save;
-    ngx_http_auth_ldap_server_t server, *s;
-    ngx_http_auth_ldap_conf_t   *cnf = conf;
+    char                           *rv;
+    ngx_str_t                      *value, name;
+    ngx_conf_t                     save;
+    ngx_http_auth_ldap_server_t    server, *s;
+    ngx_http_auth_ldap_main_conf_t *cnf = conf;
 
     value = cf->args->elts;
 
@@ -189,7 +187,7 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
     ngx_str_t                *value;
 
     ngx_http_auth_ldap_server_t *server;
-    ngx_http_auth_ldap_conf_t *cnf = conf;
+    ngx_http_auth_ldap_main_conf_t *cnf = conf;
 
     // It should be safe to just use latest server from array
     server = ((ngx_http_auth_ldap_server_t*)cnf->servers->elts + (cnf->servers->nelts - 1));
@@ -242,6 +240,57 @@ ngx_http_auth_ldap(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     p = ngx_cpymem(cnf->realm.data, "Basic realm=\"", sizeof("Basic realm=\"") - 1);
     p = ngx_cpymem(p, value[1].data, value[1].len);
     *p = '"';
+
+    return NGX_CONF_OK;
+}
+
+/**
+ * Parse auth_ldap_servers directive
+ */
+static char *
+ngx_http_auth_ldap_servers(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+
+    ngx_http_auth_ldap_loc_conf_t *cnf;
+    ngx_http_auth_ldap_main_conf_t *mconf;
+    ngx_http_auth_ldap_server_t *server, *s, **target;
+    ngx_str_t *value;
+    ngx_uint_t i, j;
+
+    cnf = conf;
+    mconf = ngx_http_conf_get_module_main_conf(cf, ngx_http_auth_ldap_module);
+
+    for (i = 1; i < cf->args->nelts; i++) {
+        value = &((ngx_str_t *) cf->args->elts)[i];
+        server = NULL;
+
+        for (j = 0; j < mconf->servers->nelts; j++) {
+            s = &((ngx_http_auth_ldap_server_t *) mconf->servers->elts)[j];
+            if (s->alias.len == value->len && ngx_memcmp(s->alias.data, value->data, s->alias.len) == 0) {
+                server = s;
+                break;
+            }
+        }
+
+        if (server == NULL) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "LDAP server \"%V\" is not defined!", value);
+            return NGX_CONF_ERROR;
+        }
+
+
+        if (cnf->servers == NGX_CONF_UNSET_PTR) {
+            cnf->servers = ngx_array_create(cf->pool, 4, sizeof(ngx_http_auth_ldap_server_t *));
+            if (cnf->servers == NULL) {
+                return NGX_CONF_ERROR;
+            }
+        }
+
+        target = (ngx_http_auth_ldap_server_t **) ngx_array_push(cnf->servers);
+        if (target == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        *target = server;
+    }
 
     return NGX_CONF_OK;
 }
@@ -391,11 +440,11 @@ ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
  * Create main config which will store ldap_servers array
  */
 static void *
-ngx_http_auth_ldap_create_conf(ngx_conf_t *cf)
+ngx_http_auth_ldap_create_main_conf(ngx_conf_t *cf)
 {
-    ngx_http_auth_ldap_conf_t  *conf;
+    ngx_http_auth_ldap_main_conf_t *conf;
 
-    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_auth_ldap_conf_t));
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_auth_ldap_main_conf_t));
     if (conf == NULL) {
         return NULL;
     }
@@ -442,39 +491,29 @@ static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r) {
     ngx_http_auth_ldap_loc_conf_t *alcf;
 
     alcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_ldap_module);
-
     if (alcf->realm.len == 0) {
         return NGX_DECLINED;
     }
 
-    ngx_http_auth_ldap_conf_t  *cnf;
-
-    cnf = ngx_http_get_module_main_conf(r, ngx_http_auth_ldap_module);
-
     rc = ngx_http_auth_basic_user(r);
-
     if (rc == NGX_DECLINED) {
         return ngx_http_auth_ldap_set_realm(r, &alcf->realm);
     }
-
     if (rc == NGX_ERROR) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    return ngx_http_auth_ldap_authenticate(r, alcf, cnf);
+    return ngx_http_auth_ldap_authenticate(r, alcf);
 }
 
 /**
  * Read user credentials from request, set LDAP parameters and call authentication against required servers
  */
-static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_loc_conf_t *conf,
-        ngx_http_auth_ldap_conf_t *mconf) {
+static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_loc_conf_t *conf) {
 
-    ngx_http_auth_ldap_server_t *server, *servers;
-    servers = mconf->servers->elts;
+    ngx_http_auth_ldap_server_t *server;
     int rc;
-    ngx_uint_t i, k;
-    ngx_str_t *alias;
+    ngx_uint_t i;
 
     int version = LDAP_VERSION3;
     int reqcert = LDAP_OPT_X_TLS_ALLOW;
@@ -498,27 +537,12 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
             ldap_err2string(rc));
     }
 
-    // TODO: We might be using hash here, cause this loops is quite ugly, but it is simple and it works
-    int found;
-    for (k = 0; k < conf->servers->nelts; k++) {
-        alias = ((ngx_str_t*)conf->servers->elts + k);
-        found = 0;
-        for (i = 0; i < mconf->servers->nelts; i++) {
-            server = &servers[i];
-            if (server->alias.len == alias->len && ngx_strncmp(server->alias.data, alias->data, server->alias.len) == 0) {
-                found = 1;
-                pass = ngx_http_auth_ldap_authenticate_against_server(r, server, conf);
-                if (pass == 1) {
-                    return NGX_OK;
-                } else if (pass == NGX_HTTP_INTERNAL_SERVER_ERROR) {
-                   return NGX_HTTP_INTERNAL_SERVER_ERROR;
-                }
-            }
-        }
-
-        // If requested ldap server is not found, return 500 and write to log
-        if (found == 0) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "LDAP: Server \"%s\" is not defined!", alias->data);
+    for (i = 0; i < conf->servers->nelts; i++) {
+        server = ((ngx_http_auth_ldap_server_t **) conf->servers->elts)[i];
+        pass = ngx_http_auth_ldap_authenticate_against_server(r, server, conf);
+        if (pass == 1) {
+            return NGX_OK;
+        } else if (pass == NGX_HTTP_INTERNAL_SERVER_ERROR) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
     }
