@@ -27,6 +27,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include <ngx_md5.h>
 #include <ldap.h>
 
 typedef struct {
@@ -49,6 +50,9 @@ typedef struct {
 
 typedef struct {
     ngx_array_t *servers;        /* array of ngx_http_auth_ldap_server_t */
+    ngx_flag_t cache_enabled;
+    ngx_msec_t cache_expiration_time;
+    size_t cache_size;
 } ngx_http_auth_ldap_main_conf_t;
 
 typedef struct {
@@ -56,7 +60,29 @@ typedef struct {
     ngx_array_t *servers;       /* array of ngx_http_auth_ldap_server_t* */
 } ngx_http_auth_ldap_loc_conf_t;
 
+typedef struct {
+    uint32_t small_hash;   /* murmur2 hash of username ^ &server       */
+    uint32_t outcome;      /* 0 = authentication failed, 1 = succeeded */
+    ngx_msec_t time;       /* ngx_current_msec when created            */
+    u_char big_hash[16];   /* md5 hash of (username, server, password) */
+} ngx_http_auth_ldap_cache_elt_t;
+
+typedef struct {
+    ngx_http_auth_ldap_cache_elt_t *buckets;
+    ngx_uint_t num_buckets;
+    ngx_uint_t elts_per_bucket;
+    ngx_msec_t expiration_time;
+} ngx_http_auth_ldap_cache_t;
+
+typedef struct {
+    ngx_http_auth_ldap_cache_elt_t *cache_bucket;
+    u_char cache_big_hash[16];
+    uint32_t cache_small_hash;
+} ngx_http_auth_ldap_ctx_t;
+
 static void * ngx_http_auth_ldap_create_main_conf(ngx_conf_t *cf);
+static char * ngx_http_auth_ldap_init_main_conf(ngx_conf_t *cf, void *parent);
+static ngx_int_t ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle);
 static char * ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char * ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
@@ -69,9 +95,12 @@ static char * ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *, void *, void *);
 static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request_t *r, ngx_http_auth_ldap_server_t *server,
         ngx_http_auth_ldap_loc_conf_t *conf);
 static ngx_int_t ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm);
-static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_loc_conf_t *conf);
+static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
+        ngx_http_auth_ldap_loc_conf_t *conf);
 static char * ngx_http_auth_ldap(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char * ngx_http_auth_ldap_servers(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+
+ngx_http_auth_ldap_cache_t ngx_http_auth_ldap_cache;
 
 static ngx_command_t ngx_http_auth_ldap_commands[] = {
     {
@@ -80,6 +109,30 @@ static ngx_command_t ngx_http_auth_ldap_commands[] = {
         ngx_http_auth_ldap_ldap_server_block,
         NGX_HTTP_MAIN_CONF_OFFSET,
         0,
+        NULL
+    },
+    {
+        ngx_string("auth_ldap_cache_enabled"),
+        NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1,
+        ngx_conf_set_flag_slot,
+        NGX_HTTP_MAIN_CONF_OFFSET,
+        offsetof(ngx_http_auth_ldap_main_conf_t, cache_enabled),
+        NULL
+    },
+    {
+        ngx_string("auth_ldap_cache_expiration_time"),
+        NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1,
+        ngx_conf_set_msec_slot,
+        NGX_HTTP_MAIN_CONF_OFFSET,
+        offsetof(ngx_http_auth_ldap_main_conf_t, cache_expiration_time),
+        NULL
+    },
+    {
+        ngx_string("auth_ldap_cache_size"),
+        NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1,
+        ngx_conf_set_size_slot,
+        NGX_HTTP_MAIN_CONF_OFFSET,
+        offsetof(ngx_http_auth_ldap_main_conf_t, cache_size),
         NULL
     },
     {
@@ -102,29 +155,29 @@ static ngx_command_t ngx_http_auth_ldap_commands[] = {
 };
 
 static ngx_http_module_t ngx_http_auth_ldap_module_ctx = {
-    NULL, /* preconfiguration */
-    ngx_http_auth_ldap_init, /* postconfiguration */
+    NULL,                                /* preconfiguration */
+    ngx_http_auth_ldap_init,             /* postconfiguration */
     ngx_http_auth_ldap_create_main_conf, /* create main configuration */
-    NULL, /* init main configuration */
-    NULL, //ngx_http_auth_ldap_create_server_conf, /* create server configuration */
-    NULL, //ngx_http_auth_ldap_merge_server_conf, /* merge server configuration */
-    ngx_http_auth_ldap_create_loc_conf, /* create location configuration */
-    ngx_http_auth_ldap_merge_loc_conf /* merge location configuration */
+    ngx_http_auth_ldap_init_main_conf,   /* init main configuration */
+    NULL,                                /* create server configuration */
+    NULL,                                /* merge server configuration */
+    ngx_http_auth_ldap_create_loc_conf,  /* create location configuration */
+    ngx_http_auth_ldap_merge_loc_conf    /* merge location configuration */
 };
 
 ngx_module_t ngx_http_auth_ldap_module = {
     NGX_MODULE_V1,
-    &ngx_http_auth_ldap_module_ctx, /* module context */
-    ngx_http_auth_ldap_commands, /* module directives */
-    NGX_HTTP_MODULE, /* module type */
-    NULL, /* init master */
-    NULL, /* init module */
-    NULL, /* init process */
-    NULL, /* init thread */
-    NULL, /* exit thread */
-    NULL, /* exit process */
-    NULL, /* exit master */
-    NGX_MODULE_V1_PADDING /**/
+    &ngx_http_auth_ldap_module_ctx,      /* module context */
+    ngx_http_auth_ldap_commands,         /* module directives */
+    NGX_HTTP_MODULE,                     /* module type */
+    NULL,                                /* init master */
+    NULL,                                /* init module */
+    ngx_http_auth_ldap_init_worker,      /* init process */
+    NULL,                                /* init thread */
+    NULL,                                /* exit thread */
+    NULL,                                /* exit process */
+    NULL,                                /* exit master */
+    NGX_MODULE_V1_PADDING
 };
 
 
@@ -456,7 +509,142 @@ ngx_http_auth_ldap_create_main_conf(ngx_conf_t *cf)
         return NULL;
     }
 
+    conf->cache_enabled = NGX_CONF_UNSET;
+    conf->cache_expiration_time = NGX_CONF_UNSET_MSEC;
+    conf->cache_size = NGX_CONF_UNSET_SIZE;
+
     return conf;
+}
+
+static char *
+ngx_http_auth_ldap_init_main_conf(ngx_conf_t *cf, void *parent)
+{
+    ngx_http_auth_ldap_main_conf_t *conf = parent;
+
+    if (conf->cache_enabled == NGX_CONF_UNSET) {
+        conf->cache_enabled = 0;
+    }
+    if (conf->cache_enabled == 0) {
+        return NGX_CONF_OK;
+    }
+
+    if (conf->cache_size == NGX_CONF_UNSET_SIZE) {
+        conf->cache_size = 100;
+    }
+    if (conf->cache_size < 100) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "auth_ldap_cache_size cannot be smaller than 100 entries.");
+        return NGX_CONF_ERROR;
+    }
+
+    if (conf->cache_expiration_time == NGX_CONF_UNSET_MSEC) {
+        conf->cache_expiration_time = 10000;
+    }
+    if (conf->cache_expiration_time < 1000) {
+        ngx_conf_log_error(NGX_LOG_ERR, cf, 0, "auth_ldap_cache_expiration_time cannot be smaller than 1000 ms.");
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
+}
+
+static ngx_int_t
+ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle)
+{
+    ngx_http_auth_ldap_main_conf_t *conf;
+    ngx_uint_t want, count, i;
+    ngx_http_auth_ldap_cache_t *cache;
+    static const uint16_t primes[] = {
+        13, 53, 101, 151, 199, 263, 317, 383, 443, 503,
+        577, 641, 701, 769, 839, 911, 983, 1049, 1109
+    };
+
+
+    if (ngx_process != NGX_PROCESS_SINGLE && ngx_process != NGX_PROCESS_WORKER) {
+        return NGX_OK;
+    }
+
+
+    conf = (ngx_http_auth_ldap_main_conf_t *) ngx_http_cycle_get_module_main_conf(cycle, ngx_http_auth_ldap_module);
+    if (conf == NULL || !conf->cache_enabled) {
+        return NGX_OK;
+    }
+
+    want = (conf->cache_size + 7) / 8;
+    for (i = 0; i < sizeof(primes)/sizeof(primes[0]); i++) {
+        count = primes[i];
+        if (count >= want) {
+            break;
+        }
+    }
+
+    cache = &ngx_http_auth_ldap_cache;
+    cache->expiration_time = conf->cache_expiration_time;
+    cache->num_buckets = count;
+    cache->elts_per_bucket = 8;
+
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, cycle->log, 0, "http_auth_ldap: Allocating %ud bytes of LDAP cache.",
+        cache->num_buckets * cache->elts_per_bucket * sizeof(ngx_http_auth_ldap_cache_elt_t));
+
+    cache->buckets = (ngx_http_auth_ldap_cache_elt_t *) ngx_calloc(count * 8 * sizeof(ngx_http_auth_ldap_cache_elt_t), cycle->log);
+    if (cache->buckets == NULL) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "http_auth_ldap: Unable to allocate memory for LDAP cache.");
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_auth_ldap_check_cache(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
+    ngx_http_auth_ldap_cache_t *cache, ngx_http_auth_ldap_server_t *server)
+{
+    ngx_http_auth_ldap_cache_elt_t *elt;
+    ngx_md5_t md5ctx;
+    ngx_msec_t time_limit;
+    ngx_uint_t i;
+
+    ctx->cache_small_hash = ngx_murmur_hash2(r->headers_in.user.data, r->headers_in.user.len) ^ (uint32_t)(ngx_uint_t)server;
+
+    ngx_md5_init(&md5ctx);
+    ngx_md5_update(&md5ctx, r->headers_in.user.data, r->headers_in.user.len);
+    ngx_md5_update(&md5ctx, server, sizeof(*server));
+    ngx_md5_update(&md5ctx, r->headers_in.passwd.data, r->headers_in.passwd.len);
+    ngx_md5_final(ctx->cache_big_hash, &md5ctx);
+
+    ctx->cache_bucket = &cache->buckets[ctx->cache_small_hash % cache->num_buckets];
+
+    elt = ctx->cache_bucket;
+    time_limit = ngx_current_msec - cache->expiration_time;
+    for (i = 0; i < cache->elts_per_bucket; i++, elt++) {
+        if (elt->small_hash == ctx->cache_small_hash &&
+                elt->time > time_limit &&
+                memcmp(elt->big_hash, ctx->cache_big_hash, 16) == 0) {
+            return elt->outcome;
+        }
+    }
+
+    return -1;
+}
+
+static void
+ngx_http_auth_ldap_update_cache(ngx_http_auth_ldap_ctx_t *ctx,
+        ngx_http_auth_ldap_cache_t *cache, ngx_flag_t outcome)
+{
+    ngx_http_auth_ldap_cache_elt_t *elt, *oldest_elt;
+    ngx_uint_t i;
+
+    elt = ctx->cache_bucket;
+    oldest_elt = elt;
+    for (i = 1; i < cache->elts_per_bucket; i++, elt++) {
+        if (elt->time < oldest_elt->time) {
+            oldest_elt = elt;
+        }
+    }
+
+    oldest_elt->time = ngx_current_msec;
+    oldest_elt->outcome = outcome;
+    oldest_elt->small_hash = ctx->cache_small_hash;
+    ngx_memcpy(oldest_elt->big_hash, ctx->cache_big_hash, 16);
 }
 
 /**
@@ -494,29 +682,40 @@ ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
  * LDAP Authentication handler
  */
 static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r) {
-    int rc;
     ngx_http_auth_ldap_loc_conf_t *alcf;
+    ngx_http_auth_ldap_ctx_t *ctx;
+    int rc;
 
     alcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_ldap_module);
     if (alcf->realm.len == 0) {
         return NGX_DECLINED;
     }
 
-    rc = ngx_http_auth_basic_user(r);
-    if (rc == NGX_DECLINED) {
-        return ngx_http_auth_ldap_set_realm(r, &alcf->realm);
-    }
-    if (rc == NGX_ERROR) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    ctx = ngx_http_get_module_ctx(r, ngx_http_auth_ldap_module);
+    if (ctx == NULL) {
+        rc = ngx_http_auth_basic_user(r);
+        if (rc == NGX_DECLINED) {
+            return ngx_http_auth_ldap_set_realm(r, &alcf->realm);
+        }
+        if (rc == NGX_ERROR) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+
+        ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_auth_ldap_ctx_t));
+        if (ctx == NULL) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        ngx_http_set_ctx(r, ctx, ngx_http_auth_ldap_module);
     }
 
-    return ngx_http_auth_ldap_authenticate(r, alcf);
+    return ngx_http_auth_ldap_authenticate(r, ctx, alcf);
 }
 
 /**
  * Read user credentials from request, set LDAP parameters and call authentication against required servers
  */
-static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_loc_conf_t *conf) {
+static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
+        ngx_http_auth_ldap_loc_conf_t *conf) {
 
     ngx_http_auth_ldap_server_t *server;
     int rc;
@@ -525,7 +724,6 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
     int version = LDAP_VERSION3;
     int reqcert = LDAP_OPT_X_TLS_ALLOW;
     struct timeval timeOut = { 10, 0 };
-    ngx_flag_t pass = NGX_CONF_UNSET;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP username: %V", &r->headers_in.user);
 
@@ -546,10 +744,28 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 
     for (i = 0; i < conf->servers->nelts; i++) {
         server = ((ngx_http_auth_ldap_server_t **) conf->servers->elts)[i];
-        pass = ngx_http_auth_ldap_authenticate_against_server(r, server, conf);
-        if (pass == 1) {
+
+        if (ngx_http_auth_ldap_cache.buckets != NULL) {
+            rc = ngx_http_auth_ldap_check_cache(r, ctx, &ngx_http_auth_ldap_cache, server);
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: Cached outcome %d", rc);
+            if (rc == 0) {
+                continue;
+            }
+            if (rc == 1) {
+                return NGX_OK;
+            }
+        }
+
+        rc = ngx_http_auth_ldap_authenticate_against_server(r, server, conf);
+
+        if ((rc == 0 || rc == 1) && ngx_http_auth_ldap_cache.buckets != NULL) {
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP: Caching outcome %d", rc);
+            ngx_http_auth_ldap_update_cache(ctx, &ngx_http_auth_ldap_cache, rc);
+        }
+
+        if (rc == 1) {
             return NGX_OK;
-        } else if (pass == NGX_HTTP_INTERNAL_SERVER_ERROR) {
+        } else if (rc == NGX_HTTP_INTERNAL_SERVER_ERROR) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
     }
