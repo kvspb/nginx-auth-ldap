@@ -44,7 +44,7 @@ Define list of your LDAP servers with required user/group requirements:
       binddn_passwd LDAPPASSWORD;
       group_attribute uniquemember;
       group_attribute_is_dn on;
-      require user_valid;
+      require valid_user;
     }
 
     ldap_server test2 {
@@ -53,7 +53,7 @@ Define list of your LDAP servers with required user/group requirements:
       binddn_passwd LDAPPASSWORD;
       group_attribute uniquemember;
       group_attribute_is_dn on;
-      require user_valid;
+      require valid_user;
     }
 ```
 
