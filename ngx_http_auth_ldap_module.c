@@ -110,6 +110,7 @@ typedef struct {
 
     struct ngx_http_auth_ldap_connection *c;
     ngx_queue_t queue;
+    int replied;
     int error_code;
     ngx_str_t error_msg;
     ngx_str_t dn;
@@ -960,6 +961,7 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
         c = ngx_queue_data(q, ngx_http_auth_ldap_connection_t, queue);
         c->rctx = ctx;
         ctx->c = c;
+        ctx->replied = 0;
         return 1;
     }
 
@@ -999,6 +1001,7 @@ ngx_http_auth_ldap_reply_connection(ngx_http_auth_ldap_connection_t *c, int erro
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: LDAP request to \"%V\" has finished",
         &c->server->alias);
 
+    ctx->replied = 1;
     ctx->error_code = error_code;
     if (error_msg) {
         ctx->error_msg.len = ngx_strlen(error_msg);
@@ -1399,6 +1402,11 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
             ngx_http_auth_ldap_return_connection(ctx->c);
         }
         return NGX_ERROR;
+    }
+
+    if (!ctx->replied && ctx->phase != PHASE_START) {
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: The LDAP operation did not finish yet");
+        return NGX_AGAIN;
     }
 
     for (;;) {
