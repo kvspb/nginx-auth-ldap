@@ -1,5 +1,6 @@
 /**
  * Copyright (C) 2011-2013 Valery Komarov <komarov@valerka.net>
+ * Copyright (C) 2013 Jiri Hruska <jirka@fud.cz>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
