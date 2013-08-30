@@ -134,6 +134,7 @@ typedef struct ngx_http_auth_ldap_connection {
     ngx_log_t *log;
     ngx_http_auth_ldap_server_t *server;
     ngx_peer_connection_t conn;
+    ngx_event_t reconnect_event;
 
     ngx_queue_t queue;
     ngx_http_auth_ldap_ctx_t *rctx;
@@ -916,23 +917,38 @@ static Sockbuf_IO ngx_http_auth_ldap_sbio =
 static void
 ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
 {
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Closing connection");
+    ngx_queue_t *q;
 
     if (c->ld) {
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Unbinding from the server");
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Unbinding from the server \"%V\")",
+            &c->server->url);
         ldap_unbind_ext(c->ld, NULL, NULL);
         /* Unbind is always synchronous, even though the function name does not end with an '_s'. */
         c->ld = NULL;
     }
 
     if (c->conn.connection) {
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Closing connection fd=%d",
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Closing connection (fd=%d)",
             c->conn.connection->fd);
         ngx_close_connection(c->conn.connection);
+        c->conn.connection = NULL;
+    }
+
+    q = ngx_queue_head(&c->server->free_connections);
+    while (q != ngx_queue_sentinel(&c->server->free_connections)) {
+        if (q == &c->queue) {
+            ngx_queue_remove(q);
+            break;
+        }
+        q = ngx_queue_next(q);
     }
 
     c->rctx = NULL;
-    c->state = STATE_DISCONNECTED;
+    if (c->state != STATE_DISCONNECTED) {
+        c->state = STATE_DISCONNECTED;
+        ngx_add_timer(&c->reconnect_event, 10000); /* TODO: Reconnect timeout */
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connection scheduled for reconnection in 10000 ms");
+    }
 }
 
 static void
@@ -1114,6 +1130,12 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
     conn = ((ngx_connection_t *)rev->data)->data;
     c = conn->data;
 
+    if (c->ld == NULL) {
+        ngx_log_error(NGX_LOG_INFO, c->log, 0, "http_auth_ldap: Could not connect");
+        ngx_http_auth_ldap_close_connection(c);
+        return;
+    }
+
     if (rev->timedout) {
         ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT, "http_auth_ldap: Request timed out (state=%d)", c->state);
         conn->connection->timedout = 1;
@@ -1237,6 +1259,9 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
 
     addr = &c->server->parsed_url.addrs[ngx_random() % c->server->parsed_url.naddrs];
 
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connecting to LDAP server \"%V\".",
+        &addr->name);
+
     conn = &c->conn;
     conn->data = c;
     conn->sockaddr = addr->sockaddr;
@@ -1251,6 +1276,7 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
     if (rc == NGX_ERROR || rc == NGX_BUSY || rc == NGX_DECLINED) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Unable to connect to LDAP server \"%V\".",
             &addr->name);
+        ngx_add_timer(&c->reconnect_event, 10000); /* TODO: Reconnect timeout */
         return;
     }
 
@@ -1269,6 +1295,14 @@ ngx_http_auth_ldap_connection_cleanup(void *data)
     ngx_http_auth_ldap_close_connection((ngx_http_auth_ldap_connection_t *) data);
 }
 
+static void
+ngx_http_auth_ldap_reconnect_handler(ngx_event_t *ev)
+{
+    ngx_connection_t *conn = ev->data;
+    ngx_http_auth_ldap_connection_t *c = conn->data;
+    ngx_http_auth_ldap_connect(c);
+}
+
 static ngx_int_t
 ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
 {
@@ -1276,6 +1310,7 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
     ngx_http_auth_ldap_main_conf_t *halmcf;
     ngx_http_auth_ldap_server_t *server;
     ngx_pool_cleanup_t *cleanup;
+    ngx_connection_t *dummy_conn;
     ngx_uint_t i, j;
     ngx_int_t rc;
     int option;
@@ -1302,13 +1337,23 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
         for (j = 0; j < server->connections; j++) {
             c = ngx_pcalloc(cycle->pool, sizeof(ngx_http_auth_ldap_connection_t));
             cleanup = ngx_pool_cleanup_add(cycle->pool, 0);
-            if (c == NULL || cleanup == NULL) {
+            dummy_conn = ngx_pcalloc(cycle->pool, sizeof(ngx_connection_t));
+            if (c == NULL || cleanup == NULL || dummy_conn == NULL) {
                 return NGX_ERROR;
             }
 
             c->log = cycle->log;
             c->server = server;
             c->state = STATE_DISCONNECTED;
+
+            /* Various debug logging around timer management assume that the field
+               'data' in ngx_event_t is a pointer to ngx_connection_t, therefore we
+               have a dummy such structure around so that it does not crash etc. */
+            dummy_conn->data = c;
+            c->reconnect_event.log = c->log;
+            c->reconnect_event.data = dummy_conn;
+            c->reconnect_event.handler = ngx_http_auth_ldap_reconnect_handler;
+
             ngx_http_auth_ldap_connect(c);
 
             cleanup->handler = &ngx_http_auth_ldap_connection_cleanup;
