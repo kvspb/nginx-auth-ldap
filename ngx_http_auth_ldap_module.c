@@ -60,6 +60,7 @@ typedef struct {
     ngx_http_complex_value_t require_valid_user_dn;
     ngx_flag_t satisfy_all;
 
+    ngx_uint_t connections;
     ngx_queue_t free_connections;
     ngx_queue_t waiting_requests;
 } ngx_http_auth_ldap_server_t;
@@ -166,7 +167,6 @@ static ngx_int_t ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_
 static ngx_int_t ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 
 ngx_http_auth_ldap_cache_t ngx_http_auth_ldap_cache;
-ngx_http_auth_ldap_connection_t ngx_http_auth_ldap_connection;
 
 static ngx_command_t ngx_http_auth_ldap_commands[] = {
     {
@@ -309,6 +309,7 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
     ngx_str_t                      *value;
     ngx_http_auth_ldap_server_t    *server;
     ngx_http_auth_ldap_main_conf_t *cnf = conf;
+    ngx_int_t                      i;
 
     /* It should be safe to just use latest server from array */
     server = ((ngx_http_auth_ldap_server_t *) cnf->servers->elts + (cnf->servers->nelts - 1));
@@ -330,6 +331,13 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         return ngx_http_auth_ldap_parse_require(cf, server);
     } else if (ngx_strcmp(value[0].data, "satisfy") == 0) {
         return ngx_http_auth_ldap_parse_satisfy(cf, server);
+    } else if (ngx_strcmp(value[0].data, "connections") == 0) {
+        i = ngx_atoi(value[1].data, value[1].len);
+        if (i == NGX_ERROR || i == 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: 'connections' value has to be a number greater than 0");
+            return NGX_CONF_ERROR;
+        }
+        server->connections = i;
     }
 
     rv = NGX_CONF_OK;
@@ -1252,12 +1260,20 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
     c->state = STATE_CONNECTING;
 }
 
+static void
+ngx_http_auth_ldap_connection_cleanup(void *data)
+{
+    ngx_http_auth_ldap_close_connection((ngx_http_auth_ldap_connection_t *) data);
+}
+
 static ngx_int_t
 ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
 {
     ngx_http_auth_ldap_connection_t *c;
     ngx_http_auth_ldap_main_conf_t *halmcf;
-    ngx_http_auth_ldap_server_t *servers;
+    ngx_http_auth_ldap_server_t *server;
+    ngx_pool_cleanup_t *cleanup;
+    ngx_uint_t i, j;
     ngx_int_t rc;
     int option;
 
@@ -1272,17 +1288,30 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
     }
 
     halmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_auth_ldap_module);
-    servers = halmcf->servers->elts;
+    for (i = 0; i < halmcf->servers->nelts; i++) {
+        server = &((ngx_http_auth_ldap_server_t *) halmcf->servers->elts)[i];
+        ngx_queue_init(&server->free_connections);
+        ngx_queue_init(&server->waiting_requests);
+        if (server->connections <= 1) {
+            server->connections = 1;
+        }
 
-    c = &ngx_http_auth_ldap_connection;
-    c->log = cycle->log;
-    c->server = &servers[0];
-    c->state = STATE_DISCONNECTED;
+        for (j = 0; j < server->connections; j++) {
+            c = ngx_pcalloc(cycle->pool, sizeof(ngx_http_auth_ldap_connection_t));
+            cleanup = ngx_pool_cleanup_add(cycle->pool, 0);
+            if (c == NULL || cleanup == NULL) {
+                return NGX_ERROR;
+            }
 
-    ngx_queue_init(&c->server->free_connections);
-    ngx_queue_init(&c->server->waiting_requests);
+            c->log = cycle->log;
+            c->server = server;
+            c->state = STATE_DISCONNECTED;
+            ngx_http_auth_ldap_connect(c);
 
-    ngx_http_auth_ldap_connect(c);
+            cleanup->handler = &ngx_http_auth_ldap_connection_cleanup;
+            cleanup->data = c;
+        }
+    }
 
     return NGX_OK;
 }
