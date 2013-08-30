@@ -81,25 +81,25 @@ typedef struct {
     uint32_t cache_small_hash;
 } ngx_http_auth_ldap_ctx_t;
 
-static void * ngx_http_auth_ldap_create_main_conf(ngx_conf_t *cf);
-static char * ngx_http_auth_ldap_init_main_conf(ngx_conf_t *cf, void *parent);
-static ngx_int_t ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle);
 static char * ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char * ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf);
+static char * ngx_http_auth_ldap(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char * ngx_http_auth_ldap_servers(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char * ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
-static char * ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf);
-static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r);
-static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf);
+static void * ngx_http_auth_ldap_create_main_conf(ngx_conf_t *cf);
+static char * ngx_http_auth_ldap_init_main_conf(ngx_conf_t *cf, void *parent);
 static void * ngx_http_auth_ldap_create_loc_conf(ngx_conf_t *);
 static char * ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *, void *, void *);
-static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request_t *r, ngx_http_auth_ldap_server_t *server,
-        ngx_http_auth_ldap_loc_conf_t *conf);
-static ngx_int_t ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm);
+static ngx_int_t ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle);
+static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf);
+static ngx_int_t ngx_http_auth_ldap_init_cache(ngx_cycle_t *cycle);
+static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
         ngx_http_auth_ldap_loc_conf_t *conf);
-static char * ngx_http_auth_ldap(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-static char * ngx_http_auth_ldap_servers(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request_t *r, ngx_http_auth_ldap_server_t *server,
+        ngx_http_auth_ldap_loc_conf_t *conf);
 
 ngx_http_auth_ldap_cache_t ngx_http_auth_ldap_cache;
 
@@ -181,6 +181,8 @@ ngx_module_t ngx_http_auth_ldap_module = {
     NGX_MODULE_V1_PADDING
 };
 
+
+/*** Configuration and initialization ***/
 
 /**
  * Reads ldap_server block and sets ngx_http_auth_ldap_ldap_server as a handler of each conf value
@@ -548,8 +550,77 @@ ngx_http_auth_ldap_init_main_conf(ngx_conf_t *cf, void *parent)
     return NGX_CONF_OK;
 }
 
+/**
+ * Create location conf
+ */
+static void *
+ngx_http_auth_ldap_create_loc_conf(ngx_conf_t *cf) {
+    ngx_http_auth_ldap_loc_conf_t *conf;
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_auth_ldap_loc_conf_t));
+    if (conf == NULL) {
+        return NULL;
+    }
+    conf->servers = NGX_CONF_UNSET_PTR;
+
+    return conf;
+}
+
+/**
+ * Merge location conf
+ */
+static char *
+ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
+    ngx_http_auth_ldap_loc_conf_t *prev = parent;
+    ngx_http_auth_ldap_loc_conf_t *conf = child;
+
+    if (conf->realm.data == NULL) {
+        conf->realm = prev->realm;
+    }
+    ngx_conf_merge_ptr_value(conf->servers, prev->servers, NULL);
+
+    return NGX_CONF_OK;
+}
+
 static ngx_int_t
 ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle)
+{
+    ngx_int_t rc;
+
+    if (ngx_process != NGX_PROCESS_SINGLE && ngx_process != NGX_PROCESS_WORKER) {
+        return NGX_OK;
+    }
+
+    rc = ngx_http_auth_ldap_init_cache(cycle);
+    if (rc != NGX_OK) {
+        return rc;
+    }
+
+    return NGX_OK;
+}
+
+/**
+ * Init module and add ldap auth handler to NGX_HTTP_ACCESS_PHASE
+ */
+static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf) {
+    ngx_http_handler_pt *h;
+    ngx_http_core_main_conf_t *cmcf;
+
+    cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
+
+    h = ngx_array_push(&cmcf->phases[NGX_HTTP_ACCESS_PHASE].handlers);
+    if (h == NULL) {
+        return NGX_ERROR;
+    }
+
+    *h = ngx_http_auth_ldap_handler;
+    return NGX_OK;
+}
+
+
+/*** Authentication cache ***/
+
+static ngx_int_t
+ngx_http_auth_ldap_init_cache(ngx_cycle_t *cycle)
 {
     ngx_http_auth_ldap_main_conf_t *conf;
     ngx_uint_t want, count, i;
@@ -558,12 +629,6 @@ ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle)
         13, 53, 101, 151, 199, 263, 317, 383, 443, 503,
         577, 641, 701, 769, 839, 911, 983, 1049, 1109
     };
-
-
-    if (ngx_process != NGX_PROCESS_SINGLE && ngx_process != NGX_PROCESS_WORKER) {
-        return NGX_OK;
-    }
-
 
     conf = (ngx_http_auth_ldap_main_conf_t *) ngx_http_cycle_get_module_main_conf(cycle, ngx_http_auth_ldap_module);
     if (conf == NULL || !conf->cache_enabled) {
@@ -648,35 +713,24 @@ ngx_http_auth_ldap_update_cache(ngx_http_auth_ldap_ctx_t *ctx,
     ngx_memcpy(oldest_elt->big_hash, ctx->cache_big_hash, 16);
 }
 
-/**
- * Create location conf
- */
-static void *
-ngx_http_auth_ldap_create_loc_conf(ngx_conf_t *cf) {
-    ngx_http_auth_ldap_loc_conf_t *conf;
-    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_auth_ldap_loc_conf_t));
-    if (conf == NULL) {
-        return NULL;
-    }
-    conf->servers = NGX_CONF_UNSET_PTR;
 
-    return conf;
-}
+/*** Per-request authentication processing ***/
 
 /**
- * Merge location conf
+ * Respond with "403 Forbidden" and add correct headers
  */
-static char *
-ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
-    ngx_http_auth_ldap_loc_conf_t *prev = parent;
-    ngx_http_auth_ldap_loc_conf_t *conf = child;
-
-    if (conf->realm.data == NULL) {
-        conf->realm = prev->realm;
+static ngx_int_t ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm) {
+    r->headers_out.www_authenticate = ngx_list_push(&r->headers_out.headers);
+    if (r->headers_out.www_authenticate == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
-    ngx_conf_merge_ptr_value(conf->servers, prev->servers, NULL);
 
-    return NGX_CONF_OK;
+    r->headers_out.www_authenticate->hash = 1;
+    r->headers_out.www_authenticate->key.len = sizeof("WWW-Authenticate") - 1;
+    r->headers_out.www_authenticate->key.data = (u_char *) "WWW-Authenticate";
+    r->headers_out.www_authenticate->value = *realm;
+
+    return NGX_HTTP_UNAUTHORIZED;
 }
 
 /**
@@ -702,6 +756,13 @@ static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
 
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP username: %V", &r->headers_in.user);
+        if (r->headers_in.passwd.len == 0)
+        {
+            ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP password is empty");
+            return ngx_http_auth_ldap_set_realm(r, &alcf->realm);
+        }
+
         ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_auth_ldap_ctx_t));
         if (ctx == NULL) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -725,13 +786,6 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
     int version = LDAP_VERSION3;
     int reqcert = LDAP_OPT_X_TLS_ALLOW;
     struct timeval timeOut = { 10, 0 };
-
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "LDAP username: %V", &r->headers_in.user);
-
-    if (r->headers_in.passwd.len == 0)
-    {
-        return ngx_http_auth_ldap_set_realm(r, &conf->realm);
-    }
 
     /// Set LDAP version to 3 and set connection timeout.
     ldap_set_option(NULL, LDAP_OPT_PROTOCOL_VERSION, &version);
@@ -954,39 +1008,4 @@ static ngx_int_t ngx_http_auth_ldap_authenticate_against_server(ngx_http_request
     ldap_unbind_s(ld);
 
     return pass;
-}
-
-/**
- * Respond with forbidden and add correct headers
- */
-static ngx_int_t ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm) {
-    r->headers_out.www_authenticate = ngx_list_push(&r->headers_out.headers);
-    if (r->headers_out.www_authenticate == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    r->headers_out.www_authenticate->hash = 1;
-    r->headers_out.www_authenticate->key.len = sizeof("WWW-Authenticate") - 1;
-    r->headers_out.www_authenticate->key.data = (u_char *) "WWW-Authenticate";
-    r->headers_out.www_authenticate->value = *realm;
-
-    return NGX_HTTP_UNAUTHORIZED;
-}
-
-/**
- * Init module and add ldap auth handler to NGX_HTTP_ACCESS_PHASE
- */
-static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf) {
-    ngx_http_handler_pt *h;
-    ngx_http_core_main_conf_t *cmcf;
-
-    cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
-
-    h = ngx_array_push(&cmcf->phases[NGX_HTTP_ACCESS_PHASE].handlers);
-    if (h == NULL) {
-        return NGX_ERROR;
-    }
-
-    *h = ngx_http_auth_ldap_handler;
-    return NGX_OK;
 }
