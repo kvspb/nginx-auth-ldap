@@ -1314,6 +1314,11 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
     ngx_int_t rc;
     int option;
 
+    halmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_auth_ldap_module);
+    if (halmcf == NULL || halmcf->servers == NULL) {
+	return NGX_OK;
+    }
+
     option = LDAP_VERSION3;
     rc = ldap_set_option(NULL, LDAP_OPT_PROTOCOL_VERSION, &option);
 
@@ -1324,7 +1329,6 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
             rc, ldap_err2string(rc));
     }
 
-    halmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_auth_ldap_module);
     for (i = 0; i < halmcf->servers->nelts; i++) {
         server = &((ngx_http_auth_ldap_server_t *) halmcf->servers->elts)[i];
         ngx_queue_init(&server->free_connections);
