@@ -260,7 +260,7 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     char                           *rv;
     ngx_str_t                      *value, name;
     ngx_conf_t                     save;
-    ngx_http_auth_ldap_server_t    server, *s;
+    ngx_http_auth_ldap_server_t    *server;
     ngx_http_auth_ldap_main_conf_t *cnf = conf;
 
     value = cf->args->elts;
@@ -272,8 +272,6 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         return NGX_CONF_ERROR;
     }
 
-    server.alias = name;
-
     if (cnf->servers == NULL) {
         cnf->servers = ngx_array_create(cf->pool, 7, sizeof(ngx_http_auth_ldap_server_t));
         if (cnf->servers == NULL) {
@@ -281,12 +279,13 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         }
     }
 
-    s = ngx_array_push(cnf->servers);
-    if (s == NULL) {
+    server = ngx_array_push(cnf->servers);
+    if (server == NULL) {
         return NGX_CONF_ERROR;
     }
 
-    *s = server;
+    ngx_memzero(server, sizeof(*server));
+    server->alias = name;
 
     save = *cf;
     cf->handler = ngx_http_auth_ldap_ldap_server;
