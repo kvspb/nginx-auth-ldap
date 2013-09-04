@@ -837,7 +837,7 @@ ngx_http_auth_ldap_sb_close(Sockbuf_IO_Desc *sbiod)
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_close()");
 
-    if (!c->conn.connection->read->error) {
+    if (!c->conn.connection->read->error && !c->conn.connection->read->eof) {
         if (ngx_shutdown_socket(c->conn.connection->fd, SHUT_RDWR) == -1) {
             ngx_connection_error(c->conn.connection, ngx_socket_errno, ngx_shutdown_socket_n " failed");
             ngx_http_auth_ldap_close_connection(c);
