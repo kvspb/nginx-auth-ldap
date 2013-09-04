@@ -70,6 +70,9 @@ typedef struct {
     ngx_flag_t cache_enabled;
     ngx_msec_t cache_expiration_time;
     size_t cache_size;
+#if (NGX_OPENSSL)
+    ngx_ssl_t ssl;
+#endif
 } ngx_http_auth_ldap_main_conf_t;
 
 typedef struct {
@@ -136,6 +139,11 @@ typedef struct ngx_http_auth_ldap_connection {
     ngx_peer_connection_t conn;
     ngx_event_t reconnect_event;
 
+#if (NGX_OPENSSL)
+    ngx_pool_t *pool;
+    ngx_ssl_t *ssl;
+#endif
+
     ngx_queue_t queue;
     ngx_http_auth_ldap_ctx_t *rctx;
 
@@ -159,6 +167,7 @@ static ngx_int_t ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle);
 static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf);
 static ngx_int_t ngx_http_auth_ldap_init_cache(ngx_cycle_t *cycle);
 static void ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c);
+static void ngx_http_auth_ldap_read_handler(ngx_event_t *rev);
 static ngx_int_t ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle);
 static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
@@ -260,7 +269,7 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     char                           *rv;
     ngx_str_t                      *value, name;
     ngx_conf_t                     save;
-    ngx_http_auth_ldap_server_t    server, *s;
+    ngx_http_auth_ldap_server_t    *server;
     ngx_http_auth_ldap_main_conf_t *cnf = conf;
 
     value = cf->args->elts;
@@ -272,8 +281,6 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         return NGX_CONF_ERROR;
     }
 
-    server.alias = name;
-
     if (cnf->servers == NULL) {
         cnf->servers = ngx_array_create(cf->pool, 7, sizeof(ngx_http_auth_ldap_server_t));
         if (cnf->servers == NULL) {
@@ -281,12 +288,13 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         }
     }
 
-    s = ngx_array_push(cnf->servers);
-    if (s == NULL) {
+    server = ngx_array_push(cnf->servers);
+    if (server == NULL) {
         return NGX_CONF_ERROR;
     }
 
-    *s = server;
+    ngx_memzero(server, sizeof(*server));
+    server->alias = name;
 
     save = *cf;
     cf->handler = ngx_http_auth_ldap_ldap_server;
@@ -506,7 +514,24 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
         return NGX_CONF_ERROR;
     }
 
-    return NGX_CONF_OK;
+    if (ngx_strcmp(server->ludpp->lud_scheme, "ldap") == 0) {
+        return NGX_CONF_OK;
+#if (NGX_OPENSSL)
+    } else if (ngx_strcmp(server->ludpp->lud_scheme, "ldaps") == 0) {
+        ngx_http_auth_ldap_main_conf_t *halmcf =
+            ngx_http_conf_get_module_main_conf(cf, ngx_http_auth_ldap_module);
+        ngx_uint_t protos = NGX_SSL_SSLv2 | NGX_SSL_SSLv3 |
+            NGX_SSL_TLSv1 | NGX_SSL_TLSv1_1 | NGX_SSL_TLSv1_2;
+        if (halmcf->ssl.ctx == NULL && ngx_ssl_create(&halmcf->ssl, protos, halmcf) != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
+        return NGX_CONF_OK;
+#endif
+    } else {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Protocol \"%s://\" is not supported.",
+            server->ludpp->lud_scheme);
+        return NGX_CONF_ERROR;
+    }
 }
 
 /**
@@ -838,7 +863,7 @@ ngx_http_auth_ldap_sb_close(Sockbuf_IO_Desc *sbiod)
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_close()");
 
-    if (!c->conn.connection->read->error) {
+    if (!c->conn.connection->read->error && !c->conn.connection->read->eof) {
         if (ngx_shutdown_socket(c->conn.connection->fd, SHUT_RDWR) == -1) {
             ngx_connection_error(c->conn.connection, ngx_socket_errno, ngx_shutdown_socket_n " failed");
             ngx_http_auth_ldap_close_connection(c);
@@ -930,6 +955,14 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
     if (c->conn.connection) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Closing connection (fd=%d)",
             c->conn.connection->fd);
+
+#if (NGX_OPENSSL)
+        if (c->conn.connection->ssl) {
+            c->conn.connection->ssl->no_wait_shutdown = 1;
+            (void) ngx_ssl_shutdown(c->conn.connection);
+        }
+#endif
+
         ngx_close_connection(c->conn.connection);
         c->conn.connection = NULL;
     }
@@ -1044,40 +1077,23 @@ ngx_http_auth_ldap_dummy_write_handler(ngx_event_t *wev)
 }
 
 static void
-ngx_http_auth_ldap_connect_handler(ngx_event_t *wev)
+ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
 {
-    ngx_peer_connection_t *conn;
-    ngx_http_auth_ldap_connection_t *c;
+    ngx_connection_t *conn;
     Sockbuf *sb;
     ngx_int_t rc;
-    int keepalive;
     struct berval cred;
 
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, wev->log, 0, "http_auth_ldap: Connect handler");
-
-    conn = ((ngx_connection_t *) wev->data)->data;
-    c = conn->data;
-
-    if (ngx_handle_write_event(wev, 0) != NGX_OK) {
-        ngx_http_auth_ldap_close_connection(c);
-        return;
-    }
-
-    ngx_del_timer(conn->connection->read);
-    conn->connection->write->handler = ngx_http_auth_ldap_dummy_write_handler;
-
-    keepalive = 1;
-    if (setsockopt(conn->connection->fd, SOL_SOCKET, SO_KEEPALIVE, (const void *) &keepalive, sizeof(int)) == -1)
-    {
-        ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno, "http_auth_ldap: setsockopt(SO_KEEPALIVE) failed");
-    }
+    conn = c->conn.connection;
+    ngx_del_timer(conn->read);
+    conn->write->handler = ngx_http_auth_ldap_dummy_write_handler;
 
 
     /* Initialize OpenLDAP on the connection */
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Initializing connection using URL \"%V\"", &c->server->url);
 
-    rc = ldap_init_fd(conn->connection->fd, LDAP_PROTO_EXT, (const char *) c->server->url.data, &c->ld);
+    rc = ldap_init_fd(c->conn.connection->fd, LDAP_PROTO_EXT, (const char *) c->server->url.data, &c->ld);
     if (rc != LDAP_SUCCESS) {
         ngx_log_error(NGX_LOG_INFO, c->log, errno, "http_auth_ldap: ldap_init_fd() failed (%d: %s)", rc, ldap_err2string(rc));
         ngx_http_auth_ldap_close_connection(c);
@@ -1110,13 +1126,90 @@ ngx_http_auth_ldap_connect_handler(ngx_event_t *wev)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: ldap_sasl_bind() -> msgid=%d", c->msgid);
 
     c->state = STATE_INITIAL_BINDING;
-    ngx_add_timer(conn->connection->read, 5000); /* TODO: Bind timeout */
+    ngx_add_timer(c->conn.connection->read, 5000); /* TODO: Bind timeout */
+}
+
+#if (NGX_OPENSSL)
+static void
+ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn)
+{
+    ngx_http_auth_ldap_connection_t *c;
+
+    c = conn->data;
+
+    if (conn->ssl->handshaked) {
+        conn->read->handler = &ngx_http_auth_ldap_read_handler;
+        ngx_http_auth_ldap_connection_established(c);
+        return;
+    }
+
+    ngx_log_error(NGX_LOG_INFO, c->log, 0, "http_auth_ldap: SSL handshake failed");
+    ngx_http_auth_ldap_close_connection(c);
+}
+
+static void
+ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
+{
+    ngx_int_t rc;
+
+    c->conn.connection->pool = c->pool;
+    rc = ngx_ssl_create_connection(c->ssl, c->conn.connection, NGX_SSL_BUFFER | NGX_SSL_CLIENT);
+    if (rc != NGX_OK) {
+        ngx_log_error(NGX_LOG_INFO, c->log, 0, "http_auth_ldap: SSL initialization failed");
+        ngx_http_auth_ldap_close_connection(c);
+        return;
+    }
+
+    c->log->action = "SSL handshaking to LDAP server";
+
+    rc = ngx_ssl_handshake(c->conn.connection);
+    if (rc == NGX_AGAIN) {
+        c->conn.connection->ssl->handler = &ngx_http_auth_ldap_ssl_handshake_handler;
+        return;
+    }
+
+    ngx_http_auth_ldap_ssl_handshake(c);
+    return;
+}
+#endif
+
+static void
+ngx_http_auth_ldap_connect_handler(ngx_event_t *wev)
+{
+    ngx_connection_t *conn;
+    ngx_http_auth_ldap_connection_t *c;
+    int keepalive;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, wev->log, 0, "http_auth_ldap: Connect handler");
+
+    conn = wev->data;
+    c = conn->data;
+
+    if (ngx_handle_write_event(wev, 0) != NGX_OK) {
+        ngx_http_auth_ldap_close_connection(c);
+        return;
+    }
+
+    keepalive = 1;
+    if (setsockopt(conn->fd, SOL_SOCKET, SO_KEEPALIVE, (const void *) &keepalive, sizeof(int)) == -1)
+    {
+        ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno, "http_auth_ldap: setsockopt(SO_KEEPALIVE) failed");
+    }
+
+#if (NGX_OPENSSL)
+    if (ngx_strcmp(c->server->ludpp->lud_scheme, "ldaps") == 0) {
+        ngx_http_auth_ldap_ssl_handshake(c);
+        return;
+    }
+#endif
+
+    ngx_http_auth_ldap_connection_established(c);
 }
 
 static void
 ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
 {
-    ngx_peer_connection_t *conn;
+    ngx_connection_t *conn;
     ngx_http_auth_ldap_connection_t *c;
     ngx_int_t rc;
     struct timeval timeout = {0, 0};
@@ -1127,7 +1220,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, rev->log, 0, "http_auth_ldap: Read handler");
 
-    conn = ((ngx_connection_t *)rev->data)->data;
+    conn = rev->data;
     c = conn->data;
 
     if (c->ld == NULL) {
@@ -1138,7 +1231,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
 
     if (rev->timedout) {
         ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT, "http_auth_ldap: Request timed out (state=%d)", c->state);
-        conn->connection->timedout = 1;
+        conn->timedout = 1;
         ngx_http_auth_ldap_close_connection(c);
         return;
     }
@@ -1183,7 +1276,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 if (ldap_msgtype(result) != LDAP_RES_BIND) {
                     break;
                 }
-                ngx_del_timer(conn->connection->read);
+                ngx_del_timer(conn->read);
                 if (error_code == LDAP_SUCCESS) {
                     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Initial bind successful");
                     c->state = STATE_READY;
@@ -1253,7 +1346,8 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
 static void
 ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
 {
-    ngx_peer_connection_t *conn;
+    ngx_peer_connection_t *pconn;
+    ngx_connection_t *conn;
     ngx_addr_t *addr;
     ngx_int_t rc;
 
@@ -1262,16 +1356,15 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connecting to LDAP server \"%V\".",
         &addr->name);
 
-    conn = &c->conn;
-    conn->data = c;
-    conn->sockaddr = addr->sockaddr;
-    conn->socklen = addr->socklen;
-    conn->name = &addr->name;
-    conn->get = ngx_event_get_peer;
-    conn->log = c->log;
-    conn->log_error = NGX_ERROR_ERR;
+    pconn = &c->conn;
+    pconn->sockaddr = addr->sockaddr;
+    pconn->socklen = addr->socklen;
+    pconn->name = &addr->name;
+    pconn->get = ngx_event_get_peer;
+    pconn->log = c->log;
+    pconn->log_error = NGX_ERROR_ERR;
 
-    rc = ngx_event_connect_peer(conn);
+    rc = ngx_event_connect_peer(pconn);
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: ngx_event_connect_peer() -> %d.", rc);
     if (rc == NGX_ERROR || rc == NGX_BUSY || rc == NGX_DECLINED) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Unable to connect to LDAP server \"%V\".",
@@ -1280,11 +1373,12 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
         return;
     }
 
-    ngx_add_timer(conn->connection->read, 10000); /* TODO: Connect timeout */
-
-    conn->connection->data = conn;
-    conn->connection->write->handler = ngx_http_auth_ldap_connect_handler;
-    conn->connection->read->handler = ngx_http_auth_ldap_read_handler;
+    conn = pconn->connection;
+    conn->data = c;
+    conn->pool = c->pool;
+    conn->write->handler = ngx_http_auth_ldap_connect_handler;
+    conn->read->handler = ngx_http_auth_ldap_read_handler;
+    ngx_add_timer(conn->read, 10000); /* TODO: Connect timeout */
 
     c->state = STATE_CONNECTING;
 }
@@ -1312,20 +1406,16 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
     ngx_pool_cleanup_t *cleanup;
     ngx_connection_t *dummy_conn;
     ngx_uint_t i, j;
-    ngx_int_t rc;
     int option;
 
-    option = LDAP_VERSION3;
-    rc = ldap_set_option(NULL, LDAP_OPT_PROTOCOL_VERSION, &option);
-
-    option = LDAP_OPT_X_TLS_ALLOW;
-    rc = ldap_set_option(NULL, LDAP_OPT_X_TLS_REQUIRE_CERT, &option);
-    if (rc != LDAP_OPT_SUCCESS) {
-        ngx_log_error(NGX_LOG_WARN, cycle->log, 0, "http_auth_ldap: Unable to set TLS_REQUIRE_CERT option (%d: %s)",
-            rc, ldap_err2string(rc));
+    halmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_auth_ldap_module);
+    if (halmcf == NULL || halmcf->servers == NULL) {
+	return NGX_OK;
     }
 
-    halmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_auth_ldap_module);
+    option = LDAP_VERSION3;
+    ldap_set_option(NULL, LDAP_OPT_PROTOCOL_VERSION, &option);
+
     for (i = 0; i < halmcf->servers->nelts; i++) {
         server = &((ngx_http_auth_ldap_server_t *) halmcf->servers->elts)[i];
         ngx_queue_init(&server->free_connections);
@@ -1342,6 +1432,9 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
                 return NGX_ERROR;
             }
 
+            cleanup->handler = &ngx_http_auth_ldap_connection_cleanup;
+            cleanup->data = c;
+
             c->log = cycle->log;
             c->server = server;
             c->state = STATE_DISCONNECTED;
@@ -1354,10 +1447,12 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
             c->reconnect_event.data = dummy_conn;
             c->reconnect_event.handler = ngx_http_auth_ldap_reconnect_handler;
 
-            ngx_http_auth_ldap_connect(c);
+#if (NGX_OPENSSL)
+            c->pool = cycle->pool;
+            c->ssl = &halmcf->ssl;
+#endif
 
-            cleanup->handler = &ngx_http_auth_ldap_connection_cleanup;
-            cleanup->data = c;
+            ngx_http_auth_ldap_connect(c);
         }
     }
 
