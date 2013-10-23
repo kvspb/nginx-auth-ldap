@@ -100,6 +100,7 @@ typedef enum {
     PHASE_CHECK_USER,
     PHASE_CHECK_GROUP,
     PHASE_CHECK_BIND,
+    PHASE_REBIND,
     PHASE_NEXT
 } ngx_http_auth_ldap_request_phase_t;
 
@@ -176,6 +177,7 @@ static ngx_int_t ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_
 static ngx_int_t ngx_http_auth_ldap_check_user(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
+static ngx_int_t ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 
 ngx_http_auth_ldap_cache_t ngx_http_auth_ldap_cache;
 
@@ -1658,6 +1660,19 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 }
 
                 /* All steps done, finish the processing */
+                ctx->phase = PHASE_REBIND;
+                ctx->iteration = 0;
+                break;
+
+            case PHASE_REBIND:
+                /* Initiate bind using the found DN and request password */
+                rc = ngx_http_auth_ldap_recover_bind(r, ctx);
+                if (rc == NGX_AGAIN) {
+                    /* LDAP operation in progress, wait for the result */
+                    return NGX_AGAIN;
+                }
+
+                /* All steps done, finish the processing */
                 ctx->phase = PHASE_NEXT;
                 break;
 
@@ -1895,6 +1910,47 @@ ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *c
     } else {
         ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: User bind successful");
         ctx->outcome = 1;
+    }
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
+{
+    struct berval cred;
+    ngx_int_t rc;
+
+    /* On the first call, initiate the bind LDAP operation */
+    if (ctx->iteration == 0) {
+        if (!ngx_http_auth_ldap_get_connection(ctx)) {
+            return NGX_AGAIN;
+        }
+
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Rebinding to binddn");
+        cred.bv_val = (char *) ctx->server->bind_dn_passwd.data;
+        cred.bv_len = ctx->server->bind_dn_passwd.len;
+        rc = ldap_sasl_bind(ctx->c->ld, (const char *) ctx->server->bind_dn.data, LDAP_SASL_SIMPLE, &cred, NULL, NULL, &ctx->c->msgid);
+        if (rc != LDAP_SUCCESS) {
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "http_auth_ldap: ldap_sasl_bind() failed (%d: %s)",
+                rc, ldap_err2string(rc));
+            ctx->outcome = -1;
+            ngx_http_auth_ldap_return_connection(ctx->c);
+            return NGX_ERROR;
+        }
+
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: ldap_sasl_bind() -> msgid=%d",
+            ctx->c->msgid);
+        ctx->c->state = STATE_BINDING;
+        ctx->iteration++;
+        return NGX_AGAIN;
+    }
+
+    /* On the second call, process the operation result */
+    if (ctx->error_code != LDAP_SUCCESS) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: binddn bind failed (%d: %s)",
+            ctx->error_code, ldap_err2string(ctx->error_code));
+    } else {
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: binddn bind successful");
     }
     return NGX_OK;
 }
