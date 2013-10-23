@@ -1807,7 +1807,12 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
 
     /* Check next group */
     if (ctx->iteration >= ctx->server->require_group->nelts) {
-        return NGX_OK;
+        /* No more groups */
+        if (ctx->server->satisfy_all == 0) {
+            return NGX_DECLINED;
+        } else {
+            return NGX_OK;
+        }
     }
 
     if (!ngx_http_auth_ldap_get_connection(ctx)) {
