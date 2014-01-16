@@ -186,6 +186,7 @@ static ngx_int_t ngx_http_auth_ldap_check_user(ngx_http_request_t *r, ngx_http_a
 static ngx_int_t ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
+static ngx_int_t ngx_http_auth_ldap_restore_handlers(ngx_connection_t *conn);
 
 ngx_http_auth_ldap_cache_t ngx_http_auth_ldap_cache;
 
@@ -1088,6 +1089,33 @@ ngx_http_auth_ldap_dummy_write_handler(ngx_event_t *wev)
     }
 }
 
+
+/* Make sure the event hendlers are activated. */
+static ngx_int_t
+ngx_http_auth_ldap_restore_handlers(ngx_connection_t *conn)
+{
+    ngx_int_t rc;
+
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, conn->log, 0, "http_auth_ldap: Restoring event handlers. read=%d write=%d", conn->read->active, conn->write->active);
+
+    if (!conn->read->active) {
+        rc = ngx_add_event(conn->read, NGX_READ_EVENT, 0);
+        if (rc != NGX_OK) {
+            return rc;
+        }
+    }
+
+    if (!conn->write->active &&
+        (conn->write->handler != ngx_http_auth_ldap_dummy_write_handler)) {
+        rc = ngx_add_event(conn->write, NGX_WRITE_EVENT, 0);
+        if (rc != NGX_OK) {
+            return rc;
+        }
+    }
+
+    return NGX_OK;
+}
+
 static void
 ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
 {
@@ -1151,6 +1179,7 @@ ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn)
 
     if (conn->ssl->handshaked) {
         conn->read->handler = &ngx_http_auth_ldap_read_handler;
+        ngx_http_auth_ldap_restore_handlers(conn);
         ngx_http_auth_ldap_connection_established(c);
         return;
     }
