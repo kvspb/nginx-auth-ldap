@@ -350,6 +350,8 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
             return NGX_CONF_ERROR;
         }
         server->connections = i;
+    } else if (ngx_strcmp(value[0].data, "include") == 0) {
+        return ngx_conf_include(cf, dummy, conf);
     }
 
     rv = NGX_CONF_OK;
