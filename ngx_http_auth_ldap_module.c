@@ -1708,11 +1708,6 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                     }
                 }
 
-                if (ctx->server->require_valid_user == 0) {
-                    ctx->phase = PHASE_NEXT;
-                    break;
-                }
-
                 /* Initiate bind using the found DN and request password */
                 rc = ngx_http_auth_ldap_check_bind(r, ctx);
                 if (rc == NGX_AGAIN) {
