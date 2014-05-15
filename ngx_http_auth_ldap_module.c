@@ -1209,7 +1209,7 @@ ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
         return;
     }
 
-    ngx_http_auth_ldap_ssl_handshake(c);
+    ngx_http_auth_ldap_ssl_handshake_handler(c);
     return;
 }
 #endif
