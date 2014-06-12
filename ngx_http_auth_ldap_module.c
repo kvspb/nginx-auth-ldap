@@ -1714,11 +1714,6 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                     }
                 }
 
-                if (ctx->server->require_valid_user == 0) {
-                    ctx->phase = PHASE_NEXT;
-                    break;
-                }
-
                 /* Initiate bind using the found DN and request password */
                 rc = ngx_http_auth_ldap_check_bind(r, ctx);
                 if (rc == NGX_AGAIN) {
@@ -1963,6 +1958,17 @@ ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *c
             ctx->c->msgid);
         ctx->c->state = STATE_BINDING;
         ctx->iteration++;
+        
+	// added by prune - 20140227
+	// we have to rebind THIS SAME connection as admin user or the next search could be
+	// made as non privileged user
+	// see https://github.com/kvspb/nginx-auth-ldap/issues/36
+	// this is quick and dirty patch
+        int rebind_msgid;
+        cred.bv_val = (char *) ctx->server->bind_dn_passwd.data;
+        cred.bv_len = ctx->server->bind_dn_passwd.len;
+        rc = ldap_sasl_bind(ctx->c->ld,(const char *) ctx->server->bind_dn.data, LDAP_SASL_SIMPLE, &cred, NULL, NULL, &rebind_msgid);
+        
         return NGX_AGAIN;
     }
 
