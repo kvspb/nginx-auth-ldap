@@ -186,7 +186,9 @@ static ngx_int_t ngx_http_auth_ldap_check_user(ngx_http_request_t *r, ngx_http_a
 static ngx_int_t ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
+#if (NGX_OPENSSL)
 static ngx_int_t ngx_http_auth_ldap_restore_handlers(ngx_connection_t *conn);
+#endif
 
 ngx_http_auth_ldap_cache_t ngx_http_auth_ldap_cache;
 
@@ -1090,6 +1092,7 @@ ngx_http_auth_ldap_dummy_write_handler(ngx_event_t *wev)
 }
 
 
+#if (NGX_OPENSSL)
 /* Make sure the event hendlers are activated. */
 static ngx_int_t
 ngx_http_auth_ldap_restore_handlers(ngx_connection_t *conn)
@@ -1115,6 +1118,7 @@ ngx_http_auth_ldap_restore_handlers(ngx_connection_t *conn)
 
     return NGX_OK;
 }
+#endif
 
 static void
 ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
@@ -1209,7 +1213,7 @@ ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
         return;
     }
 
-    ngx_http_auth_ldap_ssl_handshake(c);
+    ngx_http_auth_ldap_ssl_handshake_handler(c);
     return;
 }
 #endif
@@ -1416,7 +1420,9 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
 
     conn = pconn->connection;
     conn->data = c;
+#if (NGX_OPENSSL)
     conn->pool = c->pool;
+#endif
     conn->write->handler = ngx_http_auth_ldap_connect_handler;
     conn->read->handler = ngx_http_auth_ldap_read_handler;
     ngx_add_timer(conn->read, 10000); /* TODO: Connect timeout */
