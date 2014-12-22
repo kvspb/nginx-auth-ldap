@@ -1591,7 +1591,15 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
         return NGX_ERROR;
     }
 
-    if (!ctx->replied && ctx->phase != PHASE_START) {
+    /*
+     * If we are not starting up a request (ctx->phase != PHASE_START) and we actually already
+     * sent a request (ctx->iteration > 0) and didn't receive a reply yet (!ctx->replied) we 
+     * ask to be called again at a later time when we hopefully have received a reply.
+     *
+     * It is quite possible that we reach this if while not having sent a request yet (ctx->iteration == 0) -
+     * this happens when we are trying to get an LDAP connection but all of them are busy right now.
+     */
+    if (ctx->iteration > 0 && !ctx->replied && ctx->phase != PHASE_START) {
         ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: The LDAP operation did not finish yet");
         return NGX_AGAIN;
     }
