@@ -1014,6 +1014,12 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
     ngx_queue_t *q;
     ngx_http_auth_ldap_connection_t *c;
 
+    /*
+     * If we already have a connection, just say we got them one.
+     */
+    if (ctx->c != NULL)
+        return 1;
+
     server = ctx->server;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0, "http_auth_ldap: Wants a free connection to \"%V\"",
@@ -1075,8 +1081,6 @@ ngx_http_auth_ldap_reply_connection(ngx_http_auth_ldap_connection_t *c, int erro
         ctx->error_msg.len = 0;
         ctx->error_msg.data = NULL;
     }
-
-    ngx_http_auth_ldap_return_connection(c);
 
     ngx_http_auth_ldap_wake_request(ctx->r);
 }
