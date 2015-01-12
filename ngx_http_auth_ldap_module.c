@@ -1871,7 +1871,7 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
                 ctx->outcome = OUTCOME_ALLOW;
                 return NGX_OK;
             }
-        } else if (ctx->error_code == LDAP_COMPARE_FALSE || ctx->error_code == LDAP_NO_SUCH_ATTRIBUTE) {
+        } else if (ctx->error_code == LDAP_COMPARE_FALSE || ctx->error_code == LDAP_NO_SUCH_ATTRIBUTE || ctx->error_code == LDAP_NO_SUCH_OBJECT) {
             if (ctx->server->satisfy_all == 1) {
                 ctx->outcome = OUTCOME_DENY;
                 return NGX_DECLINED;
