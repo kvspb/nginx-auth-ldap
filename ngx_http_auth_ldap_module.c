@@ -69,6 +69,10 @@ typedef struct {
     ngx_flag_t satisfy_all;
 
     ngx_uint_t connections;
+    ngx_msec_t connect_timeout;
+    ngx_msec_t reconnect_timeout;
+    ngx_msec_t bind_timeout;
+    ngx_msec_t request_timeout;
     ngx_queue_t free_connections;
     ngx_queue_t waiting_requests;
 } ngx_http_auth_ldap_server_t;
@@ -307,6 +311,10 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     }
 
     ngx_memzero(server, sizeof(*server));
+    server->connect_timeout = 10000;
+    server->reconnect_timeout = 10000;
+    server->bind_timeout = 5000;
+    server->request_timeout = 10000;
     server->alias = name;
 
     save = *cf;
@@ -322,6 +330,15 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     return NGX_CONF_OK;
 }
 
+#define CONF_MSEC_VALUE(cf,value,server,x) \
+if (ngx_strcmp(value[0].data, #x) == 0) { \
+        ngx_msec_t _i = ngx_parse_time(&value[1], 0); \
+        if (_i == (ngx_msec_t) NGX_ERROR || _i == 0) { \
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: '" #x "' value has to be a valid time unit greater than 0"); \
+            return NGX_CONF_ERROR; \
+        } \
+        server->x = _i; \
+    }
 /**
  * Called for every variable inside ldap_server block
  */
@@ -361,7 +378,12 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
             return NGX_CONF_ERROR;
         }
         server->connections = i;
-    } else if (ngx_strcmp(value[0].data, "include") == 0) {
+    } 
+    else CONF_MSEC_VALUE(cf,value,server,connect_timeout)
+    else CONF_MSEC_VALUE(cf,value,server,reconnect_timeout)
+    else CONF_MSEC_VALUE(cf,value,server,bind_timeout)
+    else CONF_MSEC_VALUE(cf,value,server,request_timeout)
+    else if (ngx_strcmp(value[0].data, "include") == 0) {
         return ngx_conf_include(cf, dummy, conf);
     }
 
@@ -994,8 +1016,8 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
     c->rctx = NULL;
     if (c->state != STATE_DISCONNECTED) {
         c->state = STATE_DISCONNECTED;
-        ngx_add_timer(&c->reconnect_event, 10000); /* TODO: Reconnect timeout */
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connection scheduled for reconnection in 10000 ms");
+        ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout); 
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connection scheduled for reconnection in %d ms", c->server->reconnect_timeout);
     }
 }
 
@@ -1170,7 +1192,8 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: ldap_sasl_bind() -> msgid=%d", c->msgid);
 
     c->state = STATE_INITIAL_BINDING;
-    ngx_add_timer(c->conn.connection->read, 5000); /* TODO: Bind timeout */
+    ngx_add_timer(c->conn.connection->read, c->server->bind_timeout); 
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: bind_timeout=%d", c->server->bind_timeout);
 }
 
 #if (NGX_OPENSSL)
@@ -1414,7 +1437,7 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
     if (rc == NGX_ERROR || rc == NGX_BUSY || rc == NGX_DECLINED) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Unable to connect to LDAP server \"%V\".",
             &addr->name);
-        ngx_add_timer(&c->reconnect_event, 10000); /* TODO: Reconnect timeout */
+        ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout); 
         return;
     }
 
@@ -1425,7 +1448,9 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
 #endif
     conn->write->handler = ngx_http_auth_ldap_connect_handler;
     conn->read->handler = ngx_http_auth_ldap_read_handler;
-    ngx_add_timer(conn->read, 10000); /* TODO: Connect timeout */
+    ngx_add_timer(conn->read, c->server->connect_timeout); 
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: connect_timeout=%d.", c->server->connect_timeout);
+
 
     c->state = STATE_CONNECTING;
 }
@@ -1605,7 +1630,9 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 ctx->server = ((ngx_http_auth_ldap_server_t **) conf->servers->elts)[ctx->server_index];
                 ctx->outcome = OUTCOME_UNCERTAIN;
 
-                ngx_add_timer(r->connection->write, 10000); /* TODO: Per-server request timeout */
+                ngx_add_timer(r->connection->write, ctx->server->request_timeout); 
+                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: request_timeout=%d",ctx->server->request_timeout);
+
 
                 /* Check cache if enabled */
                 if (ngx_http_auth_ldap_cache.buckets != NULL) {
