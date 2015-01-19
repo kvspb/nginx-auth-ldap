@@ -1036,6 +1036,12 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
     ngx_queue_t *q;
     ngx_http_auth_ldap_connection_t *c;
 
+    /*
+     * If we already have a connection, just say we got them one.
+     */
+    if (ctx->c != NULL)
+        return 1;
+
     server = ctx->server;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0, "http_auth_ldap: Wants a free connection to \"%V\"",
@@ -1097,8 +1103,6 @@ ngx_http_auth_ldap_reply_connection(ngx_http_auth_ldap_connection_t *c, int erro
         ctx->error_msg.len = 0;
         ctx->error_msg.data = NULL;
     }
-
-    ngx_http_auth_ldap_return_connection(c);
 
     ngx_http_auth_ldap_wake_request(ctx->r);
 }
@@ -1616,7 +1620,15 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
         return NGX_ERROR;
     }
 
-    if (!ctx->replied && ctx->phase != PHASE_START) {
+    /*
+     * If we are not starting up a request (ctx->phase != PHASE_START) and we actually already
+     * sent a request (ctx->iteration > 0) and didn't receive a reply yet (!ctx->replied) we 
+     * ask to be called again at a later time when we hopefully have received a reply.
+     *
+     * It is quite possible that we reach this if while not having sent a request yet (ctx->iteration == 0) -
+     * this happens when we are trying to get an LDAP connection but all of them are busy right now.
+     */
+    if (ctx->iteration > 0 && !ctx->replied && ctx->phase != PHASE_START) {
         ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: The LDAP operation did not finish yet");
         return NGX_AGAIN;
     }
@@ -1985,16 +1997,6 @@ ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *c
             ctx->c->msgid);
         ctx->c->state = STATE_BINDING;
         ctx->iteration++;
-        
-	// added by prune - 20140227
-	// we have to rebind THIS SAME connection as admin user or the next search could be
-	// made as non privileged user
-	// see https://github.com/kvspb/nginx-auth-ldap/issues/36
-	// this is quick and dirty patch
-        int rebind_msgid;
-        cred.bv_val = (char *) ctx->server->bind_dn_passwd.data;
-        cred.bv_len = ctx->server->bind_dn_passwd.len;
-        rc = ldap_sasl_bind(ctx->c->ld,(const char *) ctx->server->bind_dn.data, LDAP_SASL_SIMPLE, &cred, NULL, NULL, &rebind_msgid);
         
         return NGX_AGAIN;
     }
