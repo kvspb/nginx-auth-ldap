@@ -439,6 +439,12 @@ ngx_http_auth_ldap_servers(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         value = &((ngx_str_t *) cf->args->elts)[i];
         server = NULL;
 
+	if (mconf->servers == NULL) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Using \"auth_ldap_servers\" when no \"ldap_server\" has been previously defined"
+	    					     " (make sure that \"auth_ldap_servers\" goes after \"ldap_server\"s in your configuration file)", value);
+            return NGX_CONF_ERROR;
+	}
+
         for (j = 0; j < mconf->servers->nelts; j++) {
             s = &((ngx_http_auth_ldap_server_t *) mconf->servers->elts)[j];
             if (s->alias.len == value->len && ngx_memcmp(s->alias.data, value->data, s->alias.len) == 0) {
