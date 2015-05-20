@@ -1171,14 +1171,14 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
 
     rc = ldap_init_fd(c->conn.connection->fd, LDAP_PROTO_EXT, (const char *) c->server->url.data, &c->ld);
     if (rc != LDAP_SUCCESS) {
-        ngx_log_error(NGX_LOG_INFO, c->log, errno, "http_auth_ldap: ldap_init_fd() failed (%d: %s)", rc, ldap_err2string(rc));
+        ngx_log_error(NGX_LOG_ERR, c->log, errno, "http_auth_ldap: ldap_init_fd() failed (%d: %s)", rc, ldap_err2string(rc));
         ngx_http_auth_ldap_close_connection(c);
         return;
     }
 
     rc = ldap_get_option(c->ld, LDAP_OPT_SOCKBUF, (void *) &sb);
     if (rc != LDAP_OPT_SUCCESS) {
-        ngx_log_error(NGX_LOG_INFO, c->log, 0, "http_auth_ldap: ldap_get_option() failed (%d: %s)", rc, ldap_err2string(rc));
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_get_option() failed (%d: %s)", rc, ldap_err2string(rc));
         ngx_http_auth_ldap_close_connection(c);
         return;
     }
@@ -1194,7 +1194,7 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
     cred.bv_len = c->server->bind_dn_passwd.len;
     rc = ldap_sasl_bind(c->ld, (const char *) c->server->bind_dn.data, LDAP_SASL_SIMPLE, &cred, NULL, NULL, &c->msgid);
     if (rc != LDAP_SUCCESS) {
-        ngx_log_error(NGX_LOG_INFO, c->log, 0, "http_auth_ldap: ldap_sasl_bind() failed (%d: %s)",
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_sasl_bind() failed (%d: %s)",
             rc, ldap_err2string(rc));
         ngx_http_auth_ldap_close_connection(c);
         return;
@@ -1221,7 +1221,7 @@ ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn)
         return;
     }
 
-    ngx_log_error(NGX_LOG_INFO, c->log, 0, "http_auth_ldap: SSL handshake failed");
+    ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: SSL handshake failed");
     ngx_http_auth_ldap_close_connection(c);
 }
 
@@ -1233,7 +1233,7 @@ ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
     c->conn.connection->pool = c->pool;
     rc = ngx_ssl_create_connection(c->ssl, c->conn.connection, NGX_SSL_BUFFER | NGX_SSL_CLIENT);
     if (rc != NGX_OK) {
-        ngx_log_error(NGX_LOG_INFO, c->log, 0, "http_auth_ldap: SSL initialization failed");
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: SSL initialization failed");
         ngx_http_auth_ldap_close_connection(c);
         return;
     }
@@ -1302,13 +1302,13 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
     c = conn->data;
 
     if (c->ld == NULL) {
-        ngx_log_error(NGX_LOG_INFO, c->log, 0, "http_auth_ldap: Could not connect");
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Could not connect");
         ngx_http_auth_ldap_close_connection(c);
         return;
     }
 
     if (rev->timedout) {
-        ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT, "http_auth_ldap: Request timed out (state=%d)", c->state);
+        ngx_log_error(NGX_LOG_ERR, c->log, NGX_ETIMEDOUT, "http_auth_ldap: Request timed out (state=%d)", c->state);
         conn->timedout = 1;
         ngx_http_auth_ldap_close_connection(c);
         return;
@@ -1319,7 +1319,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
     for (;;) {
         rc = ldap_result(c->ld, LDAP_RES_ANY, 0, &timeout, &result);
         if (rc < 0) {
-            ngx_log_error(NGX_LOG_INFO, c->log, 0, "http_auth_ldap: ldap_result() failed (%d: %s)",
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_result() failed (%d: %s)",
                 rc, ldap_err2string(rc));
             ngx_http_auth_ldap_close_connection(c);
             return;
@@ -1342,7 +1342,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
             error_code = LDAP_NO_RESULTS_RETURNED;
             error_msg = NULL;
         } else if (rc != LDAP_SUCCESS) {
-            ngx_log_error(NGX_LOG_INFO, c->log, 0, "http_auth_ldap: ldap_parse_result() failed (%d: %s)",
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_parse_result() failed (%d: %s)",
                 rc, ldap_err2string(rc));
             ldap_msgfree(result);
             ngx_http_auth_ldap_close_connection(c);
@@ -1360,7 +1360,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                     c->state = STATE_READY;
                     ngx_http_auth_ldap_return_connection(c);
                 } else {
-                    ngx_log_error(NGX_LOG_INFO, c->log, 0, "http_auth_ldap: Initial bind failed (%d: %s [%s])",
+                    ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Initial bind failed (%d: %s [%s])",
                         error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
                     ldap_memfree(error_msg);
                     ldap_msgfree(result);
@@ -1992,7 +1992,7 @@ ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *c
         cred.bv_len = r->headers_in.passwd.len;
         rc = ldap_sasl_bind(ctx->c->ld, (const char *) ctx->dn.data, LDAP_SASL_SIMPLE, &cred, NULL, NULL, &ctx->c->msgid);
         if (rc != LDAP_SUCCESS) {
-            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "http_auth_ldap: ldap_sasl_bind() failed (%d: %s)",
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_sasl_bind() failed (%d: %s)",
                 rc, ldap_err2string(rc));
             ctx->outcome = OUTCOME_ERROR;
             ngx_http_auth_ldap_return_connection(ctx->c);
@@ -2036,7 +2036,7 @@ ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
         cred.bv_len = ctx->server->bind_dn_passwd.len;
         rc = ldap_sasl_bind(ctx->c->ld, (const char *) ctx->server->bind_dn.data, LDAP_SASL_SIMPLE, &cred, NULL, NULL, &ctx->c->msgid);
         if (rc != LDAP_SUCCESS) {
-            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "http_auth_ldap: ldap_sasl_bind() failed (%d: %s)",
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_sasl_bind() failed (%d: %s)",
                 rc, ldap_err2string(rc));
             ctx->outcome = OUTCOME_ERROR;
             ngx_http_auth_ldap_return_connection(ctx->c);
