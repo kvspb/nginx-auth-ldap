@@ -1,0 +1,14 @@
+add-brackets
+align-pointer=name
+align-reference=name
+break-blocks
+indent-cases
+indent-col1-comments
+indent-namespaces
+indent=spaces=4
+max-instatement-indent=120
+min-conditional-indent=0
+pad-header
+pad-oper
+style=attach
+suffix=none
