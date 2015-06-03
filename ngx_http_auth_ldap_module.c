@@ -588,6 +588,7 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
     ngx_http_compile_complex_value_t ccv;
 
     value = cf->args->elts;
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: parse_require");
 
     if (ngx_strcmp(value[1].data, "valid_user") == 0) {
         server->require_valid_user = 1;
@@ -607,6 +608,7 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
         }
         target = ngx_array_push(server->require_user);
     } else if (ngx_strcmp(value[1].data, "group") == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Setting group");
         if (server->require_group == NULL) {
             server->require_group = ngx_array_create(cf->pool, 4, sizeof(ngx_http_complex_value_t));
             if (server->require_group == NULL) {
@@ -641,6 +643,7 @@ ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
     value = cf->args->elts;
 
     if (ngx_strcmp(value[1].data, "all") == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Setting satisfy all");
         server->satisfy_all = 1;
         return NGX_CONF_OK;
     }
@@ -1701,6 +1704,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 if (ctx->server->require_user != NULL) {
                     rc = ngx_http_auth_ldap_check_user(r, ctx);
                     if (rc != NGX_OK) {
+                        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Not ok", &ctx->dn);
                         /* User check failed, try next server */
                         ctx->phase = PHASE_NEXT;
                         break;
@@ -1710,10 +1714,10 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 /* User not yet fully authenticated, check group next */
                 if ((ctx->outcome == OUTCOME_UNCERTAIN) &&
                     (ctx->server->require_group != NULL)) {
-
-                    ctx->phase = PHASE_CHECK_GROUP;
-                    ctx->iteration = 0;
-                    break;
+                        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Moving to group check", &ctx->dn);
+                        ctx->phase = PHASE_CHECK_GROUP;
+                        ctx->iteration = 0;
+                        break;
                 }
 
                 /* No groups to validate, try binding next */
@@ -1722,6 +1726,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 break;
 
             case PHASE_CHECK_GROUP:
+                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "Checking group", &ctx->dn);
                 rc = ngx_http_auth_ldap_check_group(r, ctx);
                 if (rc == NGX_AGAIN) {
                     /* LDAP operation in progress, wait for the results */
