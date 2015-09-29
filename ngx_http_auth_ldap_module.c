@@ -62,6 +62,10 @@ typedef struct {
     ngx_str_t group_attribute;
     ngx_flag_t group_attribute_dn;
 
+    ngx_flag_t ssl_check_cert;
+    ngx_str_t ssl_ca_dir;
+    ngx_str_t ssl_ca_file;
+
     ngx_array_t *require_group;     /* array of ngx_http_complex_value_t */
     ngx_array_t *require_user;      /* array of ngx_http_complex_value_t */
     ngx_flag_t require_valid_user;
@@ -378,6 +382,12 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
             return NGX_CONF_ERROR;
         }
         server->connections = i;
+    } else if (ngx_strcmp(value[0].data, "ssl_check_cert") == 0  && ngx_strcmp(value[1].data, "on") == 0) {
+      server->ssl_check_cert = 1;
+    } else if (ngx_strcmp(value[0].data, "ssl_ca_dir") == 0) {
+      server->ssl_ca_dir = value[1];
+    } else if (ngx_strcmp(value[0].data, "ssl_ca_file") == 0) {
+      server->ssl_ca_file = value[1];
     }
     else CONF_MSEC_VALUE(cf,value,server,connect_timeout)
     else CONF_MSEC_VALUE(cf,value,server,reconnect_timeout)
@@ -1211,7 +1221,7 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
 
 #if (NGX_OPENSSL)
 static void
-ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn)
+ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn, ngx_flag_t validate)
 {
     ngx_http_auth_ldap_connection_t *c;
 
@@ -1222,7 +1232,7 @@ ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn)
         X509 *cert = SSL_get_peer_certificate(conn->ssl->connection);
         long verified = SSL_get_verify_result(conn->ssl->connection);
 
-        if (cert && verified == X509_V_OK) { // everything fine
+        if (!validate || (cert && verified == X509_V_OK) ) { // everything fine
           conn->read->handler = &ngx_http_auth_ldap_read_handler;
           ngx_http_auth_ldap_restore_handlers(conn);
           ngx_http_auth_ldap_connection_established(c);
@@ -1241,6 +1251,16 @@ ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn)
 }
 
 static void
+ngx_http_auth_ldap_ssl_handshake_validating_handler(ngx_connection_t *conn)
+{ ngx_http_auth_ldap_ssl_handshake_handler(conn, 1); }
+
+static void
+ngx_http_auth_ldap_ssl_handshake_non_validating_handler(ngx_connection_t *conn)
+{ ngx_http_auth_ldap_ssl_handshake_handler(conn, 0); }
+
+typedef void (*ngx_http_auth_ldap_ssl_callback)(ngx_connection_t *conn);
+
+static void
 ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
 {
     ngx_int_t rc;
@@ -1256,21 +1276,43 @@ ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
     c->log->action = "SSL handshaking to LDAP server";
     ngx_connection_t *transport = c->conn.connection;
 
-    //int setcode = SSL_CTX_load_verify_locations(transport->ssl->connection->ctx, "file", "dir");
-    int setcode = SSL_CTX_set_default_verify_paths(transport->ssl->connection->ctx);
-    if (setcode != 1) {
-      ngx_log_error(NGX_LOG_ERR, c->log, 0,
-        "http_auth_ldap: SSL initialization failed. Could not set CA certificate location. "
-        "Error code: %lu", ERR_get_error());
+    ngx_http_auth_ldap_ssl_callback callback;
+    if (c->server->ssl_check_cert) {
+      // load CA certificates: custom ones if specified, default ones instead
+      if (c->server->ssl_ca_file.data || c->server->ssl_ca_dir.data) {
+        int setcode = SSL_CTX_load_verify_locations(transport->ssl->connection->ctx,
+          (char*)(c->server->ssl_ca_file.data), (char*)(c->server->ssl_ca_dir.data));
+        if (setcode != 1) {
+          unsigned long error_code = ERR_get_error();
+          char *error_msg = ERR_error_string(error_code, NULL);
+          ngx_log_error(NGX_LOG_ERR, c->log, 0,
+            "http_auth_ldap: SSL initialization failed. Could not set custom CA certificate location. "
+            "Error: %lu, %s", error_code, error_msg);
+        }
+      }
+      int setcode = SSL_CTX_set_default_verify_paths(transport->ssl->connection->ctx);
+      if (setcode != 1) {
+        unsigned long error_code = ERR_get_error();
+        char *error_msg = ERR_error_string(error_code, NULL);
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+          "http_auth_ldap: SSL initialization failed. Could not use default CA certificate location. "
+          "Error: %lu, %s", error_code, error_msg);
+      }
+
+      // use validating version of next function
+      callback = &ngx_http_auth_ldap_ssl_handshake_validating_handler;
+    } else {
+      // use non-validating version of next function
+      callback = &ngx_http_auth_ldap_ssl_handshake_non_validating_handler;
     }
 
     rc = ngx_ssl_handshake(transport);
     if (rc == NGX_AGAIN) {
-        transport->ssl->handler = &ngx_http_auth_ldap_ssl_handshake_handler;
+        transport->ssl->handler = callback;
         return;
     }
 
-    ngx_http_auth_ldap_ssl_handshake_handler(transport);
+    (*callback)(transport);
     return;
 }
 #endif
