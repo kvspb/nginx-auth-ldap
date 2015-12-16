@@ -803,6 +803,7 @@ ngx_http_auth_ldap_init_cache(ngx_cycle_t *cycle)
     }
 
     want = (conf->cache_size + 7) / 8;
+    count = 0;
     for (i = 0; i < sizeof(primes)/sizeof(primes[0]); i++) {
         count = primes[i];
         if (count >= want) {
