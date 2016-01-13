@@ -13,7 +13,7 @@ Check HTTP_AUTH_LDAP options
 
 
 ```
-[*] HTTP_AUTH_LDAP        3rd party http_auth_ldap module 
+[*] HTTP_AUTH_LDAP        3rd party http_auth_ldap module
 ```
 
 ## Linux
@@ -71,3 +71,52 @@ And add required servers in correct order into your location/server directive:
 
     }
 ```
+
+# Available config parameters
+
+## url
+expected value: string
+
+Available URL schemes: ldap://, ldaps://
+
+## binddn
+expected value: string
+
+## binddn_passwd
+expected value: string
+
+## group_attribute
+expected value: string
+
+## group_attribute_is_dn
+expected value: on or off, default off
+
+## require
+expected value: valid_user, user, group
+
+## satisfy
+expected value: all, any
+
+## connections
+expected value: a number greater than 0
+
+## ssl_check_cert
+expected value: on or off, default off
+
+Verify the remote certificate for LDAPs connections. If disabled, any remote ceritificate will be
+accepted which exposes you to possible man-in-the-middle attacks. Note that the server's
+certificate will need to be signed by a proper CA trusted by your system if this is enabled.
+See below how to trust CAs without installing them system-wide.
+
+## ssl_ca_file
+expected value: file path
+
+Trust the CA certificate in this file (see ssl_check_cert above).
+
+## ssl_ca_dir
+expected value: directory path
+
+Trust all CA certificates in this directory (see ssl_check_cert above).
+
+Note that you need to provide hash-based symlinks in the directory for this to work;
+you'll basically need to run OpenSSL's c_rehash command in this directory.
