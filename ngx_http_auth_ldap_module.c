@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2011-2013 Valery Komarov <komarov@valerka.net>
  * Copyright (C) 2013 Jiri Hruska <jirka@fud.cz>
+ * Copyright (C) 2015-2016 Victor Hahn Castell <victor.hahn@flexoptix.net>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,6 +31,11 @@
 #include <ngx_http.h>
 #include <ngx_md5.h>
 #include <ldap.h>
+
+// used for manual warnings
+#define XSTR(x) STR(x)
+#define STR(x) #x
+#pragma GCC diagnostic warning "-Wcpp"
 
 #ifndef LDAP_PROTO_EXT
 /* Some OpenLDAP headers are accidentally missing ldap_init_fd() etc. */
@@ -383,7 +389,15 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         }
         server->connections = i;
     } else if (ngx_strcmp(value[0].data, "ssl_check_cert") == 0  && ngx_strcmp(value[1].data, "on") == 0) {
+      #if OPENSSL_VERSION_NUMBER >= 0x10002000
       server->ssl_check_cert = 1;
+      #else
+      #warning "http_auth_ldap: Compiling with OpenSSL < 1.0.2, certificate verification will be unavailable. OPENSSL_VERSION_NUMBER == " XSTR(OPENSSL_VERSION_NUMBER)
+      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+        "http_auth_ldap: 'ssl_cert_check': cannot verify remote certificate's domain name because "
+        "your version of OpenSSL is too old. "
+        "Please install OpenSSL >= 1.02 and recompile nginx.");
+      #endif
     } else if (ngx_strcmp(value[0].data, "ssl_ca_dir") == 0) {
       server->ssl_ca_dir = value[1];
     } else if (ngx_strcmp(value[0].data, "ssl_ca_file") == 0) {
@@ -1224,30 +1238,57 @@ static void
 ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn, ngx_flag_t validate)
 {
     ngx_http_auth_ldap_connection_t *c;
-
     c = conn->data;
 
     if (conn->ssl->handshaked) {
-        // verify remote certificate
-        X509 *cert = SSL_get_peer_certificate(conn->ssl->connection);
-        long verified = SSL_get_verify_result(conn->ssl->connection);
+        #if OPENSSL_VERSION_NUMBER >= 0x10002000
+        if (validate) { // verify remote certificate if requested
+          X509 *cert = SSL_get_peer_certificate(conn->ssl->connection);
+          long chain_verified = SSL_get_verify_result(conn->ssl->connection);
 
-        if (!validate || (cert && verified == X509_V_OK) ) { // everything fine
-          conn->read->handler = &ngx_http_auth_ldap_read_handler;
-          ngx_http_auth_ldap_restore_handlers(conn);
-          ngx_http_auth_ldap_connection_established(c);
-          return;
-        } else { // smells fishy
-          ngx_log_error(NGX_LOG_ERR, c->log, 0,
-            "http_auth_ldap: Remote side presented invalid SSL certificate: error %l, %s",
-            verified, X509_verify_cert_error_string(verified));
-          ngx_http_auth_ldap_close_connection(c);
-          return;
+          int addr_verified;
+          char *hostname = c->server->ludpp->lud_host;
+          addr_verified = X509_check_host(cert, hostname, 0, 0, 0);
+
+          if (!addr_verified) { // domain not in cert? try IP
+            size_t len; // get IP length
+            if (conn->sockaddr->sa_family == 4) len = 4;
+            else if (conn->sockaddr->sa_family == 6) len = 16;
+            else { // very unlikely indeed
+              ngx_http_auth_ldap_close_connection(c);
+              return;
+            }
+            addr_verified = X509_check_ip(cert, (const unsigned char*)conn->sockaddr->sa_data, len, 0);
+          }
+
+          // Find anything fishy?
+          if ( !(cert && addr_verified && chain_verified == X509_V_OK) ) {
+            if (!addr_verified) {
+              ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                "http_auth_ldap: Remote side presented invalid SSL certificate: "
+                "does not match address (neither server's domain nor IP in certificate's CN or SAN)");
+                fprintf(stderr, "DEBUG: SSL cert domain mismatch\n"); fflush(stderr);
+            } else {
+              ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                "http_auth_ldap: Remote side presented invalid SSL certificate: error %l, %s",
+                chain_verified, X509_verify_cert_error_string(chain_verified));
+            }
+            ngx_http_auth_ldap_close_connection(c);
+            return;
+          }
         }
-    }
+        #endif
 
-    ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: SSL handshake failed");
-    ngx_http_auth_ldap_close_connection(c);
+        // handshaked validation successful -- or not required in the first place
+        conn->read->handler = &ngx_http_auth_ldap_read_handler;
+        ngx_http_auth_ldap_restore_handlers(conn);
+        ngx_http_auth_ldap_connection_established(c);
+        return;
+    }
+    else { // handshake failed
+      ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: SSL handshake failed");
+      ngx_http_auth_ldap_close_connection(c);
+    }
 }
 
 static void

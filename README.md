@@ -108,6 +108,8 @@ accepted which exposes you to possible man-in-the-middle attacks. Note that the 
 certificate will need to be signed by a proper CA trusted by your system if this is enabled.
 See below how to trust CAs without installing them system-wide.
 
+This options needs OpenSSL >= 1.0.2; it is unavailable if compiled with older versions.
+
 ## ssl_ca_file
 expected value: file path
 
