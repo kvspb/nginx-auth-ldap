@@ -35,7 +35,16 @@
 // used for manual warnings
 #define XSTR(x) STR(x)
 #define STR(x) #x
+// make sure manual warnings don't get escalated to errors
+#ifdef __clang__
+#pragma clang diagnostic warning "-W#warnings"
+#else
+#ifdef __GNUC__
 #pragma GCC diagnostic warning "-Wcpp"
+#endif
+#endif
+// TODO: do the same stuff for MSVC and/or other compilers
+
 
 #ifndef LDAP_PROTO_EXT
 /* Some OpenLDAP headers are accidentally missing ldap_init_fd() etc. */
