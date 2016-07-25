@@ -103,7 +103,7 @@ expected value: a number greater than 0
 ## ssl_check_cert
 expected value: on or off, default off
 
-Verify the remote certificate for LDAPs connections. If disabled, any remote ceritificate will be
+Verify the remote certificate for LDAPs connections. If disabled, any remote certificate will be
 accepted which exposes you to possible man-in-the-middle attacks. Note that the server's
 certificate will need to be signed by a proper CA trusted by your system if this is enabled.
 See below how to trust CAs without installing them system-wide.
