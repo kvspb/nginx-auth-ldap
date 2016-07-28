@@ -1091,6 +1091,14 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
         return 1;
     }
 
+    q = ngx_queue_next(&server->waiting_requests);
+    while (q != ngx_queue_sentinel(&server->waiting_requests)) {
+        if (q == &ctx->queue) {
+            ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0, "http_auth_ldap: Tried to insert a same request");
+            return 0;
+        }
+        q = ngx_queue_next(q);
+    }
     ngx_queue_insert_head(&server->waiting_requests, &ctx->queue);
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0, "http_auth_ldap: No connection available at the moment, waiting...");
     return 0;
