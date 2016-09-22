@@ -1,23 +1,23 @@
 ngx_addon_name=ngx_http_auth_ldap_module
 
+LDAP_REQUIRED_LIBS="-lldap"
+
+case "$NGX_PLATFORM" in
+    Darwin:*|FreeBSD:*|Linux:*|SunOS:*)
+        LDAP_REQUIRED_LIBS="$LDAP_REQUIRED_LIBS -llber"
+    ;;
+esac
+
 if test -n "$ngx_module_link"; then
     ngx_module_type=HTTP
     ngx_module_name=ngx_http_auth_ldap_module
+    ngx_module_incs=
+    ngx_module_deps=
     ngx_module_srcs="$ngx_addon_dir/ngx_http_auth_ldap_module.c"
-
+    ngx_module_libs="$LDAP_REQUIRED_LIBS"
     . auto/module
 else
     HTTP_MODULES="$HTTP_MODULES ngx_http_auth_ldap_module"
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_auth_ldap_module.c"
+    CORE_LIBS="$CORE_LIBS $LDAP_REQUIRED_LIBS"
 fi
-
-CORE_LIBS="$CORE_LIBS -lldap"
-
-case "$NGX_PLATFORM" in
-    Darwin:*|FreeBSD:*|Linux:*|SunOS:*)
-        CORE_LIBS="$CORE_LIBS -llber"
-    ;;
-esac
-
-CFLAGS="$CFLAGS"
-CFLAGS="$CFLAGS"
