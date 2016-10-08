@@ -122,3 +122,11 @@ Trust all CA certificates in this directory (see ssl_check_cert above).
 
 Note that you need to provide hash-based symlinks in the directory for this to work;
 you'll basically need to run OpenSSL's c_rehash command in this directory.
+
+## referral
+expected value: on, off
+
+LDAP library default is on. This option disables usage of referral messages from
+LDAP server. Usefull for authenticating against read only AD server without access
+to read write.
+
