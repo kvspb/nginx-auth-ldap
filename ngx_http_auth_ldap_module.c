@@ -64,6 +64,8 @@ extern int ldap_init_fd(ber_socket_t fd, int proto, const char *url, LDAP **ld);
 #define OUTCOME_CACHED_ALLOW    3
 #define OUTCOME_UNCERTAIN       4 /* Not yet decided */
 
+#define NGX_HTTP_AUTH_LDAP_MAX_SERVERS_SIZE 7
+
 
 typedef struct {
     LDAPURLDesc *ludpp;
@@ -102,6 +104,7 @@ typedef struct {
     ngx_flag_t cache_enabled;
     ngx_msec_t cache_expiration_time;
     size_t cache_size;
+    ngx_int_t servers_size;
 #if (NGX_OPENSSL)
     ngx_ssl_t ssl;
 #endif
@@ -251,6 +254,14 @@ static ngx_command_t ngx_http_auth_ldap_commands[] = {
         NULL
     },
     {
+        ngx_string("auth_ldap_servers_size"),
+        NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1,
+        ngx_conf_set_num_slot,
+        NGX_HTTP_MAIN_CONF_OFFSET,
+        offsetof(ngx_http_auth_ldap_main_conf_t, servers_size),
+        NULL
+    },
+    {
         ngx_string("auth_ldap"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_HTTP_LMT_CONF | NGX_CONF_TAKE1,
         ngx_http_auth_ldap,
@@ -320,7 +331,10 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     }
 
     if (cnf->servers == NULL) {
-        cnf->servers = ngx_array_create(cf->pool, 7, sizeof(ngx_http_auth_ldap_server_t));
+        if (cnf->servers_size == NGX_CONF_UNSET) {
+            cnf->servers_size = NGX_HTTP_AUTH_LDAP_MAX_SERVERS_SIZE;
+        }
+        cnf->servers = ngx_array_create(cf->pool, cnf->servers_size, sizeof(ngx_http_auth_ldap_server_t));
         if (cnf->servers == NULL) {
             return NGX_CONF_ERROR;
         }
@@ -734,6 +748,7 @@ ngx_http_auth_ldap_create_main_conf(ngx_conf_t *cf)
     conf->cache_enabled = NGX_CONF_UNSET;
     conf->cache_expiration_time = NGX_CONF_UNSET_MSEC;
     conf->cache_size = NGX_CONF_UNSET_SIZE;
+    conf->servers_size = NGX_CONF_UNSET;
 
     return conf;
 }
