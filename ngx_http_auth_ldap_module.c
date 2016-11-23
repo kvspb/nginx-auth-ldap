@@ -86,6 +86,7 @@ typedef struct {
     ngx_flag_t require_valid_user;
     ngx_http_complex_value_t require_valid_user_dn;
     ngx_flag_t satisfy_all;
+    ngx_flag_t referral;
 
     ngx_uint_t connections;
     ngx_msec_t connect_timeout;
@@ -191,6 +192,7 @@ static char * ngx_http_auth_ldap_servers(ngx_conf_t *cf, ngx_command_t *cmd, voi
 static char * ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
+static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static void * ngx_http_auth_ldap_create_main_conf(ngx_conf_t *cf);
 static char * ngx_http_auth_ldap_init_main_conf(ngx_conf_t *cf, void *parent);
 static void * ngx_http_auth_ldap_create_loc_conf(ngx_conf_t *);
@@ -335,6 +337,7 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     server->bind_timeout = 5000;
     server->request_timeout = 10000;
     server->alias = name;
+    server->referral = 1;
 
     save = *cf;
     cf->handler = ngx_http_auth_ldap_ldap_server;
@@ -390,6 +393,8 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         return ngx_http_auth_ldap_parse_require(cf, server);
     } else if (ngx_strcmp(value[0].data, "satisfy") == 0) {
         return ngx_http_auth_ldap_parse_satisfy(cf, server);
+    } else if (ngx_strcmp(value[0].data, "referral") == 0) {
+        return ngx_http_auth_ldap_parse_referral(cf, server);
     } else if (ngx_strcmp(value[0].data, "connections") == 0) {
         i = ngx_atoi(value[1].data, value[1].len);
         if (i == NGX_ERROR || i == 0) {
@@ -687,6 +692,29 @@ ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
     }
 
     ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Incorrect value for auth_ldap_satisfy");
+    return NGX_CONF_ERROR;
+}
+
+/**
+ * Parse "referral" conf parameter
+ */
+static char *
+ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server)
+{
+    ngx_str_t *value;
+    value = cf->args->elts;
+
+    if (ngx_strcmp(value[1].data, "on") == 0) {
+        server->referral = 1;
+        return NGX_CONF_OK;
+    }
+
+    if (ngx_strcmp(value[1].data, "off") == 0) {
+        server->referral = 0;
+        return NGX_CONF_OK;
+    }
+
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Incorrect value for referral");
     return NGX_CONF_ERROR;
 }
 
@@ -1219,6 +1247,15 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
         ngx_log_error(NGX_LOG_ERR, c->log, errno, "http_auth_ldap: ldap_init_fd() failed (%d: %s)", rc, ldap_err2string(rc));
         ngx_http_auth_ldap_close_connection(c);
         return;
+    }
+
+    if (c->server->referral == 0) {
+        rc = ldap_set_option(c->ld, LDAP_OPT_REFERRALS, LDAP_OPT_OFF);
+        if (rc != LDAP_OPT_SUCCESS) {
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_set_option() failed (%d: %s)", rc, ldap_err2string(rc));
+            ngx_http_auth_ldap_close_connection(c);
+            return;
+        }
     }
 
     rc = ldap_get_option(c->ld, LDAP_OPT_SOCKBUF, (void *) &sb);
