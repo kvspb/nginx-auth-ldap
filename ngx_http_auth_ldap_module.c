@@ -31,6 +31,7 @@
 #include <ngx_http.h>
 #include <ngx_md5.h>
 #include <ldap.h>
+#include <openssl/opensslv.h>
 
 // used for manual warnings
 #define XSTR(x) STR(x)
