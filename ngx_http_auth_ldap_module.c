@@ -1800,6 +1800,12 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
         if (ctx->c != NULL) {
             ngx_http_auth_ldap_return_connection(ctx->c);
         }
+
+        // Remove ctx from waiting_requests queue if it was added.
+        if (ngx_queue_next(&ctx->queue)) {
+            ngx_queue_remove(&ctx->queue);
+        }
+
         return NGX_ERROR;
     }
 
