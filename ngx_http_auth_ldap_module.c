@@ -1756,6 +1756,13 @@ ngx_http_auth_ldap_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
+    if (alcf->servers == NULL || alcf->servers->nelts == 0) {
+        /* No LDAP servers for the location. */
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: \"auth_ldap\" requires "
+                      "one or more \"auth_ldap_servers\" in the same location");
+        return ngx_http_auth_ldap_set_realm(r, &alcf->realm);
+    }
+
     ctx = ngx_http_get_module_ctx(r, ngx_http_auth_ldap_module);
     if (ctx == NULL) {
         rc = ngx_http_auth_basic_user(r);
