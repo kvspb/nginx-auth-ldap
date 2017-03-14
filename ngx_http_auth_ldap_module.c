@@ -91,6 +91,8 @@ typedef struct {
     ngx_flag_t referral;
 
     ngx_uint_t connections;
+    ngx_uint_t max_down_retries;
+    ngx_uint_t max_down_retries_count;
     ngx_msec_t connect_timeout;
     ngx_msec_t reconnect_timeout;
     ngx_msec_t bind_timeout;
@@ -205,6 +207,7 @@ static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf);
 static ngx_int_t ngx_http_auth_ldap_init_cache(ngx_cycle_t *cycle);
 static void ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_read_handler(ngx_event_t *rev);
+static void ngx_http_auth_ldap_reconnect_handler(ngx_event_t *);
 static ngx_int_t ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle);
 static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
@@ -409,6 +412,13 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         return ngx_http_auth_ldap_parse_satisfy(cf, server);
     } else if (ngx_strcmp(value[0].data, "referral") == 0) {
         return ngx_http_auth_ldap_parse_referral(cf, server);
+    } else if (ngx_strcmp(value[0].data, "max_down_retries") == 0) {
+        i = ngx_atoi(value[1].data, value[1].len);
+        if (i == NGX_ERROR) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: 'max_down_retries' value must be an integer: using default of 0");
+            i = 0;
+        }
+        server->max_down_retries = i;
     } else if (ngx_strcmp(value[0].data, "connections") == 0) {
         i = ngx_atoi(value[1].data, value[1].len);
         if (i == NGX_ERROR || i == 0) {
@@ -1499,6 +1509,25 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_result() failed (%d: %s)",
                 rc, ldap_err2string(rc));
             ngx_http_auth_ldap_close_connection(c);
+
+            // if LDAP_SERVER_DOWN (usually timeouts or server disconnects)
+            if (rc == LDAP_SERVER_DOWN && \
+                c->server->max_down_retries_count < c->server->max_down_retries) { 
+                /** 
+                    update counter (this is always reset in 
+                    ngx_http_auth_ldap_connect() for a successful ldap 
+                    connection  
+                **/
+                c->server->max_down_retries_count++;
+                ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: LDAP_SERVER_DOWN: retry count: %d",
+                    c->server->max_down_retries_count);
+                c->state = STATE_DISCONNECTED;
+                // immediate reconnect synchronously, this schedules another
+                // timer call to this read handler again
+                ngx_http_auth_ldap_reconnect_handler(rev);
+                return;
+            } 
+
             return;
         }
         if (rc == 0) {
@@ -1638,7 +1667,7 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
     ngx_add_timer(conn->read, c->server->connect_timeout);
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: connect_timeout=%d.", c->server->connect_timeout);
 
-
+    c->server->max_down_retries_count = 0;   /* reset retries count */
     c->state = STATE_CONNECTING;
 }
 
