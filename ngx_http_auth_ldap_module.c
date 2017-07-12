@@ -1401,7 +1401,7 @@ ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
     if (c->server->ssl_check_cert) {
       // load CA certificates: custom ones if specified, default ones instead
       if (c->server->ssl_ca_file.data || c->server->ssl_ca_dir.data) {
-        int setcode = SSL_CTX_load_verify_locations(transport->ssl->connection->ctx,
+        int setcode = SSL_CTX_load_verify_locations(transport->ssl->session_ctx,
           (char*)(c->server->ssl_ca_file.data), (char*)(c->server->ssl_ca_dir.data));
         if (setcode != 1) {
           unsigned long error_code = ERR_get_error();
@@ -1411,7 +1411,7 @@ ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
             "Error: %lu, %s", error_code, error_msg);
         }
       }
-      int setcode = SSL_CTX_set_default_verify_paths(transport->ssl->connection->ctx);
+      int setcode = SSL_CTX_set_default_verify_paths(transport->ssl->session_ctx);
       if (setcode != 1) {
         unsigned long error_code = ERR_get_error();
         char *error_msg = ERR_error_string(error_code, NULL);
