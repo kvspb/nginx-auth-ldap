@@ -97,6 +97,19 @@ expected value: valid_user, user, group
 ## satisfy
 expected value: all, any
 
+## max_down_retries_count
+expected value: a number, default 0
+
+Retry count for attempting to reconnect to an LDAP server if it is considered
+"DOWN".  This may happen if a KEEP-ALIVE connection to an LDAP server times 
+out or is terminated by the server end after some amount of time.  
+
+This can usually help with the following error:
+
+```
+http_auth_ldap: ldap_result() failed (-1: Can't contact LDAP server)
+```
+
 ## connections
 expected value: a number greater than 0
 
