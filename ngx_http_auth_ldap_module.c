@@ -31,6 +31,7 @@
 #include <ngx_http.h>
 #include <ngx_md5.h>
 #include <ldap.h>
+#include <openssl/opensslv.h>
 
 // used for manual warnings
 #define XSTR(x) STR(x)
@@ -1403,8 +1404,13 @@ ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
     if (c->server->ssl_check_cert) {
       // load CA certificates: custom ones if specified, default ones instead
       if (c->server->ssl_ca_file.data || c->server->ssl_ca_dir.data) {
+#if (OPENSSL_VERSION_NUMBER >= 0x10100000L)
         int setcode = SSL_CTX_load_verify_locations(transport->ssl->session_ctx,
           (char*)(c->server->ssl_ca_file.data), (char*)(c->server->ssl_ca_dir.data));
+#else
+        int setcode = SSL_CTX_load_verify_locations(transport->ssl->connection->ctx,
+          (char*)(c->server->ssl_ca_file.data), (char*)(c->server->ssl_ca_dir.data));
+#endif
         if (setcode != 1) {
           unsigned long error_code = ERR_get_error();
           char *error_msg = ERR_error_string(error_code, NULL);
@@ -1413,7 +1419,11 @@ ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
             "Error: %lu, %s", error_code, error_msg);
         }
       }
+#if (OPENSSL_VERSION_NUMBER >= 0x10100000L)
       int setcode = SSL_CTX_set_default_verify_paths(transport->ssl->session_ctx);
+#else
+      int setcode = SSL_CTX_set_default_verify_paths(transport->ssl->connection->ctx);
+#endif
       if (setcode != 1) {
         unsigned long error_code = ERR_get_error();
         char *error_msg = ERR_error_string(error_code, NULL);
