@@ -2214,9 +2214,9 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
     if (ctx->server->group_attribute_dn == 1) {
         user_val = ngx_pcalloc(
             r->pool,
-            ctx->user_dn.len + 1);
-        ngx_memcpy(user_val, ctx->user_dn.data, ctx->user_dn.len);
-        user_val[ctx->user_dn.len] = '\0';
+            ctx->dn.len + 1);
+        ngx_memcpy(user_val, ctx->dn.data, ctx->dn.len);
+        user_val[ctx->dn.len] = '\0';
     } else {
         user_val = ngx_pcalloc(
             r->pool,
