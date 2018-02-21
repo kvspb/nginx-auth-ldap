@@ -2236,7 +2236,7 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
             r->pool,
             for_filter);
         ngx_sprintf(filter, "(&(%s)(%s=%s))", cn_gr, ctx->server->group_attribute.data, user_val);
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: Search group filter is \"%s\"", (const char *) filter);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search group filter is \"%s\"", (const char *) filter);
         attrs[0] = LDAP_NO_ATTRS;
         attrs[1] = NULL;
         rc = ldap_search_ext(ctx->c->ld, tail_gr, LDAP_SCOPE_ONELEVEL, (const char *) filter, attrs, 0, NULL, NULL, NULL, 0, &ctx->c->msgid);
