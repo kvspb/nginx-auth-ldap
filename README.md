@@ -97,7 +97,7 @@ expected value: valid_user, user, group
 ## satisfy
 expected value: all, any
 
-## max_down_retries_count
+## max_down_retries
 expected value: a number, default 0
 
 Retry count for attempting to reconnect to an LDAP server if it is considered
