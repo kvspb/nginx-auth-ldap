@@ -1954,7 +1954,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 break;
 
             case PHASE_CHECK_GROUP:
-                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "Checking group", &ctx->user_dn);
+                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Checking group", &ctx->user_dn);
                 rc = ngx_http_auth_ldap_check_group(r, ctx);
                 if (rc == NGX_AGAIN) {
                     /* LDAP operation in progress, wait for the results */
@@ -1972,7 +1972,6 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 break;
 
             case PHASE_CHECK_BIND:
-
                 if (ctx->outcome == OUTCOME_UNCERTAIN) {
                     /* If we're still uncertain when satisfy is 'any' and there
                      * is at least one require user/group rule, it means no
@@ -2185,6 +2184,7 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
         return NGX_AGAIN;
     }
 
+    ctx->replied = 0;
     ngx_str_t val;
     values = ctx->server->require_group->elts;
     if (ngx_http_complex_value(r, &values[ctx->iteration], &val) != NGX_OK) {
