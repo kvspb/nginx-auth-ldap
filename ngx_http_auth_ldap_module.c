@@ -2159,7 +2159,13 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
     /* Handle result of the search started during previous call */
     if (ctx->iteration > 0) {
         ctx->group_dn.data = ctx->dn.data;
-        if (ctx->group_dn.data != NULL) {
+        if (ctx->group_dn.data == NULL) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_search_ext() returned NULL result");
+            if (ctx->server->satisfy_all == 1) {
+                ctx->outcome = OUTCOME_DENY;
+                return NGX_DECLINED;
+            }
+        } else {
             if (ctx->error_code == LDAP_SUCCESS) {
                 if (ctx->server->satisfy_all == 0) {
                     ctx->outcome = OUTCOME_ALLOW;
