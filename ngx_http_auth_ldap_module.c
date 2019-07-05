@@ -1842,6 +1842,8 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
         ngx_http_auth_ldap_loc_conf_t *conf)
 {
     ngx_int_t rc;
+    ngx_uint_t i;
+    ngx_http_auth_ldap_server_t *s;
 
     if (r->connection->write->timedout) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: Authentication timed out");
@@ -1871,6 +1873,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
     }
 
     for (;;) {
+        loop:
         ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Authentication loop (phase=%d, iteration=%d)",
             ctx->phase, ctx->iteration);
 
@@ -1885,12 +1888,15 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
 
                 /* Check cache if enabled */
                 if (ngx_http_auth_ldap_cache.buckets != NULL) {
-                    rc = ngx_http_auth_ldap_check_cache(r, ctx, &ngx_http_auth_ldap_cache, ctx->server);
-                    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Using cached outcome %d", rc);
-                    if (rc == OUTCOME_DENY || rc == OUTCOME_ALLOW) {
-                        ctx->outcome = (rc == OUTCOME_DENY ? OUTCOME_CACHED_DENY : OUTCOME_CACHED_ALLOW);
-                        ctx->phase = PHASE_NEXT;
-                        break;
+                    for (i = 0; i < conf->servers->nelts; i++) {
+                        s = &((ngx_http_auth_ldap_server_t *) conf->servers->elts)[i];
+                        rc = ngx_http_auth_ldap_check_cache(r, ctx, &ngx_http_auth_ldap_cache, s);
+                        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Using cached outcome %d from server %d", rc, i);
+                        if (rc == OUTCOME_DENY || rc == OUTCOME_ALLOW) {
+                            ctx->outcome = (rc == OUTCOME_DENY ? OUTCOME_CACHED_DENY : OUTCOME_CACHED_ALLOW);
+                            ctx->phase = PHASE_NEXT;
+                            goto loop;
+                        }
                     }
                 }
 
