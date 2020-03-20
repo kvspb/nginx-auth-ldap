@@ -41,7 +41,9 @@
 #pragma clang diagnostic warning "-W#warnings"
 #else
 #ifdef __GNUC__
+#if GNUC > 4
 #pragma GCC diagnostic warning "-Wcpp"
+#endif
 #endif
 #endif
 // TODO: do the same stuff for MSVC and/or other compilers
@@ -433,7 +435,9 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
       #if OPENSSL_VERSION_NUMBER >= 0x10002000
       server->ssl_check_cert = 1;
       #else
+      #if GNUC > 4
       #warning "http_auth_ldap: Compiling with OpenSSL < 1.0.2, certificate verification will be unavailable. OPENSSL_VERSION_NUMBER == " XSTR(OPENSSL_VERSION_NUMBER)
+      #endif
       ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
         "http_auth_ldap: 'ssl_cert_check': cannot verify remote certificate's domain name because "
         "your version of OpenSSL is too old. "
