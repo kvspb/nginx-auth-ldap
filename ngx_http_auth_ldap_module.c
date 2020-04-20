@@ -2216,7 +2216,6 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
     ngx_memcpy(gr, val.data, val.len);
     gr[val.len] = '\0';
     tail_gr = ngx_strchr(gr, ',');
-    
     if (tail_gr == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: Incorrect group DN: \"%s\"", gr);
         ctx->outcome = OUTCOME_ERROR;
@@ -2230,9 +2229,9 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
     if (ctx->server->group_attribute_dn == 1) {
         user_val = ngx_pcalloc(
             r->pool,
-            ctx->dn.len + 1);
-        ngx_memcpy(user_val, ctx->dn.data, ctx->dn.len);
-        user_val[ctx->dn.len] = '\0';
+            ctx->user_dn.len + 1);
+        ngx_memcpy(user_val, ctx->user_dn.data, ctx->user_dn.len);
+        user_val[ctx->user_dn.len] = '\0';
     } else {
         user_val = ngx_pcalloc(
             r->pool,
