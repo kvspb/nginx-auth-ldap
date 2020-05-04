@@ -69,6 +69,10 @@ extern int ldap_init_fd(ber_socket_t fd, int proto, const char *url, LDAP **ld);
 
 #define NGX_HTTP_AUTH_LDAP_MAX_SERVERS_SIZE 7
 
+#define SSL_CERT_VERIFY_OFF    0
+#define SSL_CERT_VERIFY_FULL   1
+#define SSL_CERT_VERIFY_CHAIN  2
+
 
 typedef struct {
     LDAPURLDesc *ludpp;
@@ -431,18 +435,24 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
             return NGX_CONF_ERROR;
         }
         server->connections = i;
-    } else if (ngx_strcmp(value[0].data, "ssl_check_cert") == 0  && ngx_strcmp(value[1].data, "on") == 0) {
-      #if OPENSSL_VERSION_NUMBER >= 0x10002000
-      server->ssl_check_cert = 1;
-      #else
-      #if GNUC > 4
-      #warning "http_auth_ldap: Compiling with OpenSSL < 1.0.2, certificate verification will be unavailable. OPENSSL_VERSION_NUMBER == " XSTR(OPENSSL_VERSION_NUMBER)
-      #endif
-      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-        "http_auth_ldap: 'ssl_cert_check': cannot verify remote certificate's domain name because "
-        "your version of OpenSSL is too old. "
-        "Please install OpenSSL >= 1.02 and recompile nginx.");
-      #endif
+    } else if (ngx_strcmp(value[0].data, "ssl_check_cert") == 0) {
+        #if OPENSSL_VERSION_NUMBER >= 0x10002000
+        if (ngx_strcmp(value[1].data, "on") == 0) {
+            server->ssl_check_cert = SSL_CERT_VERIFY_FULL;
+        } else if (ngx_strcmp(value[1].data, "chain") == 0) {
+            server->ssl_check_cert = SSL_CERT_VERIFY_CHAIN;
+        } else {
+            server->ssl_check_cert = SSL_CERT_VERIFY_OFF;
+        }
+        #else
+        #if GNUC > 4
+        #warning "http_auth_ldap: Compiling with OpenSSL < 1.0.2, certificate verification will be unavailable. OPENSSL_VERSION_NUMBER == " XSTR(OPENSSL_VERSION_NUMBER)
+        #endif
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+          "http_auth_ldap: 'ssl_cert_check': cannot verify remote certificate's domain name because "
+          "your version of OpenSSL is too old. "
+          "Please install OpenSSL >= 1.0.2 and recompile nginx.");
+        #endif
     } else if (ngx_strcmp(value[0].data, "ssl_ca_dir") == 0) {
       server->ssl_ca_dir = value[1];
     } else if (ngx_strcmp(value[0].data, "ssl_ca_file") == 0) {
@@ -1334,18 +1344,25 @@ ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn, ngx_flag_t vali
           long chain_verified = SSL_get_verify_result(conn->ssl->connection);
 
           int addr_verified;
-          char *hostname = c->server->ludpp->lud_host;
-          addr_verified = X509_check_host(cert, hostname, 0, 0, 0);
+          if (c->server->ssl_check_cert == SSL_CERT_VERIFY_CHAIN) {
+            // chain_verified is enough, not requiring full name/IP verification
+            addr_verified = 1;
 
-          if (!addr_verified) { // domain not in cert? try IP
-            size_t len; // get IP length
-            if (conn->sockaddr->sa_family == 4) len = 4;
-            else if (conn->sockaddr->sa_family == 6) len = 16;
-            else { // very unlikely indeed
-              ngx_http_auth_ldap_close_connection(c);
-              return;
+          } else {
+            // verify hostname/IP
+            char *hostname = c->server->ludpp->lud_host;
+            addr_verified = X509_check_host(cert, hostname, 0, 0, 0);
+
+            if (!addr_verified) { // domain not in cert? try IP
+              size_t len; // get IP length
+              if (conn->sockaddr->sa_family == 4) len = 4;
+              else if (conn->sockaddr->sa_family == 6) len = 16;
+              else { // very unlikely indeed
+                ngx_http_auth_ldap_close_connection(c);
+                return;
+              }
+              addr_verified = X509_check_ip(cert, (const unsigned char*)conn->sockaddr->sa_data, len, 0);
             }
-            addr_verified = X509_check_ip(cert, (const unsigned char*)conn->sockaddr->sa_data, len, 0);
           }
 
           // Find anything fishy?
@@ -1528,11 +1545,11 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
 
             // if LDAP_SERVER_DOWN (usually timeouts or server disconnects)
             if (rc == LDAP_SERVER_DOWN && \
-                c->server->max_down_retries_count < c->server->max_down_retries) { 
-                /** 
-                    update counter (this is always reset in 
-                    ngx_http_auth_ldap_connect() for a successful ldap 
-                    connection  
+                c->server->max_down_retries_count < c->server->max_down_retries) {
+                /**
+                    update counter (this is always reset in
+                    ngx_http_auth_ldap_connect() for a successful ldap
+                    connection
                 **/
                 c->server->max_down_retries_count++;
                 ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: LDAP_SERVER_DOWN: retry count: %d",
@@ -1542,7 +1559,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 // timer call to this read handler again
                 ngx_http_auth_ldap_reconnect_handler(rev);
                 return;
-            } 
+            }
 
             return;
         }
