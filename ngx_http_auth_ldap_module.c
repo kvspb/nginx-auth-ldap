@@ -26,6 +26,7 @@
  * SUCH DAMAGE.
  */
 
+#include <sys/socket.h>
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
@@ -437,7 +438,7 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         server->connections = i;
     } else if (ngx_strcmp(value[0].data, "ssl_check_cert") == 0) {
         #if OPENSSL_VERSION_NUMBER >= 0x10002000
-        if (ngx_strcmp(value[1].data, "on") == 0) {
+        if ((ngx_strcmp(value[1].data, "on") == 0) || (ngx_strcmp(value[1].data, "full") == 0)) {
             server->ssl_check_cert = SSL_CERT_VERIFY_FULL;
         } else if (ngx_strcmp(value[1].data, "chain") == 0) {
             server->ssl_check_cert = SSL_CERT_VERIFY_CHAIN;
@@ -1355,13 +1356,19 @@ ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn, ngx_flag_t vali
 
             if (!addr_verified) { // domain not in cert? try IP
               size_t len; // get IP length
-              if (conn->sockaddr->sa_family == 4) len = 4;
-              else if (conn->sockaddr->sa_family == 6) len = 16;
+
+              struct sockaddr *conn_sockaddr = NULL;
+              if (conn->sockaddr != NULL) conn_sockaddr = conn->sockaddr;
+              else if (c->conn->sockaddr != NULL) conn_sockaddr = c->conn->sockaddr;
+              else conn_sockaddr = &c->server->parsed_url->sockaddr.sockaddr;
+
+              if (conn_sockaddr->sa_family == AF_INET) len = 4;
+              else if (conn_sockaddr->sa_family == AF_INET6) len = 16;
               else { // very unlikely indeed
                 ngx_http_auth_ldap_close_connection(c);
                 return;
               }
-              addr_verified = X509_check_ip(cert, (const unsigned char*)conn->sockaddr->sa_data, len, 0);
+              addr_verified = X509_check_ip(cert, (const unsigned char*)conn_sockaddr->sa_data, len, 0);
             }
           }
 
