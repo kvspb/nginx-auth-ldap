@@ -1359,8 +1359,8 @@ ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn, ngx_flag_t vali
 
               struct sockaddr *conn_sockaddr = NULL;
               if (conn->sockaddr != NULL) conn_sockaddr = conn->sockaddr;
-              else if (c->conn->sockaddr != NULL) conn_sockaddr = c->conn->sockaddr;
-              else conn_sockaddr = &c->server->parsed_url->sockaddr.sockaddr;
+              else if (c->conn.sockaddr != NULL) conn_sockaddr = c->conn.sockaddr;
+              else conn_sockaddr = &c->server->parsed_url.sockaddr.sockaddr;
 
               if (conn_sockaddr->sa_family == AF_INET) len = 4;
               else if (conn_sockaddr->sa_family == AF_INET6) len = 16;
