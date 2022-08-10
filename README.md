@@ -13,6 +13,7 @@ The reasons for this fork are:
 * Add new features
   * Add the use of `resolver` to resolve hostname of the LDAP server
   * Support LDAP attributes fecthing during search
+  * Added an `encoding` attribute to the binddn_passwd parameter
 
 ## How to install
 
@@ -177,11 +178,15 @@ url format: ldap[s]://host[:port]/dn?attrs?scope?filter[?exts]
 * Default: --
 * Context: `ldap_server` block
 
+The DN for the initial bind
+
 ### binddn_passwd
 
-* Syntax: binddn_passwd _password_;
+* Syntax: binddn_passwd _password_ [text | base64 | hex];
 * Default: --
 * Context: `ldap_server` block
+
+The initial bind password. can be encoded in clear text (the default) or be encoded in base64 or HEX representation
 
 ### group_attribute
 
@@ -279,12 +284,11 @@ to read write.
 
 The prefix for the HEADER names used to carry the feteched attributes (default: "X-LDAP-ATTRS-")
 
-### search_attribute
+### search_attributes
 
-* Syntax: search_attribute _attr_;
+* Syntax: search_attributes _attr1_ [ [ _attr2_ ] ... [ _attrN_ ] ];
 * Default: --
 * Context: `ldap_server` block
 
-Add this LDAP attribute description for the search (require valid-user or require user). The attribute value will be return as a HTTP header (<attribute_header_prefix><search_attribute>) in the authentication response.
+Space delimited list of LDAP attribute descriptions to include in the search (require valid-user or require user). Each attribute value will be return as a HTTP header (<attribute_header_prefix><search_attribute>) in the authentication response.
 
-_Note_: This parameter can be repeated several times when several attributes need to be fetched
