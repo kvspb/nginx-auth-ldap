@@ -1873,6 +1873,9 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                                     santitize_str((u_char *)attr, SANITIZE_NO_CONV);
                                     int attr_len = strlen(attr);
                                     h->hash = 1;
+#if (nginx_version >= 102300)
+                                    h->next = NULL;
+#endif
                                     h->key.len = c->server->attribute_header_prefix.len + attr_len;
                                     h->key.data = ngx_pnalloc(c->rctx->r->pool, h->key.len);
                                     unsigned char *p = ngx_cpymem(h->key.data, c->server->attribute_header_prefix.data, c->server->attribute_header_prefix.len);
@@ -2269,6 +2272,9 @@ ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
     }
 
     r->headers_out.www_authenticate->hash = 1;
+#if (nginx_version >= 102300)
+    r->headers_out.www_authenticate->next = NULL;
+#endif
     r->headers_out.www_authenticate->key.len = sizeof("WWW-Authenticate") - 1;
     r->headers_out.www_authenticate->key.data = (u_char *) "WWW-Authenticate";
     r->headers_out.www_authenticate->value = *realm;
