@@ -120,6 +120,7 @@ typedef struct {
     ngx_queue_t free_connections;
     ngx_queue_t waiting_requests;
 
+    ngx_queue_t pending_connections;
     char **attrs;  // Search attributes formated for ldap_search_ext()
     ngx_str_t attribute_header_prefix;
 } ngx_http_auth_ldap_server_t;
@@ -212,6 +213,7 @@ typedef struct ngx_http_auth_ldap_connection {
 #endif
 
     ngx_queue_t queue;
+    ngx_queue_t queue_pending; /* pendings connection (waiting re-connect) */
     ngx_http_auth_ldap_ctx_t *rctx;
 
     LDAP* ld;
@@ -238,6 +240,7 @@ static ngx_int_t ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle);
 static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf);
 static ngx_int_t ngx_http_auth_ldap_init_cache(ngx_cycle_t *cycle);
 static void ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c);
+static void ngx_http_auth_ldap_set_pending_connection(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_read_handler(ngx_event_t *rev);
 static void ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_connect_continue(ngx_http_auth_ldap_connection_t *c);
@@ -1133,8 +1136,8 @@ ngx_http_auth_ldap_init_cache(ngx_cycle_t *cycle)
     cache->num_buckets = count;
     cache->elts_per_bucket = 8;
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, cycle->log, 0, "http_auth_ldap: Allocating %ud bytes of LDAP cache.",
-        cache->num_buckets * cache->elts_per_bucket * sizeof(ngx_http_auth_ldap_cache_elt_t));
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, cycle->log, 0, "http_auth_ldap: Allocating %ud bytes of LDAP cache (ttl=%dms).",
+        cache->num_buckets * cache->elts_per_bucket * sizeof(ngx_http_auth_ldap_cache_elt_t), cache->expiration_time);
 
     cache->buckets = (ngx_http_auth_ldap_cache_elt_t *) ngx_calloc(count * 8 * sizeof(ngx_http_auth_ldap_cache_elt_t), cycle->log);
     if (cache->buckets == NULL) {
@@ -1343,7 +1346,7 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
     c->rctx = NULL;
     if (c->state != STATE_DISCONNECTED) {
         c->state = STATE_DISCONNECTED;
-        ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
+        ngx_http_auth_ldap_set_pending_connection(c);
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connection scheduled for reconnection in %d ms", c->server->reconnect_timeout);
     }
 }
@@ -1384,6 +1387,18 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
         return 1;
     }
 
+    /* Check if we have pending (waiting reconnect) connection */
+    if (!ngx_queue_empty(&server->pending_connections)) {
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
+            "http_auth_ldap: ngx_http_auth_ldap_get_connection: Have pending connection");
+        q = ngx_queue_head(&server->pending_connections);
+        c = ngx_queue_data(q, ngx_http_auth_ldap_connection_t, queue_pending);
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
+            "http_auth_ldap: ngx_http_auth_ldap_get_connection: Shorten reconnect timer");
+        /* Shorten the reconnection timer */
+        ngx_add_timer(&c->reconnect_event, 0);
+    }
+
     q = ngx_queue_next(&server->waiting_requests);
     while (q != ngx_queue_sentinel(&server->waiting_requests)) {
         if (q == &ctx->queue) {
@@ -1418,6 +1433,26 @@ ngx_http_auth_ldap_return_connection(ngx_http_auth_ldap_connection_t *c)
         ngx_queue_remove(q);
         ngx_http_auth_ldap_wake_request((ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue))->r);
     }
+}
+
+static void
+ngx_http_auth_ldap_set_pending_connection(ngx_http_auth_ldap_connection_t *c)
+{
+    ngx_queue_t *q;
+
+    ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
+    /* Check if connection is already in the pending queue */
+    for (q = ngx_queue_head(&c->server->pending_connections);
+        q != ngx_queue_sentinel(&c->server->pending_connections);
+        q = ngx_queue_next(q))
+    {
+        if (q == &c->queue_pending) {
+            ngx_log_error(NGX_LOG_WARN, c->log, 0,
+                "http_auth_ldap: ngx_http_auth_ldap_set_pending_connection: Connection already in pending queue");
+            return;
+        }
+    }
+    ngx_queue_insert_tail(&c->server->pending_connections, &c->queue_pending);
 }
 
 static void
@@ -1873,7 +1908,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                                     santitize_str((u_char *)attr, SANITIZE_NO_CONV);
                                     int attr_len = strlen(attr);
                                     h->hash = 1;
-#if (nginx_version >= 102300)
+#if (nginx_version >= 1023000)
                                     h->next = NULL;
 #endif
                                     h->key.len = c->server->attribute_header_prefix.len + attr_len;
@@ -2011,7 +2046,7 @@ ngx_http_auth_ldap_connect_continue(ngx_http_auth_ldap_connection_t *c)
     if (rc == NGX_ERROR || rc == NGX_BUSY || rc == NGX_DECLINED) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Unable to connect to LDAP server \"%V\".",
             &addr->name);
-        ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
+        ngx_http_auth_ldap_set_pending_connection(c);
         return;
     }
 
@@ -2040,6 +2075,20 @@ ngx_http_auth_ldap_reconnect_handler(ngx_event_t *ev)
 {
     ngx_connection_t *conn = ev->data;
     ngx_http_auth_ldap_connection_t *c = conn->data;
+    ngx_queue_t *q;
+
+    /* Remove this connection from the pending queue */
+    for (q = ngx_queue_head(&c->server->pending_connections);
+        q != ngx_queue_sentinel(&c->server->pending_connections);
+        q = ngx_queue_next(q))
+    {
+        if (q == &c->queue_pending) {
+            ngx_queue_remove(q);
+            ngx_log_error(NGX_LOG_DEBUG, c->log, 0,
+                "http_auth_ldap: ngx_http_auth_ldap_reconnect_handler: Connection removed from pending queue");
+            break;
+        }
+    }
     ngx_http_auth_ldap_connect(c);
 }
 
@@ -2216,6 +2265,7 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
         server = &((ngx_http_auth_ldap_server_t *) halmcf->servers->elts)[i];
         ngx_queue_init(&server->free_connections);
         ngx_queue_init(&server->waiting_requests);
+        ngx_queue_init(&server->pending_connections);
         if (server->connections <= 1) {
             server->connections = 1;
         }
@@ -2272,7 +2322,7 @@ ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
     }
 
     r->headers_out.www_authenticate->hash = 1;
-#if (nginx_version >= 102300)
+#if (nginx_version >= 1023000)
     r->headers_out.www_authenticate->next = NULL;
 #endif
     r->headers_out.www_authenticate->key.len = sizeof("WWW-Authenticate") - 1;

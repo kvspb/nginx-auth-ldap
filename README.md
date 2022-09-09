@@ -7,13 +7,17 @@ This project is a clone of [nginx-auth-ldap](https://github.com/kvspb/nginx-auth
 
 The reasons for this fork are:
 
-* The original project seems abondonned (no commit since 2 years)
-* Inherit from other contributors fixes/features
-  * [Pull request #237](https://github.com/kvspb/nginx-auth-ldap/pull/237) from [mmguero-dev](https://github.com/mmguero-dev/nginx-auth-ldap)
-* Add new features
-  * Add the use of `resolver` to resolve hostname of the LDAP server
-  * Support LDAP attributes fecthing during search
-  * Added an `encoding` attribute to the binddn_passwd parameter
+* The original project seems abondonned (no commit since 2 years).
+* Inherit from other contributors fixes/features:
+  * [Pull request #237](https://github.com/kvspb/nginx-auth-ldap/pull/237) from [mmguero-dev](https://github.com/mmguero-dev/nginx-auth-ldap).
+  * Compatible with Nginx 1.23.0 (http headers are now linked).
+* Add new features:
+  * Add the use of `resolver` to resolve hostname of the LDAP server.
+  * Support LDAP attributes fecthing during search.
+  * Added an `encoding` attribute to the binddn_passwd parameter.
+  * Manage connections waiting a reconnect delay in a specific queue, so that we can
+    cancel the reconnect delay when a new request ask for an authentication and no free
+    connection is available.
 
 ## How to install
 
@@ -101,10 +105,10 @@ And add required servers in correct order into your location/server directive:
 ### auth_ldap_cache_expiration_time
 
 * Syntax: auth_ldap_cache_expiration_time time;
-* Default: auth_ldap_cache_expiration_time 10000;
+* Default: auth_ldap_cache_expiration_time 10s;
 * Context: http
 
-Cache expiration time (in ms).
+Cache expiration time (see <https://nginx.org/en/docs/syntax.html> for time intervals syntax).
 
 ### auth_ldap_cache_size
 
@@ -151,10 +155,10 @@ See the `resolver` directive of the **ngx_http_core_module**
 ### auth_ldap_resolver_timeout
 
 * Syntax: auth_ldap_resolver_timeout time;
-* Default: auth_ldap_resolver_timeout 10000;
+* Default: auth_ldap_resolver_timeout 10s;
 * Context: http
 
-Resolver requests timeout (in ms).
+Resolver requests timeout (see <https://nginx.org/en/docs/syntax.html> for time intervals syntax).
 
 ### ldap_server
 
@@ -208,7 +212,6 @@ Tell to search for full DN in member object.
 * Default: --;
 * Context: `ldap_server` block
 
-
 ### satisfy
 
 * Syntax: satisfy all | any;
@@ -230,7 +233,6 @@ This can usually help with the following error:
 ```text
 http_auth_ldap: ldap_result() failed (-1: Can't contact LDAP server)
 ```
-
 
 ### ssl_check_cert
 
@@ -292,3 +294,18 @@ The prefix for the HEADER names used to carry the feteched attributes (default: 
 
 Space delimited list of LDAP attribute descriptions to include in the search (require valid-user or require user). Each attribute value will be return as a HTTP header (<attribute_header_prefix><search_attribute>) in the authentication response.
 
+### reconnect_timeout
+
+* Syntax: reconnect_timeout _timespec_;
+* Default: reconnect_timeout 10s;
+* Context: `ldap_server` block
+
+The delay before reconnection attempts (see <https://nginx.org/en/docs/syntax.html> for _timespec_ syntax)
+
+### connections
+
+* Syntax: connections _count_;
+* Default: connections 1;
+* Context: `ldap_server` block
+
+The number of connections to the server use in //
