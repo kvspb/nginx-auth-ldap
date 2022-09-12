@@ -84,7 +84,9 @@ extern int ldap_init_fd(ber_socket_t fd, int proto, const char *url, LDAP **ld);
 #define ENCODING_B64      1
 #define ENCODING_HEX      2
 
-#define MAX_ATTRS_COUNT   5    /* Maximum search attributes to display in log */
+#define DEFAULT_ATTRS_COUNT 3    /* The default number of search attributes */
+#define MAX_ATTRS_COUNT     5    /* Maximum search attributes to display in log */
+
 
 
 typedef struct {
@@ -144,11 +146,18 @@ typedef struct {
     ngx_array_t *servers;       /* array of ngx_http_auth_ldap_server_t* */
 } ngx_http_auth_ldap_loc_conf_t;
 
+
+typedef struct {
+    ngx_str_t attr_name;
+    ngx_str_t attr_value;
+} ldap_search_attribute_t;
+
 typedef struct {
     uint32_t small_hash;     /* murmur2 hash of username ^ &server       */
     uint32_t outcome;        /* OUTCOME_DENY or OUTCOME_ALLOW            */
     ngx_msec_t time;         /* ngx_current_msec when created            */
     u_char big_hash[16];     /* md5 hash of (username, server, password) */
+    ngx_array_t attributes;  /* Attributes (ldap_search_attribute_t) retreived during the search */
 } ngx_http_auth_ldap_cache_elt_t;
 
 typedef struct {
@@ -156,6 +165,7 @@ typedef struct {
     ngx_uint_t num_buckets;
     ngx_uint_t elts_per_bucket;
     ngx_msec_t expiration_time;
+    ngx_pool_t *pool;
 } ngx_http_auth_ldap_cache_t;
 
 typedef enum {
@@ -175,6 +185,7 @@ typedef struct {
     ngx_http_auth_ldap_request_phase_t phase;
     unsigned int iteration;
     int outcome;
+    ngx_array_t attributes;  /* Attributes (ldap_search_attribute_t) retreived during the search */
 
     struct ngx_http_auth_ldap_connection *c;
     ngx_queue_t queue;
@@ -1117,6 +1128,9 @@ ngx_http_auth_ldap_init_cache(ngx_cycle_t *cycle)
         577, 641, 701, 769, 839, 911, 983, 1049, 1109
     };
 
+    cache = &ngx_http_auth_ldap_cache;
+    cache->pool = cycle->pool;
+
     conf = (ngx_http_auth_ldap_main_conf_t *) ngx_http_cycle_get_module_main_conf(cycle, ngx_http_auth_ldap_module);
     if (conf == NULL || !conf->cache_enabled) {
         return NGX_OK;
@@ -1131,7 +1145,7 @@ ngx_http_auth_ldap_init_cache(ngx_cycle_t *cycle)
         }
     }
 
-    cache = &ngx_http_auth_ldap_cache;
+    
     cache->expiration_time = conf->cache_expiration_time;
     cache->num_buckets = count;
     cache->elts_per_bucket = 8;
@@ -1143,6 +1157,12 @@ ngx_http_auth_ldap_init_cache(ngx_cycle_t *cycle)
     if (cache->buckets == NULL) {
         ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "http_auth_ldap: Unable to allocate memory for LDAP cache.");
         return NGX_ERROR;
+    }
+
+    /* Initialize the attributes array in each cache entry */
+    ngx_http_auth_ldap_cache_elt_t *cache_entry = cache->buckets;
+    for (i = 0; i < cache->num_buckets * cache->elts_per_bucket; i++, cache_entry++) {
+        ngx_array_init(&cache_entry->attributes, cache->pool, DEFAULT_ATTRS_COUNT, sizeof(ldap_search_attribute_t));
     }
 
     return NGX_OK;
@@ -1173,6 +1193,17 @@ ngx_http_auth_ldap_check_cache(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
         if (elt->small_hash == ctx->cache_small_hash &&
                 elt->time > time_limit &&
                 memcmp(elt->big_hash, ctx->cache_big_hash, 16) == 0) {
+            if (elt->outcome == OUTCOME_ALLOW || elt->outcome == OUTCOME_CACHED_ALLOW) {
+                /* Restore the cached attributes to the current context */
+                ctx->attributes.nelts = 0;
+                for (i = 0; i < elt->attributes.nelts; i++) {
+                    ldap_search_attribute_t *ctx_attr = ngx_array_push(&ctx->attributes);
+                    *ctx_attr = *((ldap_search_attribute_t *)elt->attributes.elts + i);
+                    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                            "http_auth_ldap: ngx_http_auth_ldap_check_cache: restoring attribute '%V' = '%V' from cache",
+                            &ctx_attr->attr_name, &ctx_attr->attr_value);
+                }
+            }
             return elt->outcome;
         }
     }
@@ -1199,6 +1230,15 @@ ngx_http_auth_ldap_update_cache(ngx_http_auth_ldap_ctx_t *ctx,
     oldest_elt->outcome = outcome;
     oldest_elt->small_hash = ctx->cache_small_hash;
     ngx_memcpy(oldest_elt->big_hash, ctx->cache_big_hash, 16);
+    /* save (copy) each attribute from the context to the cache */
+    oldest_elt->attributes.nelts = 0;
+    for (i = 0; i < ctx->attributes.nelts; i++) {
+        ldap_search_attribute_t *cache_attr = ngx_array_push(&oldest_elt->attributes);
+        *cache_attr = *((ldap_search_attribute_t *)ctx->attributes.elts + i);
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
+                "http_auth_ldap: ngx_http_auth_ldap_update_cache: saving '%V' = '%V' to cache",
+                &cache_attr->attr_name, &cache_attr->attr_value);
+    }
 }
 
 
@@ -1895,7 +1935,6 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                     BerElement *ber = NULL;
                     char *attr = NULL;
                     struct berval **vals = NULL;     
-                    ngx_table_elt_t *h;
                     for (attr = ldap_first_attribute(c->ld, result, &ber);
                          attr != NULL;
                          attr = ldap_next_attribute(c->ld, result, ber)) {
@@ -1903,22 +1942,18 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                         if ((vals = ldap_get_values_len(c->ld, result, attr)) != NULL ) {
                             if(vals[0] != NULL) {
                                 ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received attribute %s: %s", attr, vals[0]->bv_val);
-                                h = ngx_list_push(&c->rctx->r->headers_out.headers);
-	                            if (h != NULL) {
-                                    santitize_str((u_char *)attr, SANITIZE_NO_CONV);
-                                    int attr_len = strlen(attr);
-                                    h->hash = 1;
-#if (nginx_version >= 1023000)
-                                    h->next = NULL;
-#endif
-                                    h->key.len = c->server->attribute_header_prefix.len + attr_len;
-                                    h->key.data = ngx_pnalloc(c->rctx->r->pool, h->key.len);
-                                    unsigned char *p = ngx_cpymem(h->key.data, c->server->attribute_header_prefix.data, c->server->attribute_header_prefix.len);
-                                    p = ngx_cpymem(p, attr, attr_len);
-	                                h->value.len = vals[0]->bv_len;
-	                                h->value.data = ngx_pnalloc(c->rctx->r->pool, h->value.len);
-	                                ngx_memcpy(h->value.data, vals[0]->bv_val, h->value.len);
-	                            }
+                                /* Save attribute name and value in the context */
+                                ldap_search_attribute_t * elt = ngx_array_push(&c->rctx->attributes);
+                                santitize_str((u_char *)attr, SANITIZE_NO_CONV);
+                                int attr_len = strlen(attr);
+                                elt->attr_name.len = c->server->attribute_header_prefix.len + attr_len;
+                                /* Use the pool of global cache to allocate strings, so that they can be used everywhere */
+                                elt->attr_name.data = ngx_pnalloc(ngx_http_auth_ldap_cache.pool, elt->attr_name.len);
+                                unsigned char *p = ngx_cpymem(elt->attr_name.data, c->server->attribute_header_prefix.data, c->server->attribute_header_prefix.len);
+                                p = ngx_cpymem(p, attr, attr_len);
+	                            elt->attr_value.len = vals[0]->bv_len;
+	                            elt->attr_value.data = ngx_pnalloc(ngx_http_auth_ldap_cache.pool, elt->attr_value.len);
+	                            ngx_memcpy(elt->attr_value.data, vals[0]->bv_val, elt->attr_value.len);
                             }
                             ldap_value_free_len(vals);
                         }
@@ -2377,6 +2412,10 @@ ngx_http_auth_ldap_handler(ngx_http_request_t *r)
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
         ctx->r = r;
+
+        /* Initialize the attributes array */
+        ngx_array_init(&ctx->attributes, r->pool, DEFAULT_ATTRS_COUNT, sizeof(ldap_search_attribute_t));
+
         /* Other fields have been initialized to zero/NULL */
         ngx_http_set_ctx(r, ctx, ngx_http_auth_ldap_module);
     }
@@ -2587,6 +2626,22 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 }
 
                 if (ctx->outcome == OUTCOME_ALLOW || ctx->outcome == OUTCOME_CACHED_ALLOW) {
+                    /* Create response headers for each search attributes found in context */
+                    for (i = 0; i < ctx->attributes.nelts; i++) {
+                        ldap_search_attribute_t *elt = (ldap_search_attribute_t *)ctx->attributes.elts + i;
+                        ngx_table_elt_t *h = ngx_list_push(&r->headers_out.headers);
+	                    if (h != NULL) {
+                            h->hash = 1;
+#if (nginx_version >= 1023000)
+                            h->next = NULL;
+#endif
+                            h->key = elt->attr_name;
+                            h->value = elt->attr_value;
+	                    }
+                        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                                "http_auth_ldap: ngx_http_auth_ldap_authenticate set response header %V : %V",
+                                &elt->attr_name, &elt->attr_value);
+                    }
                     return NGX_OK;
                 }
 
