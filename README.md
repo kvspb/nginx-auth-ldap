@@ -1,4 +1,5 @@
 # LDAP Authentication module for nginx
+
 LDAP module for nginx which supports authentication against multiple LDAP servers.
 
 ## Project history
@@ -17,7 +18,9 @@ The reasons for this fork are:
   * Added an `encoding` attribute to the binddn_passwd parameter.
   * Manage connections waiting a reconnect delay in a specific queue, so that we can
     cancel the reconnect delay when a new request ask for an authentication and no free
-    connection is available.
+    connection is available, but some are waiting to re-connect.
+  * Fix the usage of `max_down_retries` parameter
+  * Add the `clean_on_timeout` option
 
 ## How to install
 
@@ -29,8 +32,7 @@ cd /usr/ports/www/nginx && make config install clean
 
 Check HTTP_AUTH_LDAP options
 
-
-```
+```text
 [*] HTTP_AUTH_LDAP        3rd party http_auth_ldap module
 ```
 
@@ -225,7 +227,7 @@ Tell to search for full DN in member object.
 * Context: `ldap_server` block
 
 Retry count for attempting to reconnect to an LDAP server if it is considered
-"DOWN".  This may happen if a KEEP-ALIVE connection to an LDAP server times 
+"DOWN".  This may happen if a KEEP-ALIVE connection to an LDAP server times
 out or is terminated by the server end after some amount of time.  
 
 This can usually help with the following error:
@@ -309,3 +311,12 @@ The delay before reconnection attempts (see <https://nginx.org/en/docs/syntax.ht
 * Context: `ldap_server` block
 
 The number of connections to the server use in //
+
+### clean_on_timeout
+
+* Syntax: clean_on_timeout on | off;
+* Default: clean_on_timeout off;
+* Context: `ldap_server` block
+
+Tell the module to shutdown an re-connect a LDAP server connection after a
+send timeout detected (instead of just marking the connection as free again).

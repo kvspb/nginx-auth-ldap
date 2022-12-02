@@ -111,6 +111,7 @@ typedef struct {
     ngx_http_complex_value_t require_valid_user_dn;
     ngx_flag_t satisfy_all;
     ngx_flag_t referral;
+    ngx_flag_t clean_on_timeout;
 
     ngx_uint_t connections;
     ngx_uint_t max_down_retries;
@@ -119,11 +120,11 @@ typedef struct {
     ngx_msec_t reconnect_timeout;
     ngx_msec_t bind_timeout;
     ngx_msec_t request_timeout;
-    ngx_queue_t free_connections;
-    ngx_queue_t waiting_requests;
+    ngx_queue_t free_connections;  /* Queue of free (ready) connections */
+    ngx_queue_t waiting_requests;  /* Queue of ctx with not finished requests */
 
-    ngx_queue_t pending_connections;
-    char **attrs;  // Search attributes formated for ldap_search_ext()
+    ngx_queue_t pending_connections;  /* Queue of pending connections (waiting re-connect) */ 
+    char **attrs;  /* Search attributes formated for ldap_search_ext() */
     ngx_str_t attribute_header_prefix;
 } ngx_http_auth_ldap_server_t;
 
@@ -188,7 +189,7 @@ typedef struct {
     ngx_array_t attributes;  /* Attributes (ldap_search_attribute_t) retreived during the search */
 
     struct ngx_http_auth_ldap_connection *c;
-    ngx_queue_t queue;
+    ngx_queue_t queue; /* Queue element to be chained in server->waiting_requests queue */
     int replied;
     int error_code;
     ngx_str_t error_msg;
@@ -223,14 +224,15 @@ typedef struct ngx_http_auth_ldap_connection {
     ngx_ssl_t *ssl;
 #endif
 
-    ngx_queue_t queue;
-    ngx_queue_t queue_pending; /* pendings connection (waiting re-connect) */
+    ngx_queue_t queue; /* Queue element to be chained in server->free_connections queue */
+    ngx_queue_t queue_pending; /* Queue element to be chained in server->pending_connections queue */
     ngx_http_auth_ldap_ctx_t *rctx;
 
     LDAP* ld;
     ngx_http_auth_ldap_connection_state_t state;
     int msgid;
     ngx_resolver_ctx_t *resolver_ctx;
+    ngx_uint_t cnx_idx; /* index of the connection from 0 to server->connections -1 */
 } ngx_http_auth_ldap_connection_t;
 
 static char * ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
@@ -256,6 +258,7 @@ static void ngx_http_auth_ldap_read_handler(ngx_event_t *rev);
 static void ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_connect_continue(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_reconnect_handler(ngx_event_t *);
+static void ngx_http_auth_ldap_reconnect_from_connection(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_resolve_handler(ngx_resolver_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_init_servers(ngx_cycle_t *cycle);
 static ngx_int_t ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle);
@@ -486,10 +489,12 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     ngx_memzero(server, sizeof(*server));
     server->connect_timeout = 10000;
     server->reconnect_timeout = 10000;
+    server->max_down_retries = 0;
     server->bind_timeout = 5000;
     server->request_timeout = 10000;
     server->alias = name;
     server->referral = 1;
+    server->clean_on_timeout = 0;
     server->attribute_header_prefix.len = sizeof(LDAP_ATTR_HEADER_DEFAULT_PREFIX) -1;
     server->attribute_header_prefix.data = (u_char *)LDAP_ATTR_HEADER_DEFAULT_PREFIX;
     server->attrs = NULL;
@@ -559,6 +564,12 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         return ngx_http_auth_ldap_parse_satisfy(cf, server);
     } else if (ngx_strcmp(value[0].data, "referral") == 0) {
         return ngx_http_auth_ldap_parse_referral(cf, server);
+    } else if (ngx_strcmp(value[0].data, "clean_on_timeout") == 0) {
+        if (ngx_strcasecmp(value[1].data, (u_char *) "on") == 0) {
+            server->clean_on_timeout = 1;
+        } else {
+            server->clean_on_timeout = 0;
+        }
     } else if (ngx_strcmp(value[0].data, "max_down_retries") == 0) {
         i = ngx_atoi(value[1].data, value[1].len);
         if (i == NGX_ERROR) {
@@ -714,7 +725,7 @@ ngx_http_auth_ldap_resolver(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     ngx_conf_log_error(NGX_LOG_DEBUG, cf, 0,
-            "http_auth_ldap: ngx_http_auth_ldap_resolver: Configured resolver %V",
+            "ngx_http_auth_ldap_resolver: Configured resolver %V",
             &value[1]);
 
     return NGX_CONF_OK;
@@ -1076,6 +1087,8 @@ ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle)
         return NGX_OK;
     }
 
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, cycle->log, 0, "ngx_http_auth_ldap_init_worker:");
+
     rc = ngx_http_auth_ldap_init_servers(cycle);
     if (rc != NGX_OK) {
         return rc;
@@ -1256,7 +1269,7 @@ ngx_http_auth_ldap_sb_remove(Sockbuf_IO_Desc *sbiod)
 {
     ngx_http_auth_ldap_connection_t *c = (ngx_http_auth_ldap_connection_t *)sbiod->sbiod_pvt;
 
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_remove()");
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_remove() Cnx[%d]", c->cnx_idx);
     (void)c; /* 'c' would be left unused on debug builds */
 
     sbiod->sbiod_pvt = NULL;
@@ -1268,11 +1281,12 @@ ngx_http_auth_ldap_sb_close(Sockbuf_IO_Desc *sbiod)
 {
     ngx_http_auth_ldap_connection_t *c = (ngx_http_auth_ldap_connection_t *)sbiod->sbiod_pvt;
 
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_close()");
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_close() Cnx[%d]", c->cnx_idx);
 
     if (!c->conn.connection->read->error && !c->conn.connection->read->eof) {
         if (ngx_shutdown_socket(c->conn.connection->fd, SHUT_RDWR) == -1) {
             ngx_connection_error(c->conn.connection, ngx_socket_errno, ngx_shutdown_socket_n " failed");
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_close() Cnx[%d] shutdown failed", c->cnx_idx);
             ngx_http_auth_ldap_close_connection(c);
             return -1;
         }
@@ -1286,7 +1300,7 @@ ngx_http_auth_ldap_sb_ctrl(Sockbuf_IO_Desc *sbiod, int opt, void *arg)
 {
     ngx_http_auth_ldap_connection_t *c = (ngx_http_auth_ldap_connection_t *)sbiod->sbiod_pvt;
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_ctrl(opt=%d)", opt);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_ctrl(opt=%d) Cnx[%d]", opt, c->cnx_idx);
 
     switch (opt) {
         case LBER_SB_OPT_DATA_READY:
@@ -1305,7 +1319,7 @@ ngx_http_auth_ldap_sb_read(Sockbuf_IO_Desc *sbiod, void *buf, ber_len_t len)
     ngx_http_auth_ldap_connection_t *c = (ngx_http_auth_ldap_connection_t *)sbiod->sbiod_pvt;
     ber_slen_t ret;
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_read(len=%d)", len);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_read(len=%d) Cnx[%d]", len, c->cnx_idx);
 
     ret = c->conn.connection->recv(c->conn.connection, buf, len);
     if (ret < 0) {
@@ -1322,9 +1336,10 @@ ngx_http_auth_ldap_sb_write(Sockbuf_IO_Desc *sbiod, void *buf, ber_len_t len)
     ngx_http_auth_ldap_connection_t *c = (ngx_http_auth_ldap_connection_t *)sbiod->sbiod_pvt;
     ber_slen_t ret;
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_write(len=%d)", len);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_write(len=%d) Cnx[%d]", len, c->cnx_idx);
 
     ret = c->conn.connection->send(c->conn.connection, buf, len);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_sb_write Cnx[%d] ret=%d", c->cnx_idx, ret);
     if (ret < 0) {
         errno = (ret == NGX_AGAIN) ? NGX_EAGAIN : NGX_ECONNRESET;
         return 0;
@@ -1351,17 +1366,19 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
 {
     ngx_queue_t *q;
 
+     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_close_connection: Cnx[%d]", c->cnx_idx);
+
     if (c->ld) {
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Unbinding from the server \"%V\")",
-            &c->server->url);
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_close_connection: Cnx[%d] Unbinding from the server \"%V\")",
+            c->cnx_idx, &c->server->url);
         ldap_unbind_ext(c->ld, NULL, NULL);
         /* Unbind is always synchronous, even though the function name does not end with an '_s'. */
         c->ld = NULL;
     }
 
     if (c->conn.connection) {
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Closing connection (fd=%d)",
-            c->conn.connection->fd);
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_close_connection: Cnx[%d] Closing connection (fd=%d)",
+            c->cnx_idx, c->conn.connection->fd);
 
 #if (NGX_OPENSSL)
         if (c->conn.connection->ssl) {
@@ -1377,6 +1394,9 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
     q = ngx_queue_head(&c->server->free_connections);
     while (q != ngx_queue_sentinel(&c->server->free_connections)) {
         if (q == &c->queue) {
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
+                "ngx_http_auth_ldap_close_connection: removing cnx [%d] from free queue",
+                c->cnx_idx);
             ngx_queue_remove(q);
             break;
         }
@@ -1386,8 +1406,10 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
     c->rctx = NULL;
     if (c->state != STATE_DISCONNECTED) {
         c->state = STATE_DISCONNECTED;
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
+            "ngx_http_auth_ldap_close_connection: Cnx[%d] set pending reconnection",
+            c->cnx_idx);
         ngx_http_auth_ldap_set_pending_connection(c);
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connection scheduled for reconnection in %d ms", c->server->reconnect_timeout);
     }
 }
 
@@ -1414,13 +1436,15 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
 
     server = ctx->server;
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0, "http_auth_ldap: Wants a free connection to \"%V\"",
-        &server->alias);
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
+        "ngx_http_auth_ldap_get_connection: Wants a free connection to \"%V\"", &server->alias);
 
     if (!ngx_queue_empty(&server->free_connections)) {
         q = ngx_queue_last(&server->free_connections);
         ngx_queue_remove(q);
         c = ngx_queue_data(q, ngx_http_auth_ldap_connection_t, queue);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
+            "ngx_http_auth_ldap_get_connection: Got cnx [%d] from free queue", c->cnx_idx);
         c->rctx = ctx;
         ctx->c = c;
         ctx->replied = 0;
@@ -1429,12 +1453,10 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
 
     /* Check if we have pending (waiting reconnect) connection */
     if (!ngx_queue_empty(&server->pending_connections)) {
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
-            "http_auth_ldap: ngx_http_auth_ldap_get_connection: Have pending connection");
         q = ngx_queue_head(&server->pending_connections);
         c = ngx_queue_data(q, ngx_http_auth_ldap_connection_t, queue_pending);
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
-            "http_auth_ldap: ngx_http_auth_ldap_get_connection: Shorten reconnect timer");
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
+            "ngx_http_auth_ldap_get_connection: Got cnx [%d] from pending queue -> shorten reconnect timer", c->cnx_idx);
         /* Shorten the reconnection timer */
         ngx_add_timer(&c->reconnect_event, 0);
     }
@@ -1442,13 +1464,13 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
     q = ngx_queue_next(&server->waiting_requests);
     while (q != ngx_queue_sentinel(&server->waiting_requests)) {
         if (q == &ctx->queue) {
-            ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0, "http_auth_ldap: Tried to insert a same request");
+            ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0, "ngx_http_auth_ldap_get_connection: Tried to insert a same request");
             return 0;
         }
         q = ngx_queue_next(q);
     }
     ngx_queue_insert_head(&server->waiting_requests, &ctx->queue);
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0, "http_auth_ldap: No connection available at the moment, waiting...");
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0, "ngx_http_auth_ldap_get_connection: No connection available at the moment, waiting...");
     return 0;
 }
 
@@ -1457,8 +1479,9 @@ ngx_http_auth_ldap_return_connection(ngx_http_auth_ldap_connection_t *c)
 {
     ngx_queue_t *q;
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Marking the connection to \"%V\" as free",
-        &c->server->alias);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
+        "ngx_http_auth_ldap_return_connection: Marking the connection [%d] to \"%V\" as free",
+        c->cnx_idx, &c->server->alias);
 
     if (c->rctx != NULL) {
         c->rctx->c = NULL;
@@ -1471,6 +1494,8 @@ ngx_http_auth_ldap_return_connection(ngx_http_auth_ldap_connection_t *c)
     if (!ngx_queue_empty(&c->server->waiting_requests)) {
         q = ngx_queue_last(&c->server->waiting_requests);
         ngx_queue_remove(q);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
+            "ngx_http_auth_ldap_return_connection: Cnx[%d] Wakeup a waiting request", c->cnx_idx);
         ngx_http_auth_ldap_wake_request((ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue))->r);
     }
 }
@@ -1480,7 +1505,11 @@ ngx_http_auth_ldap_set_pending_connection(ngx_http_auth_ldap_connection_t *c)
 {
     ngx_queue_t *q;
 
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
+        "ngx_http_auth_ldap_set_pending_connection: Connection [%d] scheduled for reconnection in %d ms",
+        c->cnx_idx, c->server->reconnect_timeout);
     ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
+
     /* Check if connection is already in the pending queue */
     for (q = ngx_queue_head(&c->server->pending_connections);
         q != ngx_queue_sentinel(&c->server->pending_connections);
@@ -1492,6 +1521,8 @@ ngx_http_auth_ldap_set_pending_connection(ngx_http_auth_ldap_connection_t *c)
             return;
         }
     }
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
+        "ngx_http_auth_ldap_set_pending_connection: Connection [%d] inserted in pending queue", c->cnx_idx);
     ngx_queue_insert_tail(&c->server->pending_connections, &c->queue_pending);
 }
 
@@ -1500,8 +1531,8 @@ ngx_http_auth_ldap_reply_connection(ngx_http_auth_ldap_connection_t *c, int erro
 {
     ngx_http_auth_ldap_ctx_t *ctx = c->rctx;
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: LDAP request to \"%V\" has finished",
-        &c->server->alias);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_reply_connection: cnx[%d] LDAP request to \"%V\" has finished",
+        c->cnx_idx, &c->server->alias);
 
     ctx->replied = 1;
     ctx->error_code = error_code;
@@ -1564,7 +1595,7 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
     ngx_int_t rc;
     struct berval cred;
 
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connection established");
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_connection_established: Cnx[%d] established", c->cnx_idx);
 
     conn = c->conn.connection;
     ngx_del_timer(conn->read);
@@ -1573,11 +1604,11 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
 
     /* Initialize OpenLDAP on the connection */
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Initializing connection using URL \"%V\"", &c->server->url);
-
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_connection_established: Cnx[%d] initializing LDAP using URL \"%V\"",
+        c->cnx_idx, &c->server->url);
     rc = ldap_init_fd(c->conn.connection->fd, LDAP_PROTO_EXT, (const char *) c->server->url.data, &c->ld);
     if (rc != LDAP_SUCCESS) {
-        ngx_log_error(NGX_LOG_ERR, c->log, errno, "http_auth_ldap: ldap_init_fd() failed (%d: %s)", rc, ldap_err2string(rc));
+        ngx_log_error(NGX_LOG_ERR, c->log, errno, "ngx_http_auth_ldap_connection_established: ldap_init_fd() failed (%d: %s)", rc, ldap_err2string(rc));
         ngx_http_auth_ldap_close_connection(c);
         return;
     }
@@ -1585,7 +1616,7 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
     if (c->server->referral == 0) {
         rc = ldap_set_option(c->ld, LDAP_OPT_REFERRALS, LDAP_OPT_OFF);
         if (rc != LDAP_OPT_SUCCESS) {
-            ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_set_option() failed (%d: %s)", rc, ldap_err2string(rc));
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_http_auth_ldap_connection_established: ldap_set_option() failed (%d: %s)", rc, ldap_err2string(rc));
             ngx_http_auth_ldap_close_connection(c);
             return;
         }
@@ -1593,14 +1624,15 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
 
     rc = ldap_get_option(c->ld, LDAP_OPT_SOCKBUF, (void *) &sb);
     if (rc != LDAP_OPT_SUCCESS) {
-        ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_get_option() failed (%d: %s)", rc, ldap_err2string(rc));
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_http_auth_ldap_connection_established: ldap_get_option() failed (%d: %s)", rc, ldap_err2string(rc));
         ngx_http_auth_ldap_close_connection(c);
         return;
     }
 
     ber_sockbuf_add_io(sb, &ngx_http_auth_ldap_sbio, LBER_SBIOD_LEVEL_PROVIDER, (void *) c);
 
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connection initialized");
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
+        "ngx_http_auth_ldap_connection_established: Connection [%d] LDAP initialized", c->cnx_idx);
 
 
     /* Perform initial bind to the server */
@@ -1609,16 +1641,21 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
     cred.bv_len = c->server->bind_dn_passwd.len;
     rc = ldap_sasl_bind(c->ld, (const char *) c->server->bind_dn.data, LDAP_SASL_SIMPLE, &cred, NULL, NULL, &c->msgid);
     if (rc != LDAP_SUCCESS) {
-        ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_sasl_bind() failed (%d: %s)",
-            rc, ldap_err2string(rc));
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+            "ngx_http_auth_ldap_connection_established: [%d] initial ldap_sasl_bind() failed (%d: %s)",
+            c->cnx_idx, rc, ldap_err2string(rc));
         ngx_http_auth_ldap_close_connection(c);
         return;
     }
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: ldap_sasl_bind() -> msgid=%d", c->msgid);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
+        "ngx_http_auth_ldap_connection_established: [%d] initial ldap_sasl_bind() -> msgid=%d",
+        c->cnx_idx, c->msgid);
 
     c->state = STATE_INITIAL_BINDING;
     ngx_add_timer(c->conn.connection->read, c->server->bind_timeout);
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: bind_timeout=%d", c->server->bind_timeout);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
+        "ngx_http_auth_ldap_connection_established: [%d] waiting initial bind response (timeout=%d)",
+        c->cnx_idx, c->server->bind_timeout);
 }
 
 #if (NGX_OPENSSL)
@@ -1779,10 +1816,10 @@ ngx_http_auth_ldap_connect_handler(ngx_event_t *wev)
     ngx_http_auth_ldap_connection_t *c;
     int keepalive;
 
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, wev->log, 0, "http_auth_ldap: Connect handler");
-
     conn = wev->data;
     c = conn->data;
+
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_connect_handler: Cnx[%d]", c->cnx_idx);
 
     if (ngx_handle_write_event(wev, 0) != NGX_OK) {
         ngx_http_auth_ldap_close_connection(c);
@@ -1792,7 +1829,7 @@ ngx_http_auth_ldap_connect_handler(ngx_event_t *wev)
     keepalive = 1;
     if (setsockopt(conn->fd, SOL_SOCKET, SO_KEEPALIVE, (const void *) &keepalive, sizeof(int)) == -1)
     {
-        ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno, "http_auth_ldap: setsockopt(SO_KEEPALIVE) failed");
+        ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno, "ngx_http_auth_ldap_connect_handler: setsockopt(SO_KEEPALIVE) failed");
     }
 
 #if (NGX_OPENSSL)
@@ -1817,19 +1854,20 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
     char *error_msg;
     char *dn;
 
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, rev->log, 0, "http_auth_ldap: Read handler");
-
     conn = rev->data;
     c = conn->data;
 
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, rev->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d]", c->cnx_idx);
+    
     if (c->ld == NULL) {
-        ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Could not connect");
+        ngx_log_error(NGX_LOG_ERR, rev->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] No LDAP", c->cnx_idx);
         ngx_http_auth_ldap_close_connection(c);
         return;
     }
 
     if (rev->timedout) {
-        ngx_log_error(NGX_LOG_ERR, c->log, NGX_ETIMEDOUT, "http_auth_ldap: Request timed out (state=%d)", c->state);
+        ngx_log_error(NGX_LOG_ERR, c->log, NGX_ETIMEDOUT,
+            "ngx_http_auth_ldap_read_handler: Cnx[%d] Request timed out (state=%d)", c->cnx_idx, c->state);
         conn->timedout = 1;
         ngx_http_auth_ldap_close_connection(c);
         return;
@@ -1840,39 +1878,44 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
     for (;;) {
         rc = ldap_result(c->ld, LDAP_RES_ANY, 0, &timeout, &result);
         if (rc < 0) {
-            ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_result() failed (%d: %s)",
-                rc, ldap_err2string(rc));
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] ldap_result() failed (%d: %s)",
+                c->cnx_idx, rc, ldap_err2string(rc));
             ngx_http_auth_ldap_close_connection(c);
 
             // if LDAP_SERVER_DOWN (usually timeouts or server disconnects)
-            if (rc == LDAP_SERVER_DOWN && \
-                c->server->max_down_retries_count < c->server->max_down_retries) {
-                /**
-                    update counter (this is always reset in
-                    ngx_http_auth_ldap_connect() for a successful ldap
-                    connection
-                **/
-                c->server->max_down_retries_count++;
-                ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: LDAP_SERVER_DOWN: retry count: %d",
-                    c->server->max_down_retries_count);
-                c->state = STATE_DISCONNECTED;
-                // immediate reconnect synchronously, this schedules another
-                // timer call to this read handler again
-                ngx_http_auth_ldap_reconnect_handler(rev);
-                return;
+            if (rc == LDAP_SERVER_DOWN) {
+                if (c->server->max_down_retries_count < c->server->max_down_retries) {
+                    /**
+                        update counter (this is always reset in
+                        ngx_http_auth_ldap_connect() for a successful ldap
+                        connection
+                    **/
+                    c->server->max_down_retries_count++;
+                    ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] LDAP_SERVER_DOWN: retry count: %d",
+                        c->cnx_idx, c->server->max_down_retries_count);
+                    c->state = STATE_DISCONNECTED;
+                    // immediate reconnect synchronously, this schedules another
+                    // timer call to this read handler again
+                    //ngx_http_auth_ldap_reconnect_handler(rev);
+                    ngx_http_auth_ldap_reconnect_from_connection(c);
+                } else {
+                    ngx_log_error(NGX_LOG_ERR, c->log, 0,
+                        "ngx_http_auth_ldap_read_handler: Cnx[%d] LDAP_SERVER_DOWN: No more reconnect retry", c->cnx_idx);
+                }
             }
 
             return;
         }
         if (rc == 0) {
-            ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: ldap_result() -> rc=0");
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] ldap_result() -> rc=0", c->cnx_idx);
             break;
         }
-        ngx_log_debug3(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: ldap_result() -> rc=%d, msgid=%d, msgtype=%d",
-            rc, ldap_msgid(result), ldap_msgtype(result));
+        ngx_log_debug4(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] ldap_result() -> rc=%d, msgid=%d, msgtype=%d",
+            c->cnx_idx, rc, ldap_msgid(result), ldap_msgtype(result));
 
         if (ldap_msgid(result) != c->msgid) {
-            ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Message with unknown ID received, ignoring.");
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
+                "ngx_http_auth_ldap_read_handler: Cnx[%d] Message with unknown ID received, ignoring.", c->cnx_idx);
             ldap_msgfree(result);
             continue;
         }
@@ -1882,8 +1925,8 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
             error_code = LDAP_NO_RESULTS_RETURNED;
             error_msg = NULL;
         } else if (rc != LDAP_SUCCESS) {
-            ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_parse_result() failed (%d: %s)",
-                rc, ldap_err2string(rc));
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] ldap_parse_result() failed (%d: %s)",
+                c->cnx_idx, rc, ldap_err2string(rc));
             ldap_msgfree(result);
             ngx_http_auth_ldap_close_connection(c);
             return;
@@ -1896,12 +1939,12 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 }
                 ngx_del_timer(conn->read);
                 if (error_code == LDAP_SUCCESS) {
-                    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Initial bind successful");
+                    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] Initial bind successful", c->cnx_idx);
                     c->state = STATE_READY;
                     ngx_http_auth_ldap_return_connection(c);
                 } else {
-                    ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Initial bind failed (%d: %s [%s])",
-                        error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
+                    ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] Initial bind failed (%d: %s [%s])",
+                        c->cnx_idx, error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
                     ldap_memfree(error_msg);
                     ldap_msgfree(result);
                     ngx_http_auth_ldap_close_connection(c);
@@ -1913,18 +1956,19 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 if (ldap_msgtype(result) != LDAP_RES_BIND) {
                     break;
                 }
-                ngx_log_debug3(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received bind response (%d: %s [%s])",
-                    error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
+                ngx_log_debug4(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] Received bind response (%d: %s [%s])",
+                    c->cnx_idx, error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
                 ngx_http_auth_ldap_reply_connection(c, error_code, error_msg);
                 break;
 
             case STATE_SEARCHING:
                 if (ldap_msgtype(result) == LDAP_RES_SEARCH_ENTRY) {
-                    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received a search entry");
+                    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] Received a search entry", c->cnx_idx);
                     if (c->rctx->dn.data == NULL) {
                         dn = ldap_get_dn(c->ld, result);
                         if (dn != NULL) {
-                            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Found entry with DN \"%s\"", dn);
+                            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
+                                "ngx_http_auth_ldap_read_handler: Cnx[%d] Found entry with DN \"%s\"", c->cnx_idx, dn);
                             c->rctx->dn.len = ngx_strlen(dn);
                             c->rctx->dn.data = (u_char *) ngx_palloc(c->rctx->r->pool, c->rctx->dn.len + 1);
                             ngx_memcpy(c->rctx->dn.data, dn, c->rctx->dn.len + 1);
@@ -1941,7 +1985,8 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                         /* Get only first value for each attribute. */
                         if ((vals = ldap_get_values_len(c->ld, result, attr)) != NULL ) {
                             if(vals[0] != NULL) {
-                                ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received attribute %s: %s", attr, vals[0]->bv_val);
+                                ngx_log_debug3(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] Received attribute %s: %s",
+                                    c->cnx_idx, attr, vals[0]->bv_val);
                                 /* Save attribute name and value in the context */
                                 ldap_search_attribute_t * elt = ngx_array_push(&c->rctx->attributes);
                                 santitize_str((u_char *)attr, SANITIZE_NO_CONV);
@@ -1963,8 +2008,8 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                         ber_free(ber, 0);
                     }
                 } else if (ldap_msgtype(result) == LDAP_RES_SEARCH_RESULT) {
-                    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received search result (%d: %s [%s])",
-                        error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
+                    ngx_log_debug4(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] Received search result (%d: %s [%s])",
+                        c->cnx_idx, error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
                     ngx_http_auth_ldap_reply_connection(c, error_code, error_msg);
                 }
                 break;
@@ -1973,8 +2018,8 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 if (ldap_msgtype(result) != LDAP_RES_COMPARE) {
                     break;
                 }
-                ngx_log_debug3(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received comparison result (%d: %s [%s])",
-                    error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
+                ngx_log_debug4(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_read_handler: Cnx[%d] Received comparison result (%d: %s [%s])",
+                    c->cnx_idx, error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
                 ngx_http_auth_ldap_reply_connection(c, error_code, error_msg);
                 break;
 
@@ -1995,9 +2040,9 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
 static void
 ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
 {
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
-            "http_auth_ldap: ngx_http_auth_ldap_connect: Server \"%V\".",
-            &c->server->alias);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
+            "ngx_http_auth_ldap_connect: Cnx[%d] Server \"%V\".",
+            c->cnx_idx, &c->server->alias);
 
     // Clear an free any previous addrs from parsed_url, so that we can resolve again the LDAP server hostname
     my_free_addrs_from_url(c->main_cnf->cnf_pool, &c->server->parsed_url);
@@ -2005,24 +2050,24 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
     c->server->parsed_url.no_resolve = 0; // Try to resolve this time
     if (ngx_parse_url(c->pool, &c->server->parsed_url) != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, c->log, 0,
-                "http_auth_ldap: ngx_http_auth_ldap_connect: Hostname \"%V\" not found with system resolver, try with DNS",
+                "ngx_http_auth_ldap_connect: Hostname \"%V\" not found with system resolver, try with DNS",
                 &c->server->parsed_url.host);
         // Try to resolve the hostname through the resolver
         if (c->main_cnf->resolver == NULL) {
             ngx_log_error(NGX_LOG_ERR, c->log, 0,
-                    "http_auth_ldap: ngx_http_auth_ldap_connect: No resolver configured");
+                    "ngx_http_auth_ldap_connect: No resolver configured");
             return;
         }
         ngx_resolver_ctx_t *resolver_ctx, temp;
         temp.name = c->server->parsed_url.host;
         resolver_ctx = ngx_resolve_start(c->main_cnf->resolver, &temp);
         if (resolver_ctx == NULL) {
-            ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ngx_http_auth_ldap_connect: Unable to start the resolver");
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_http_auth_ldap_connect: Unable to start the resolver");
             return;
         }
         if (resolver_ctx == NGX_NO_RESOLVER) {
             ngx_log_error(NGX_LOG_ERR, c->log, 0,
-                    "http_auth_ldap: ngx_http_auth_ldap_connect: No resolver defined to resolve %V",
+                    "ngx_http_auth_ldap_connect: No resolver defined to resolve %V",
                     c->server->parsed_url.host);
             return;
         }
@@ -2034,14 +2079,14 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
         if (ngx_resolve_name(resolver_ctx) != NGX_OK) {
             c->resolver_ctx = NULL;
             ngx_log_error(NGX_LOG_ERR, c->log, 0,
-                    "http_auth_ldap: ngx_http_auth_ldap_connect: Resolve %V failed", c->server->parsed_url.host);
+                    "ngx_http_auth_ldap_connect: Resolve %V failed", c->server->parsed_url.host);
             return;
         }
         // The DNS Querry has been triggered. Let the ngx_http_auth_ldap_resolve_handler now take the control of the flow.
         return;
     }
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
-            "http_auth_ldap: ngx_http_auth_ldap_connect: server \"%V\" (naddrs is now %d).",
+            "ngx_http_auth_ldap_connect: server \"%V\" (naddrs is now %d).",
             &c->server->alias, c->server->parsed_url.naddrs);
 
     // Continue with the rest of the connection establishement
@@ -2058,15 +2103,15 @@ ngx_http_auth_ldap_connect_continue(ngx_http_auth_ldap_connection_t *c)
 
     if (c->server->parsed_url.naddrs == 0) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0,
-                "http_auth_ldap: ngx_http_auth_ldap_connect_continue: No addr for server");
+                "ngx_http_auth_ldap_connect_continue: Cnx[%d] No addr for server", c->cnx_idx);
         return;
     }
     
     addr = &c->server->parsed_url.addrs[ngx_random() % c->server->parsed_url.naddrs];
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
-            "http_auth_ldap: Connecting to LDAP server IP@ %V",
-            &addr->name);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
+            "ngx_http_auth_ldap_connect_continue: Cnx[%d] Connecting to LDAP server IP@ %V",
+            c->cnx_idx, &addr->name);
 
     pconn = &c->conn;
     pconn->sockaddr = addr->sockaddr;
@@ -2077,10 +2122,10 @@ ngx_http_auth_ldap_connect_continue(ngx_http_auth_ldap_connection_t *c)
     pconn->log_error = NGX_ERROR_ERR;
 
     rc = ngx_event_connect_peer(pconn);
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: ngx_event_connect_peer() -> %d.", rc);
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_auth_ldap_connect_continue: ngx_event_connect_peer() -> %d.", rc);
     if (rc == NGX_ERROR || rc == NGX_BUSY || rc == NGX_DECLINED) {
-        ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Unable to connect to LDAP server \"%V\".",
-            &addr->name);
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "ngx_http_auth_ldap_connect_continue: Cnx[%d] Unable to connect to LDAP server \"%V\".",
+            c->cnx_idx, &addr->name);
         ngx_http_auth_ldap_set_pending_connection(c);
         return;
     }
@@ -2093,7 +2138,9 @@ ngx_http_auth_ldap_connect_continue(ngx_http_auth_ldap_connection_t *c)
     conn->write->handler = ngx_http_auth_ldap_connect_handler;
     conn->read->handler = ngx_http_auth_ldap_read_handler;
     ngx_add_timer(conn->read, c->server->connect_timeout);
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: connect_timeout=%d.", c->server->connect_timeout);
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
+        "ngx_http_auth_ldap_connect_continue: [%d] Waiting connection response (timeout=%d)",
+        c->cnx_idx, c->server->connect_timeout);
 
     c->server->max_down_retries_count = 0;   /* reset retries count */
     c->state = STATE_CONNECTING;
@@ -2110,7 +2157,20 @@ ngx_http_auth_ldap_reconnect_handler(ngx_event_t *ev)
 {
     ngx_connection_t *conn = ev->data;
     ngx_http_auth_ldap_connection_t *c = conn->data;
+    
+    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, ev->log, 0,
+        "ngx_http_auth_ldap_reconnect_handler: ev=0x%p, conn=0x%p, c=0x%p", ev, conn, c);
+
+    ngx_http_auth_ldap_reconnect_from_connection(c);
+}
+
+static void
+ngx_http_auth_ldap_reconnect_from_connection(ngx_http_auth_ldap_connection_t *c)
+{
     ngx_queue_t *q;
+
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
+        "ngx_http_auth_ldap_reconnect_from_connection: Cnx[%d] c=0x%p", c->cnx_idx, c);
 
     /* Remove this connection from the pending queue */
     for (q = ngx_queue_head(&c->server->pending_connections);
@@ -2119,8 +2179,8 @@ ngx_http_auth_ldap_reconnect_handler(ngx_event_t *ev)
     {
         if (q == &c->queue_pending) {
             ngx_queue_remove(q);
-            ngx_log_error(NGX_LOG_DEBUG, c->log, 0,
-                "http_auth_ldap: ngx_http_auth_ldap_reconnect_handler: Connection removed from pending queue");
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
+                "ngx_http_auth_ldap_reconnect_from_connection: Cnx[%d] removed from pending queue", c->cnx_idx);
             break;
         }
     }
@@ -2217,8 +2277,8 @@ static void ngx_http_auth_ldap_resolve_handler(ngx_resolver_ctx_t *ctx)
     ngx_resolver_addr_t *res_addr;
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
-        "http_auth_ldap: ngx_http_auth_ldap_resolve_handler: server \"%*s\".",
-        c->server->alias.len, c->server->alias.data);
+        "ngx_http_auth_ldap_resolve_handler: Cnx[%d] server \"%V\"",
+        c->cnx_idx, &c->server->alias);
 
     if (ctx->state) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0,
@@ -2232,8 +2292,14 @@ static void ngx_http_auth_ldap_resolve_handler(ngx_resolver_ctx_t *ctx)
     // Clear and free any previous addrs in parsed_url
     my_free_addrs_from_url(c->main_cnf->cnf_pool, &c->server->parsed_url);
 
+    u_char ip_addr_str[INET6_ADDRSTRLEN +1]; // Buffer for IPv4 or IPv6 address strings
     // Update the parsed_url with the addresses resolved by DNS
     for (i = 0, res_addr = ctx->addrs; res_addr != NULL && i < ctx->naddrs; i++, res_addr++) {
+        bzero(ip_addr_str, sizeof(ip_addr_str));
+        ngx_sock_ntop(res_addr->sockaddr, res_addr->socklen, ip_addr_str, sizeof(ip_addr_str) -1, 0);
+        ngx_log_debug4(NGX_LOG_DEBUG_HTTP, c->log, 0,
+            "ngx_http_auth_ldap_resolve_handler: Cnx[%d] Found [%d] %V -> %s",
+            c->cnx_idx, i, &ctx->name, ip_addr_str);
         my_ngx_inet_add_addr(c->main_cnf->cnf_pool, &c->server->parsed_url,
             res_addr->sockaddr, res_addr->socklen, ctx->naddrs);
     }
@@ -2262,13 +2328,13 @@ ngx_http_auth_ldap_init_servers(ngx_cycle_t *cycle)
 
         if (server->attrs == NULL) {
             // No search attributes specified, so setup an empty attributes list
-            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, cycle->log, 0, "http_auth_ldap: Server '%V': No search_attributes", &server->alias);
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, cycle->log, 0, "ngx_http_auth_ldap_init_servers: Server '%V': No search_attributes", &server->alias);
             server->attrs = ngx_palloc(cycle->pool, 2 * sizeof(char *));
             server->attrs[0] = LDAP_NO_ATTRS;
             server->attrs[1] = NULL;
         } else {
             for (j = 0; server->attrs[j] != NULL && j < MAX_ATTRS_COUNT; j++) {
-                ngx_log_debug3(NGX_LOG_DEBUG_HTTP, cycle->log, 0, "http_auth_ldap: Server '%V': search_attribute[%d] = '%s'", &server->alias, j, server->attrs[j]);
+                ngx_log_debug3(NGX_LOG_DEBUG_HTTP, cycle->log, 0, "ngx_http_auth_ldap_init_servers: Server '%V': search_attribute[%d] = '%s'", &server->alias, j, server->attrs[j]);
             }
         }
     }
@@ -2320,6 +2386,7 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
             c->main_cnf = halmcf;
             c->server = server;
             c->state = STATE_DISCONNECTED;
+            c->cnx_idx = j;
 
             /* Various debug logging around timer management assume that the field
                'data' in ngx_event_t is a pointer to ngx_connection_t, therefore we
@@ -2435,9 +2502,19 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
     ngx_http_auth_ldap_server_t *s;
 
     if (r->connection->write->timedout) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: Authentication timed out");
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_auth_ldap_authenticate: Authentication timed out");
         if (ctx->c != NULL) {
-            ngx_http_auth_ldap_return_connection(ctx->c);
+            if (ctx->server && ctx->server->clean_on_timeout) {
+                // In case of LDAP send timeout, imediately close and reconnect the connection
+                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                    "ngx_http_auth_ldap_authenticate: Close/reconnect timeouted Cnx[%d]", ctx->c->cnx_idx);
+                ngx_http_auth_ldap_close_connection(ctx->c);
+                ngx_http_auth_ldap_reconnect_from_connection(ctx->c);
+            } else {
+                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                    "ngx_http_auth_ldap_authenticate: Return old timedout Cnx[%d]", ctx->c->cnx_idx);
+                ngx_http_auth_ldap_return_connection(ctx->c);
+            }
         }
 
         // Remove ctx from waiting_requests queue if it was added.
@@ -2457,13 +2534,13 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
      * this happens when we are trying to get an LDAP connection but all of them are busy right now.
      */
     if (ctx->iteration > 0 && !ctx->replied && ctx->phase != PHASE_START) {
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: The LDAP operation did not finish yet");
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_authenticate: The LDAP operation did not finish yet");
         return NGX_AGAIN;
     }
 
     for (;;) {
         loop:
-        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Authentication loop (phase=%d, iteration=%d)",
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_authenticate: Authentication loop (phase=%d, iteration=%d)",
             ctx->phase, ctx->iteration);
 
         switch (ctx->phase) {
@@ -2472,7 +2549,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 ctx->outcome = OUTCOME_UNCERTAIN;
 
                 ngx_add_timer(r->connection->write, ctx->server->request_timeout);
-                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: request_timeout=%d",ctx->server->request_timeout);
+                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_authenticate: Set request watchdog (timeout=%d)",ctx->server->request_timeout);
 
 
                 /* Check cache if enabled */
@@ -2480,7 +2557,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                     for (i = 0; i < conf->servers->nelts; i++) {
                         s = &((ngx_http_auth_ldap_server_t *) conf->servers->elts)[i];
                         rc = ngx_http_auth_ldap_check_cache(r, ctx, &ngx_http_auth_ldap_cache, s);
-                        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Using cached outcome %d from server %d", rc, i);
+                        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_authenticate: Using cached outcome %d from server %d", rc, i);
                         if (rc == OUTCOME_DENY || rc == OUTCOME_ALLOW) {
                             ctx->outcome = (rc == OUTCOME_DENY ? OUTCOME_CACHED_DENY : OUTCOME_CACHED_ALLOW);
                             ctx->phase = PHASE_NEXT;
@@ -2521,13 +2598,13 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 break;
 
             case PHASE_CHECK_USER:
-                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: User DN is \"%V\"",
+                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_authenticate: User DN is \"%V\"",
                     &ctx->user_dn);
 
                 if (ctx->server->require_user != NULL) {
                     rc = ngx_http_auth_ldap_check_user(r, ctx);
                     if (rc != NGX_OK) {
-                        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Not ok", &ctx->user_dn);
+                        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_authenticate: Not ok", &ctx->user_dn);
                         /* User check failed, try next server */
                         ctx->phase = PHASE_NEXT;
                         break;
@@ -2537,7 +2614,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 /* User not yet fully authenticated, check group next */
                 if ((ctx->outcome == OUTCOME_UNCERTAIN) &&
                     (ctx->server->require_group != NULL)) {
-                        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Moving to group check", &ctx->user_dn);
+                        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_authenticate: Moving to group check", &ctx->user_dn);
                         ctx->phase = PHASE_CHECK_GROUP;
                         ctx->iteration = 0;
                         break;
@@ -2549,7 +2626,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 break;
 
             case PHASE_CHECK_GROUP:
-                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Checking group", &ctx->user_dn);
+                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_authenticate: Checking group", &ctx->user_dn);
                 rc = ngx_http_auth_ldap_check_group(r, ctx);
                 if (rc == NGX_AGAIN) {
                     /* LDAP operation in progress, wait for the results */
@@ -2575,7 +2652,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                     if ((ctx->server->satisfy_all == 0) && (
                             (ctx->server->require_user != NULL) ||
                             (ctx->server->require_group != NULL))){
-                        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: no requirement satisfied");
+                        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_authenticate: no requirement satisfied");
                         ctx->outcome = OUTCOME_DENY;
                         ctx->phase = PHASE_NEXT;
                         /*rc = NGX_DECLINED;*/
@@ -2621,7 +2698,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
 
                 if (ngx_http_auth_ldap_cache.buckets != NULL &&
                     (ctx->outcome == OUTCOME_DENY || ctx->outcome == OUTCOME_ALLOW)) {
-                    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Caching outcome %d", ctx->outcome);
+                    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_authenticate: Caching outcome %d", ctx->outcome);
                     ngx_http_auth_ldap_update_cache(ctx, &ngx_http_auth_ldap_cache, ctx->outcome);
                 }
 
@@ -2639,7 +2716,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                             h->value = elt->attr_value;
 	                    }
                         ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                                "http_auth_ldap: ngx_http_auth_ldap_authenticate set response header %V : %V",
+                                "ngx_http_auth_ldap_authenticate: Set response header %V : %V",
                                 &elt->attr_name, &elt->attr_value);
                     }
                     return NGX_OK;
@@ -2677,19 +2754,19 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
         ngx_sprintf(filter, "(&%s(%s=%V))%Z",
                 ludpp->lud_filter != NULL ? ludpp->lud_filter : "(objectClass=*)",
                 ludpp->lud_attrs[0], &r->headers_in.user);
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search filter is \"%s\"",
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_search: Search filter is \"%s\"",
             (const char *) filter);
 
         rc = ldap_search_ext(ctx->c->ld, ludpp->lud_dn, ludpp->lud_scope, (const char *) filter, ctx->server->attrs, 0, NULL, NULL, NULL, 0, &ctx->c->msgid);
         if (rc != LDAP_SUCCESS) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_search_ext() failed (%d, %s)",
-                rc, ldap_err2string(rc));
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_auth_ldap_search: ldap_search_ext() Cnx[%d] failed (%d, %s)",
+                ctx->c->cnx_idx, rc, ldap_err2string(rc));
             ngx_http_auth_ldap_return_connection(ctx->c);
             return NGX_ERROR;
         }
 
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: ldap_search_ext() -> msgid=%d",
-            ctx->c->msgid);
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_search: ldap_search_ext() Cnx[%d] -> msgid=%d",
+            ctx->c->cnx_idx, ctx->c->msgid);
         ctx->c->state = STATE_SEARCHING;
         ctx->iteration++;
         return NGX_AGAIN;
@@ -2697,13 +2774,13 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
 
     /* On the second call, handle the search results */
     if (ctx->error_code != LDAP_SUCCESS) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_search_ext() request failed (%d: %s)",
-            ctx->error_code, ldap_err2string(ctx->error_code));
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_auth_ldap_search: ldap_search_ext() Cnx[%d] request failed (%d: %s)",
+            ctx->c->cnx_idx, ctx->error_code, ldap_err2string(ctx->error_code));
         return NGX_ERROR;
     }
 
     if (ctx->dn.data == NULL) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: Could not find user DN");
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_auth_ldap_search: Cnx[%d] Could not find user DN", ctx->c->cnx_idx);
         return NGX_ERROR;
     } else {
         ctx->user_dn.len = ngx_strlen(ctx->dn.data);
@@ -2887,15 +2964,15 @@ ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *c
         cred.bv_len = r->headers_in.passwd.len;
         rc = ldap_sasl_bind(ctx->c->ld, (const char *) ctx->user_dn.data, LDAP_SASL_SIMPLE, &cred, NULL, NULL, &ctx->c->msgid);
         if (rc != LDAP_SUCCESS) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_sasl_bind() failed (%d: %s)",
-                rc, ldap_err2string(rc));
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_auth_ldap_check_bind: Cnx[%d] ldap_sasl_bind() failed (%d: %s)",
+                ctx->c->cnx_idx, rc, ldap_err2string(rc));
             ctx->outcome = OUTCOME_ERROR;
             ngx_http_auth_ldap_return_connection(ctx->c);
             return NGX_ERROR;
         }
 
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: ldap_sasl_bind() -> msgid=%d",
-            ctx->c->msgid);
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_check_bind: Cnx[%d] ldap_sasl_bind() -> msgid=%d",
+            ctx->c->cnx_idx, ctx->c->msgid);
         ctx->c->state = STATE_BINDING;
         ctx->iteration++;
 
@@ -2904,11 +2981,11 @@ ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *c
 
     /* On the second call, process the operation result */
     if (ctx->error_code != LDAP_SUCCESS) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: User bind failed (%d: %s)",
-            ctx->error_code, ldap_err2string(ctx->error_code));
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_auth_ldap_check_bind: Cnx[%d] User bind failed (%d: %s)",
+            ctx->c->cnx_idx, ctx->error_code, ldap_err2string(ctx->error_code));
         ctx->outcome = OUTCOME_DENY;
     } else {
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: User bind successful");
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_check_bind: Cnx[%d] User bind successful", ctx->c->cnx_idx);
         ctx->outcome = OUTCOME_ALLOW;
     }
     return NGX_OK;
@@ -2926,20 +3003,20 @@ ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
             return NGX_AGAIN;
         }
 
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Rebinding to binddn");
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_recover_bind: Rebinding to binddn");
         cred.bv_val = (char *) ctx->server->bind_dn_passwd.data;
         cred.bv_len = ctx->server->bind_dn_passwd.len;
         rc = ldap_sasl_bind(ctx->c->ld, (const char *) ctx->server->bind_dn.data, LDAP_SASL_SIMPLE, &cred, NULL, NULL, &ctx->c->msgid);
         if (rc != LDAP_SUCCESS) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_sasl_bind() failed (%d: %s)",
-                rc, ldap_err2string(rc));
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_auth_ldap_recover_bind: Cnx[%d] ldap_sasl_bind() failed (%d: %s)",
+                ctx->c->cnx_idx, rc, ldap_err2string(rc));
             ctx->outcome = OUTCOME_ERROR;
             ngx_http_auth_ldap_return_connection(ctx->c);
             return NGX_ERROR;
         }
 
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: ldap_sasl_bind() -> msgid=%d",
-            ctx->c->msgid);
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_recover_bind: Cnx[%d] ldap_sasl_bind() -> msgid=%d",
+            ctx->c->cnx_idx, ctx->c->msgid);
         ctx->c->state = STATE_BINDING;
         ctx->iteration++;
         return NGX_AGAIN;
@@ -2947,10 +3024,10 @@ ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
 
     /* On the second call, process the operation result */
     if (ctx->error_code != LDAP_SUCCESS) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: binddn bind failed (%d: %s)",
-            ctx->error_code, ldap_err2string(ctx->error_code));
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_auth_ldap_recover_bind: Cnx[%d] binddn bind failed (%d: %s)",
+            ctx->c->cnx_idx, ctx->error_code, ldap_err2string(ctx->error_code));
     } else {
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: binddn bind successful");
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_auth_ldap_recover_bind: Cnx[%d] binddn bind successful", ctx->c->cnx_idx);
     }
     return NGX_OK;
 }
