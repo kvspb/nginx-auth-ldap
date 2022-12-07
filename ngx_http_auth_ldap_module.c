@@ -1458,7 +1458,7 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, ctx->r->connection->log, 0,
             "ngx_http_auth_ldap_get_connection: Got cnx [%d] from pending queue -> shorten reconnect timer", c->cnx_idx);
         /* Shorten the reconnection timer */
-        ngx_add_timer(&c->reconnect_event, 0);
+        ngx_add_timer(&c->reconnect_event, 1);
     }
 
     q = ngx_queue_next(&server->waiting_requests);
@@ -1897,6 +1897,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                     // immediate reconnect synchronously, this schedules another
                     // timer call to this read handler again
                     //ngx_http_auth_ldap_reconnect_handler(rev);
+                    ngx_del_timer(&c->reconnect_event); // Cancel the reconnect timer
                     ngx_http_auth_ldap_reconnect_from_connection(c);
                 } else {
                     ngx_log_error(NGX_LOG_ERR, c->log, 0,
