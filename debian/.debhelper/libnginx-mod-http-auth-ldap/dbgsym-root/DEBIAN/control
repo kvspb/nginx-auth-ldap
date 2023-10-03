@@ -1,0 +1,12 @@
+Package: libnginx-mod-http-auth-ldap-dbgsym
+Source: libnginx-mod-http-auth-ldap
+Version: 1.0.0-1
+Auto-Built-Package: debug-symbols
+Architecture: amd64
+Maintainer: Jesse Portnoy <jesse@packman.io>
+Installed-Size: 73
+Depends: libnginx-mod-http-auth-ldap (= 1.0.0-1)
+Section: debug
+Priority: optional
+Description: debug symbols for libnginx-mod-http-auth-ldap
+Build-Ids: 92c5eac462a200f4a2508fd233d012e69e9de547
