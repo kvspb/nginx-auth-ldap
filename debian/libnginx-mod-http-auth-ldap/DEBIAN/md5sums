@@ -1,5 +1,0 @@
-a244674249f28b1ff73a7d88dc8957fd  usr/lib/nginx/modules/ngx_http_auth_ldap_module.so
-f21318ce7a875b689b029a33ab5a91df  usr/share/doc/libnginx-mod-http-auth-ldap/changelog.Debian.gz
-f555b769901ca4b11597ea57da94c910  usr/share/doc/libnginx-mod-http-auth-ldap/changelog.gz
-fe5b5398bf147e84da88023a0d24bde8  usr/share/doc/libnginx-mod-http-auth-ldap/copyright
-0619771c04f4665a24db7c7390a2beaa  usr/share/nginx/modules-available/mod-http-auth-ldap.conf
