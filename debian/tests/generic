@@ -1,0 +1,73 @@
+#!/bin/sh
+# version 20221215
+
+# generic test that only verifies that nginx is running with the given
+# libnginx-... module
+# - after installation
+# - after nginx reload
+# - after nginx restart
+
+EX=0
+CURL_CMD="curl --max-time 60 --silent --fail -o /dev/null"
+
+#change directory to $AUTOPKGTEST_TMP
+cd "${AUTOPKGTEST_TMP}"
+
+echo -n "curl after installation: http status="
+if $CURL_CMD -w "response_code: %{http_code}, ... " http://127.0.0.1/; then
+  echo "OK"
+else
+  EX=1
+  echo "FAILED"
+fi
+
+echo -n "nginx reload ... "
+if invoke-rc.d nginx reload; then
+  echo "OK"
+else
+  EX=1
+  echo "FAILED"
+fi
+sleep 5
+
+
+echo -n "curl after reload: http status="
+if $CURL_CMD -w "response_code: %{http_code}, ... " http://127.0.0.1/; then
+  echo "OK"
+else
+  EX=1
+  echo "FAILED"
+fi
+
+echo -n "nginx restart ... "
+if invoke-rc.d nginx restart; then
+  echo "OK"
+else
+  EX=1
+  echo "FAILED"
+fi
+sleep 5
+
+echo -n "curl after restart: http status="
+if $CURL_CMD -w "response_code: %{http_code}, ... " http://127.0.0.1/; then
+  echo "OK"
+else
+  EX=1
+  echo "FAILED"
+fi
+
+if [ ${EX} -ne 0 ]; then
+  echo "=== journalctl ==="
+  journalctl -n all -xu nginx.service || :
+
+  echo "=== error.log ==="
+  if [ `wc -l /var/log/nginx/error.log | cut -d ' ' -f1` -gt 100 ]; then
+    head -n 50 /var/log/nginx/error.log
+    echo '...'
+    tail -n 50 /var/log/nginx/error.log
+  else
+    cat /var/log/nginx/error.log
+  fi
+fi
+
+exit ${EX}

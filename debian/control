@@ -1,0 +1,22 @@
+Source: libnginx-mod-http-auth-ldap
+Section: httpd
+Priority: optional
+Maintainer: Jesse Portnoy <jesse@packman.io>
+Build-Depends: debhelper-compat (= 13),
+               dh-sequence-nginx,
+	       libldap2-dev,
+	       libssl-dev,
+Standards-Version: 4.6.2
+Homepage: https://github.com/jessp01/nginx-auth-ldap
+Vcs-Git: https://github.com/jessp01/nginx-auth-ldap
+Vcs-Browser: https://github.com/jessp01/nginx-auth-ldap
+Rules-Requires-Root: no
+
+Package: libnginx-mod-http-auth-ldap
+Architecture: any
+Multi-Arch: foreign
+Depends: ${misc:Depends},
+         ${shlibs:Depends},
+Recommends: nginx,
+Description: LDAP authentication module for Nginx
+ The nginx_http_auth_ldap module enables authentication via LDAP.

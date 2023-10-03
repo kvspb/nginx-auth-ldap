@@ -1,0 +1,6 @@
+libnginx-mod-http-auth-ldap (1.0.0-1) experimental; urgency=medium
+
+  * First deb release
+  * Fix issue with Nginx >= 1.23
+
+ -- jesse <jesse@packman.io>  Tue, 03 Oct 2023 11:55:53 +0100

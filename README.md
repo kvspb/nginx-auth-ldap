@@ -1,5 +1,5 @@
-# LDAP Authentication module for nginx
-LDAP module for nginx which supports authentication against multiple LDAP servers.
+# LDAP Authentication module for Nginx
+LDAP module for Nginx which supports authentication against multiple LDAP servers.
 
 # How to install
 
@@ -18,13 +18,39 @@ Check HTTP_AUTH_LDAP options
 
 ## Linux
 
-```bash
-cd ~ && git clone https://github.com/kvspb/nginx-auth-ldap.git   
+Clone this repo or download the ZIP archive.
+
+Install `libssl` and `libldap2` headers (on Debian/Ubuntu: `apt install libssl-dev libldap2-dev`).
+
+You can build this module as an SO, statically compile it into the main `nginx` binary or, if using Debian/Ubuntu, build
+and install the deb package.
+
+### Build as an SO
+
+- Obtain the Nginx source (on Debian/Ubuntu this can be done with `apt-get source nginx`)
+- cd /path/to/nginx/source
+```sh
+./configure `nginx -V` --with-compat --add-dynamic-module=/path/to/nginx-auth-ldap/source
+cp objs/ngx_http_auth_ldap_module.so /usr/share/nginx/modules/ngx_http_auth_ldap_module.so
+```
+- Add the below config to Nginx so that it loads the module:
+```nginx
+load_module modules/ngx_http_auth_ldap_module.so;
 ```
 
-in nginx source folder
+### Build & install the deb package
 
-```bash
+```sh
+sudo apt install build-essential dpkg-dev libssl-dev libldap2-dev
+cd /path/to/nginx-auth-ldap/source
+dpkg-buildpackage -b -uc
+sudo dpkg -i ../libnginx-mod-http-auth-ldap_1.0.0-1_amd64.deb
+```
+
+### Statically link into Nginx
+
+```sh
+cd /path/to/nginx/source
 ./configure --add-module=path_to_http_auth_ldap_module
 make install
 ```
@@ -32,7 +58,7 @@ make install
 # Example configuration
 Define list of your LDAP servers with required user/group requirements:
 
-```bash
+```nginx
     http {
       ldap_server test1 {
         url ldap://192.168.0.1:3268/DC=test,DC=local?sAMAccountName?sub?(objectClass=person);
@@ -55,7 +81,7 @@ Define list of your LDAP servers with required user/group requirements:
 ```
 
 And add required servers in correct order into your location/server directive:
-```bash
+```nginx
     server {
         listen       8000;
         server_name  localhost;
@@ -140,6 +166,6 @@ you'll basically need to run OpenSSL's c_rehash command in this directory.
 expected value: on, off
 
 LDAP library default is on. This option disables usage of referral messages from
-LDAP server. Usefull for authenticating against read only AD server without access
+LDAP server. Useful for authenticating against read only AD server without access
 to read write.
 
