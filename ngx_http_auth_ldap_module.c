@@ -60,7 +60,7 @@
 extern int ldap_init_fd(ber_socket_t fd, int proto, const char *url, LDAP **ld);
 #endif
 
-#define OUTCOME_ERROR          -1 /* Some error occured in the process */
+#define OUTCOME_ERROR          -1 /* Some error occurred in the process */
 #define OUTCOME_DENY            0
 #define OUTCOME_ALLOW           1
 #define OUTCOME_CACHED_DENY     2 /* Cached results */
