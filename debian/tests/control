@@ -1,0 +1,6 @@
+Tests: generic
+Restrictions: allow-stderr isolation-container needs-root
+Depends: curl,
+         nginx,
+         nginx-core,
+         @,
