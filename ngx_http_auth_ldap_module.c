@@ -1779,6 +1779,7 @@ ngx_http_auth_ldap_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
     }
 
     r->headers_out.www_authenticate->hash = 1;
+    r->headers_out.www_authenticate->next = NULL;
     r->headers_out.www_authenticate->key.len = sizeof("WWW-Authenticate") - 1;
     r->headers_out.www_authenticate->key.data = (u_char *) "WWW-Authenticate";
     r->headers_out.www_authenticate->value = *realm;
