@@ -1651,7 +1651,13 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
     ngx_addr_t *addr;
     ngx_int_t rc;
 
-    addr = &c->server->parsed_url.addrs[ngx_random() % c->server->parsed_url.naddrs];
+    if ((c == NULL) || (c->server == NULL) || (c->server->parsed_url.addrs == NULL)) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Can not connect because addr is null");
+	    return; 
+    } else if (c->server->parsed_url.naddrs == 0) 
+	    addr = &c->server->parsed_url.addrs[0];
+    else 
+        addr = &c->server->parsed_url.addrs[ngx_random() % c->server->parsed_url.naddrs];
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connecting to LDAP server \"%V\".",
         &addr->name);
