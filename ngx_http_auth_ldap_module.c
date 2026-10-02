@@ -1685,6 +1685,10 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
 
     c->server->max_down_retries_count = 0;   /* reset retries count */
     c->state = STATE_CONNECTING;
+
+    if (rc == NGX_OK) {
+        ngx_http_auth_ldap_connect_handler(conn->write);
+    }
 }
 
 static void
