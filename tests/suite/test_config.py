@@ -248,7 +248,9 @@ SINGLE_VALUE_DIRECTIVES = [
 @pytest.mark.parametrize("args", ["", " on off"], ids=["no-value", "two-values"])
 @pytest.mark.parametrize("name", SINGLE_VALUE_DIRECTIVES)
 def test_single_value_directive_needs_exactly_one_value(nginx, name, args):
-    result = nginx.check_config(http=ldap_server("users", f"require valid_user;\n{name}{args};"), server=LOCATION)
+    result = nginx.check_config(
+        http=ldap_server("users", f"require valid_user;\n{name}{args};"), server=LOCATION
+    )
 
     assert result.returncode == 1, result.stderr
     assert f'invalid number of arguments in "{name}"' in result.stderr

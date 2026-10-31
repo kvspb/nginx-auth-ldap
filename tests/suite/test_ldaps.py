@@ -68,7 +68,9 @@ def assert_denied(server) -> None:
         pytest.param(
             LDAP_IPV6,
             id="ipv6-address",
-            marks=pytest.mark.xfail(reason="an IPv6 address in brackets is rejected as an invalid port (nal-5br.15)"),
+            marks=pytest.mark.xfail(
+                reason="an IPv6 address in brackets is rejected as an invalid port (nal-5br.15)"
+            ),
         ),
     ],
 )
@@ -173,7 +175,9 @@ def test_ssl_ca_file_applies_to_its_own_server_only(nginx):
 )
 def test_unusable_ca_location_is_a_configuration_error(nginx, directive, path):
     body = f"require valid_user;\nssl_check_cert on;\n{directive} {path};"
-    result = nginx.check_config(http=ldap_server("tls", body, url=ldaps_url()), server=protected_location("tls"))
+    result = nginx.check_config(
+        http=ldap_server("tls", body, url=ldaps_url()), server=protected_location("tls")
+    )
 
     assert result.returncode == 1, result.stderr
     assert f'cannot load CA certificates from "{path}"' in result.stderr
