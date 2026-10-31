@@ -142,8 +142,8 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
     } else if (ngx_strcmp(value[0].data, "max_down_retries") == 0) {
         i = ngx_atoi(value[1].data, value[1].len);
         if (i == NGX_ERROR) {
-            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: 'max_down_retries' value must be an integer: using default of 0");
-            i = 0;
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: 'max_down_retries' value must be an integer");
+            return NGX_CONF_ERROR;
         }
         server->max_down_retries = i;
     } else if (ngx_strcmp(value[0].data, "connections") == 0) {

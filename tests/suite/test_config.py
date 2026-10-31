@@ -119,7 +119,11 @@ def server_case(
             "max-down-retries-not-a-number",
             "'max_down_retries' value must be an integer",
             "require valid_user;\nmax_down_retries abc;",
-            marks=NOT_VALIDATED,
+        ),
+        server_case(
+            "max-down-retries-negative",
+            "'max_down_retries' value must be an integer",
+            "require valid_user;\nmax_down_retries -1;",
         ),
         server_case(
             "timeout-zero",
