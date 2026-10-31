@@ -418,6 +418,10 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
     value = cf->args->elts;
     ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "http_auth_ldap: parse_require");
 
+    if (cf->args->nelts < 2 || cf->args->nelts > 3) {
+        goto invalid_args;
+    }
+
     if (ngx_strcmp(value[1].data, "valid_user") == 0) {
         server->require_valid_user = 1;
         if (cf->args->nelts < 3) {
@@ -428,6 +432,9 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
         }
         target = &server->require_valid_user_dn;
     } else if (ngx_strcmp(value[1].data, "user") == 0) {
+        if (cf->args->nelts < 3) {
+            goto invalid_args;
+        }
         if (server->require_user == NULL) {
             server->require_user = ngx_array_create(cf->pool, 4, sizeof(ngx_http_complex_value_t));
             if (server->require_user == NULL) {
@@ -437,6 +444,9 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
         target = ngx_array_push(server->require_user);
     } else if (ngx_strcmp(value[1].data, "group") == 0) {
         ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "http_auth_ldap: Setting group");
+        if (cf->args->nelts < 3) {
+            goto invalid_args;
+        }
         if (server->require_group == NULL) {
             server->require_group = ngx_array_create(cf->pool, 4, sizeof(ngx_http_complex_value_t));
             if (server->require_group == NULL) {
@@ -444,6 +454,11 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
             }
         }
         target = ngx_array_push(server->require_group);
+    } else {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: invalid value \"%V\" for require, "
+            "it must be \"valid_user\", \"user\" or \"group\"", &value[1]);
+        return NGX_CONF_ERROR;
     }
 
     if (target == NULL) {
@@ -459,6 +474,12 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
     }
 
     return NGX_CONF_OK;
+
+invalid_args:
+
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+        "http_auth_ldap: invalid number of arguments in \"require\"");
+    return NGX_CONF_ERROR;
 }
 
 /**

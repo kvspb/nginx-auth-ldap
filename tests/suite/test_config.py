@@ -90,7 +90,17 @@ def server_case(
             "url-with-port-out-of-range", None, url=f"ldap://{LDAP_HOST}:99999/{QUERY}", marks=NOT_VALIDATED
         ),
         # require / satisfy
-        server_case("require-unknown-kind", "require", "require nobody;", marks=NOT_VALIDATED),
+        server_case(
+            "require-unknown-kind",
+            'invalid value "nobody" for require, it must be "valid_user", "user" or "group"',
+            "require nobody;",
+        ),
+        server_case("require-without-kind", 'invalid number of arguments in "require"', "require;"),
+        server_case("require-user-without-value", 'invalid number of arguments in "require"', "require user;"),
+        server_case("require-group-without-value", 'invalid number of arguments in "require"', "require group;"),
+        server_case(
+            "require-user-with-two-values", 'invalid number of arguments in "require"', 'require user "a" "b";'
+        ),
         server_case(
             "require-valid-user-template-twice",
             "is duplicate",
