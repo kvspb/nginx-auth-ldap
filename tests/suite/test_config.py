@@ -44,10 +44,10 @@ def server_case(
             ldap_server("users", url=f"ldap:///{PEOPLE_DN}?uid"),
             LOCATION,
             1,
-            "[emerg]",
+            "No host specified",
             id="url-without-host",
-            marks=pytest.mark.xfail(reason="ngx_strlen(lud_host) on a NULL host segfaults (#187)"),
         ),
+        server_case("url-with-port-without-host", "No host specified", url=f"ldap://:389/{QUERY}"),
         server_case(
             "unknown-directive-in-ldap-server",
             None,
