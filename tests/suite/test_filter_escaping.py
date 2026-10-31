@@ -24,6 +24,9 @@ class TestUserSearchFilter:
             # Unescaped, "ali*" matches uid=alice and the caller authenticates
             # under a name that does not exist.
             pytest.param(("ali*", password("alice")), 401, id="wildcard-matches-nobody"),
+            # A special character in the first position must be counted too,
+            # or the escaped value overflows its buffer.
+            pytest.param(("*lice", password("alice")), 401, id="wildcard-at-the-start-matches-nobody"),
             # Unescaped, this closes the uid clause and adds one of its own.
             pytest.param(("alice)(uid=alice", password("alice")), 401, id="injected-filter-clause"),
             pytest.param(("john(x)", password("john(x)")), 200, id="parentheses-in-login"),

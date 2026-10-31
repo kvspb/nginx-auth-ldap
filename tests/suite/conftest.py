@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import shutil
+import socket
 
 import pytest
 
 from harness import Nginx, new_prefix
-from ldapdata import BIND_DN, BIND_SECRET, USERS_URL
+from ldapdata import BIND_DN, BIND_SECRET, PEOPLE_DN, USERS_URL
 
 
 def ldap_server(
@@ -56,6 +57,27 @@ def _fail_on_crash(
     crashes = instance.crashes(since=since, workers=workers)
     if crashes and request.node.get_closest_marker("xfail") is None:
         pytest.fail(f"nginx worker crashed: {crashes}\n--- error.log ---\n{instance.log(since)}")
+
+
+# Short timeouts keep these tests fast; the defaults are 10 s each.
+TIMEOUTS = """
+connect_timeout 1s;
+bind_timeout 1s;
+reconnect_timeout 1s;
+request_timeout 1s;
+"""
+
+
+def url_for(host: str, port: int) -> str:
+    return f"ldap://{host}:{port}/{PEOPLE_DN}?uid?sub?(objectClass=inetOrgPerson)"
+
+
+@pytest.fixture
+def closed_port() -> int:
+    """A loopback port nobody listens on: connections are refused."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 @pytest.fixture

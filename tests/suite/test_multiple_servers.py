@@ -2,7 +2,7 @@
 
 import pytest
 
-from conftest import ldap_server, protected_location
+from conftest import TIMEOUTS, ldap_server, protected_location, url_for
 from ldapdata import changed_password, creds, group_dn
 
 # The first server only admits members of "ops"; the second admits any user.
@@ -89,3 +89,23 @@ def test_without_cache_the_directory_is_asked_every_time(nginx):
 
     with changed_password("erin", "rotated-secret"):
         assert server.get(auth=creds("erin")).status_code == 401
+
+
+def test_cache_rejects_a_wrong_password_with_several_servers(nginx):
+    # A cache miss on another server must not count as an allow.
+    server = nginx.start(http=CACHE + SERVERS, server=protected_location("restricted anyone"))
+
+    assert server.get(auth=("erin", "not-the-password")).status_code == 401
+
+
+def test_cache_allow_from_another_server_skips_an_unreachable_one(nginx, closed_port):
+    # kvspb#201: an allow cached by any server of the location is used first,
+    # so /both answers from the cache without waiting for "down".
+    down = ldap_server("down", "require valid_user;" + TIMEOUTS, url=url_for("127.0.0.1", closed_port))
+    locations = protected_location("anyone", path="/anyone/") + protected_location(
+        "down anyone", path="/both/"
+    )
+    server = nginx.start(http=CACHE + SERVERS + down, server=locations)
+    assert server.get("/anyone/", auth=creds("erin")).status_code == 200
+
+    assert server.get("/both/", auth=creds("erin")).status_code == 200
