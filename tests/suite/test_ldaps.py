@@ -65,13 +65,7 @@ def assert_denied(server) -> None:
         # Aliases that resolve to one address only and match no DNS SAN.
         pytest.param("ldap4", id="ipv4-san-of-host-name"),
         pytest.param("ldap6", id="ipv6-san-of-host-name"),
-        pytest.param(
-            LDAP_IPV6,
-            id="ipv6-address",
-            marks=pytest.mark.xfail(
-                reason="an IPv6 address in brackets is rejected as an invalid port (nal-5br.15)"
-            ),
-        ),
+        pytest.param(LDAP_IPV6, id="ipv6-address"),
     ],
 )
 def test_valid_certificate_is_accepted(nginx, host):

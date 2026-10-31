@@ -2,8 +2,8 @@
 
 import pytest
 
-from conftest import ldap_server, protected_location
-from ldapdata import creds
+from conftest import ldap_server, protected_location, url_for
+from ldapdata import LDAP_IPV4, LDAP_IPV6, creds
 
 
 class TestSingleServer:
@@ -42,3 +42,18 @@ class TestSingleServer:
         statuses = [server.get(auth=creds(uid)).status_code for uid in ("alice", "bob", "alice", "carol")]
 
         assert statuses == [200, 200, 200, 200]
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        pytest.param(LDAP_IPV4, id="ipv4-address"),
+        # An IPv6 address goes in brackets (RFC 3986, RFC 4516).
+        pytest.param(f"[{LDAP_IPV6}]", id="ipv6-address"),
+    ],
+)
+def test_server_given_by_address(nginx, host):
+    server = nginx.start(http=ldap_server("byaddr", url=url_for(host, 389)), server=protected_location("byaddr"))
+
+    assert server.get(auth=creds("alice")).status_code == 200
+    assert server.get(auth=("alice", "wrong")).status_code == 401

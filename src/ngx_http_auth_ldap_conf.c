@@ -368,6 +368,8 @@ static char *
 ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server)
 {
     ngx_str_t *value;
+    ngx_str_t host;
+    ngx_flag_t ipv6;
     u_char *p;
 
     value = cf->args->elts;
@@ -443,15 +445,32 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
         return NGX_CONF_ERROR;
     }
 
-    server->url.data = ngx_palloc(cf->pool, ngx_strlen(server->ludpp->lud_scheme) + sizeof("://") - 1 +
-        ngx_strlen(server->ludpp->lud_host) + sizeof(":65535"));
-    p = ngx_sprintf(server->url.data, "%s://%s:%d%Z", server->ludpp->lud_scheme, server->ludpp->lud_host,
+    /*
+     * ldap_url_parse() strips the brackets of an IPv6 address; put them
+     * back for ldap_init_fd() and ngx_parse_url(), which read the part
+     * after the last ':' as the port otherwise.
+     */
+    host.len = ngx_strlen(server->ludpp->lud_host);
+    ipv6 = (ngx_strlchr((u_char *) server->ludpp->lud_host,
+                        (u_char *) server->ludpp->lud_host + host.len, ':') != NULL);
+
+    host.data = ngx_pnalloc(cf->pool, host.len + 2);
+    if (host.data == NULL) {
+        return NGX_CONF_ERROR;
+    }
+    host.len = ngx_sprintf(host.data, ipv6 ? "[%s]" : "%s", server->ludpp->lud_host) - host.data;
+
+    server->url.data = ngx_pnalloc(cf->pool, ngx_strlen(server->ludpp->lud_scheme) + sizeof("://") - 1 +
+        host.len + sizeof(":65535"));
+    if (server->url.data == NULL) {
+        return NGX_CONF_ERROR;
+    }
+    p = ngx_sprintf(server->url.data, "%s://%V:%d%Z", server->ludpp->lud_scheme, &host,
         server->ludpp->lud_port);
     server->url.len = p - server->url.data - 1;
 
     ngx_memzero(&server->parsed_url, sizeof(ngx_url_t));
-    server->parsed_url.url.data = (u_char *) server->ludpp->lud_host;
-    server->parsed_url.url.len = ngx_strlen(server->ludpp->lud_host);
+    server->parsed_url.url = host;
     server->parsed_url.default_port = server->ludpp->lud_port;
     if (ngx_parse_url(cf->pool, &server->parsed_url) != NGX_OK) {
         if (server->parsed_url.err) {
