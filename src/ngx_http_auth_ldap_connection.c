@@ -31,6 +31,7 @@
 #include "ngx_http_auth_ldap.h"
 
 static void ngx_http_auth_ldap_reconnect_handler(ngx_event_t *);
+static void ngx_http_auth_ldap_wake_request(ngx_http_request_t *r);
 
 /*** Asynchronous LDAP connection handling ***/
 
@@ -38,6 +39,7 @@ void
 ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
 {
     ngx_queue_t *q;
+    ngx_http_auth_ldap_ctx_t *ctx;
 
     if (c->ld) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Unbinding from the server \"%V\")",
@@ -71,11 +73,26 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
         q = ngx_queue_next(q);
     }
 
+    ctx = c->rctx;
     c->rctx = NULL;
     if (c->state != STATE_DISCONNECTED) {
         c->state = STATE_DISCONNECTED;
         ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connection scheduled for reconnection in %d ms", c->server->reconnect_timeout);
+    }
+
+    /*
+     * A request still waiting for an answer on this connection gets the
+     * failure now. It must also let go of the connection: otherwise it
+     * would return it to the free list later, after the reconnect has
+     * already put it there (kvspb#62 #99 #104).
+     */
+    if (ctx != NULL) {
+        ctx->c = NULL;
+        ctx->replied = 1;
+        ctx->error_code = LDAP_SERVER_DOWN;
+        ngx_str_null(&ctx->error_msg);
+        ngx_http_auth_ldap_wake_request(ctx->r);
     }
 }
 

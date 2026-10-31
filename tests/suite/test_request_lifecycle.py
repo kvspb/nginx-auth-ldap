@@ -1,5 +1,5 @@
-"""Requests whose LDAP operation is cut off: the request times out while it
-waits for an answer or for a free connection.
+"""Requests whose LDAP operation is cut off: the LDAP connection dies or the
+request times out while it waits for an answer or for a free connection.
 
 A request must not be left behind on a connection or in the waiting queue
 once its operation ends one way or another: the pool of connections has to
@@ -64,6 +64,43 @@ def status(server, uid: str = "alice", timeout: float = 5) -> int | None:
         return server.get(auth=creds(uid), timeout=timeout).status_code
     except requests.ConnectionError:
         return None
+
+
+def test_request_in_flight_when_the_connection_dies_gets_an_answer(nginx, proxy):
+    server = start(nginx, proxy)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        proxy.hold()
+        future = pool.submit(status, server)
+        time.sleep(0.3)
+        started = time.monotonic()
+        proxy.drop()
+        proxy.release()
+        result = future.result()
+        elapsed = time.monotonic() - started
+
+    # Not answered by the request_timeout (1 s) long after the failure.
+    assert elapsed < 0.8, f"the request waited {elapsed:.1f} s for a dead connection"
+    assert result == 401
+
+
+def test_pool_stays_consistent_after_a_connection_died_under_a_request(nginx, proxy):
+    server = start(nginx, proxy)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        proxy.hold()
+        stuck = pool.submit(status, server)
+        time.sleep(0.3)
+        proxy.drop()
+        proxy.release()
+        stuck.result()
+
+    wait_until_ready(server)
+    # Several requests at once share the single connection one after another.
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(pool.map(lambda uid: status(server, uid), ["alice", "bob", "carol", "dave"] * 3))
+
+    assert results == [200] * 12
 
 
 def test_waiting_requests_are_served_after_one_timed_out(nginx, proxy):
