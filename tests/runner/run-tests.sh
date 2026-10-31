@@ -5,14 +5,17 @@
 #   NGINX_VERSION  nginx release to build against (default: 1.30.6)
 #   NGINX_DEBUG    1 to configure with --with-debug (debug-level error log)
 #   SANITIZE       1 to build with AddressSanitizer
+#   COVERAGE       1 to build with gcov instrumentation and write a coverage
+#                  report of the module sources to /reports/coverage
 # Any arguments are passed to pytest unchanged.
 set -eu
 
 : "${NGINX_VERSION:=1.30.6}"
 : "${NGINX_DEBUG:=0}"
 : "${SANITIZE:=0}"
+: "${COVERAGE:=0}"
 
-flavor="${NGINX_VERSION}-debug${NGINX_DEBUG}-asan${SANITIZE}"
+flavor="${NGINX_VERSION}-debug${NGINX_DEBUG}-asan${SANITIZE}-cov${COVERAGE}"
 build_dir="/build/nginx-${flavor}"
 tarball="/build/nginx-${NGINX_VERSION}.tar.gz"
 
@@ -33,6 +36,11 @@ if [ ! -f "${build_dir}/objs/Makefile" ]; then
     if [ "${SANITIZE}" = "1" ]; then
         cc_opt="${cc_opt} -fsanitize=address"
         ld_opt="-fsanitize=address"
+    fi
+    if [ "${COVERAGE}" = "1" ]; then
+        # -O0 keeps line counts faithful to the source.
+        cc_opt="${cc_opt} -O0 --coverage"
+        ld_opt="${ld_opt} --coverage"
     fi
     if [ "${NGINX_DEBUG}" = "1" ]; then
         extra="--with-debug"
@@ -65,4 +73,36 @@ export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:abort_on_error=1}"
 "${NGINX_BINARY}" -V 2>&1 | head -n 1
 
 cd /src/tests
-exec python3 -m pytest "$@"
+
+if [ "${COVERAGE}" != "1" ]; then
+    exec python3 -m pytest "$@"
+fi
+
+# Counters from earlier runs would inflate the report.
+find "${build_dir}/objs" -name '*.gcda' -delete
+
+status=0
+python3 -m pytest "$@" || status=$?
+
+# Workers flush their counters when they exit normally; a crashed worker
+# (signal) loses the counts of its last requests.
+report_dir=/reports/coverage
+rm -rf "${report_dir}"
+mkdir -p "${report_dir}"
+# gcov resolves source paths relative to the compiler's working directory,
+# which is the nginx build directory; only the module objects are read.
+(
+    cd "${build_dir}"
+    gcovr --root /src objs/addon \
+        --txt "${report_dir}/summary.txt" \
+        --html-details "${report_dir}/index.html" \
+        --json "${report_dir}/coverage.json" \
+        --print-summary
+)
+python3 /src/tests/runner/coverage_functions.py "${report_dir}/coverage.json" \
+    | tee "${report_dir}/functions.txt"
+# The container runs as root; hand the report to the owner of the checkout.
+chown -R "$(stat -c %u:%g /src)" /reports
+echo "run-tests: coverage report in tests/reports/coverage/index.html"
+
+exit "${status}"

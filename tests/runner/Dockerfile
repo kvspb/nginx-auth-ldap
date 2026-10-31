@@ -10,6 +10,7 @@ RUN apt-get update \
         build-essential \
         ca-certificates \
         curl \
+        gcovr \
         ldap-utils \
         libldap2-dev \
         libpcre2-dev \

@@ -10,6 +10,7 @@ make test NGINX_VERSION=1.22.1              # any release from nginx.org
 make test-matrix                            # 1.22.1 (pre-1.23 API), 1.30.6 (stable), 1.31.8 (mainline)
 make test PYTEST_ARGS="-k groups -x -vv"    # pytest arguments
 make test PYTEST_ARGS="--runxfail"          # show how known bugs fail today
+make coverage                               # coverage report in tests/reports/coverage/
 make test-down                              # stop LDAP, drop the build cache
 ```
 
@@ -21,10 +22,23 @@ cached build directory):
 | `NGINX_VERSION` | nginx release to build against                          |
 | `NGINX_DEBUG=1` | `--with-debug`; error logs are written at `debug` level |
 | `SANITIZE=1`    | AddressSanitizer; any report fails the test             |
+| `COVERAGE=1`    | gcov build; writes a report (same as `make coverage`)   |
 
 `NGINX_DEBUG=1` changes behaviour: in debug builds `ngx_queue_remove()`
 clears the removed node, which hides double-removal bugs. Run the suite
 without it as well.
+
+## Coverage
+
+`make coverage` builds an instrumented nginx (`-O0 --coverage`), runs the
+suite and writes `tests/reports/coverage/`:
+
+- `index.html`: annotated source, line and branch counts
+- `functions.txt`: per-function line coverage, least covered first
+- `summary.txt`, `coverage.json`: totals and raw data
+
+Counters are reset before each run. A worker that crashes loses the counts of
+its last requests, so xfail crash tests are slightly undercounted.
 
 ## Layout
 

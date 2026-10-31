@@ -21,12 +21,15 @@ services:
       NGINX_VERSION: "${NGINX_VERSION:-1.30.6}"
       NGINX_DEBUG: "${NGINX_DEBUG:-0}"
       SANITIZE: "${SANITIZE:-0}"
+      COVERAGE: "${COVERAGE:-0}"
       LDAP_HOST: ldap
     volumes:
       # The module source is mounted read-only; build artifacts live in the
       # build-cache volume.
       - ..:/src:ro
       - build-cache:/build
+      # Writable output for reports such as make coverage.
+      - ./reports:/reports
 
 volumes:
   build-cache:
