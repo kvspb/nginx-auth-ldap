@@ -35,6 +35,7 @@ static char * ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_se
 static char * ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
+static char * ngx_http_auth_ldap_parse_flag(ngx_conf_t *cf, ngx_flag_t *flag);
 
 /*** Configuration and initialization ***/
 
@@ -130,8 +131,8 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         server->bind_dn_passwd = value[1];
     } else if (ngx_strcmp(value[0].data, "group_attribute") == 0) {
         server->group_attribute = value[1];
-    } else if (ngx_strcmp(value[0].data, "group_attribute_is_dn") == 0 && ngx_strcmp(value[1].data, "on") == 0) {
-        server->group_attribute_dn = 1;
+    } else if (ngx_strcmp(value[0].data, "group_attribute_is_dn") == 0) {
+        return ngx_http_auth_ldap_parse_flag(cf, &server->group_attribute_dn);
     } else if (ngx_strcmp(value[0].data, "require") == 0) {
         return ngx_http_auth_ldap_parse_require(cf, server);
     } else if (ngx_strcmp(value[0].data, "satisfy") == 0) {
@@ -152,18 +153,21 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
             return NGX_CONF_ERROR;
         }
         server->connections = i;
-    } else if (ngx_strcmp(value[0].data, "ssl_check_cert") == 0  && ngx_strcmp(value[1].data, "on") == 0) {
-      #if OPENSSL_VERSION_NUMBER >= 0x10002000
-      server->ssl_check_cert = 1;
-      #else
+    } else if (ngx_strcmp(value[0].data, "ssl_check_cert") == 0) {
+      rv = ngx_http_auth_ldap_parse_flag(cf, &server->ssl_check_cert);
+      #if OPENSSL_VERSION_NUMBER < 0x10002000
       #if GNUC > 4
       #warning "http_auth_ldap: Compiling with OpenSSL < 1.0.2, certificate verification will be unavailable. OPENSSL_VERSION_NUMBER == " XSTR(OPENSSL_VERSION_NUMBER)
       #endif
-      ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-        "http_auth_ldap: 'ssl_cert_check': cannot verify remote certificate's domain name because "
-        "your version of OpenSSL is too old. "
-        "Please install OpenSSL >= 1.02 and recompile nginx.");
+      if (rv == NGX_CONF_OK && server->ssl_check_cert) {
+        server->ssl_check_cert = 0;
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+          "http_auth_ldap: 'ssl_cert_check': cannot verify remote certificate's domain name because "
+          "your version of OpenSSL is too old. "
+          "Please install OpenSSL >= 1.02 and recompile nginx.");
+      }
       #endif
+      return rv;
     } else if (ngx_strcmp(value[0].data, "ssl_ca_dir") == 0) {
       server->ssl_ca_dir = value[1];
     } else if (ngx_strcmp(value[0].data, "ssl_ca_file") == 0) {
@@ -175,11 +179,39 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
     else CONF_MSEC_VALUE(cf,value,server,request_timeout)
     else if (ngx_strcmp(value[0].data, "include") == 0) {
         return ngx_conf_include(cf, dummy, conf);
+    } else {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: unknown directive \"%V\" in ldap_server", &value[0]);
+        return NGX_CONF_ERROR;
     }
 
-    rv = NGX_CONF_OK;
+    return NGX_CONF_OK;
+}
 
-    return rv;
+/**
+ * Parse an "on" | "off" value of the directive in cf->args
+ */
+static char *
+ngx_http_auth_ldap_parse_flag(ngx_conf_t *cf, ngx_flag_t *flag)
+{
+    ngx_str_t *value;
+
+    value = cf->args->elts;
+
+    if (ngx_strcmp(value[1].data, "on") == 0) {
+        *flag = 1;
+        return NGX_CONF_OK;
+    }
+
+    if (ngx_strcmp(value[1].data, "off") == 0) {
+        *flag = 0;
+        return NGX_CONF_OK;
+    }
+
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+        "http_auth_ldap: invalid value \"%V\" for %V, it must be \"on\" or \"off\"",
+        &value[1], &value[0]);
+    return NGX_CONF_ERROR;
 }
 
 /**

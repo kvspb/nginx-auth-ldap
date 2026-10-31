@@ -50,9 +50,18 @@ def server_case(
         server_case("url-with-port-without-host", "No host specified", url=f"ldap://:389/{QUERY}"),
         server_case(
             "unknown-directive-in-ldap-server",
-            None,
+            'unknown directive "no_such_directive" in ldap_server',
             "require valid_user;\nno_such_directive on;",
-            marks=NOT_VALIDATED,
+        ),
+        server_case(
+            "group-attribute-is-dn-unknown-value",
+            'invalid value "maybe" for group_attribute_is_dn, it must be "on" or "off"',
+            "require valid_user;\ngroup_attribute_is_dn maybe;",
+        ),
+        server_case(
+            "ssl-check-cert-unknown-value",
+            'invalid value "maybe" for ssl_check_cert, it must be "on" or "off"',
+            "require valid_user;\nssl_check_cert maybe;",
         ),
         # url
         server_case(
@@ -131,3 +140,29 @@ def test_nginx_t(nginx, http, server, expected_rc, expected_text):
     assert result.returncode == expected_rc, f"nginx -t exited with {result.returncode}:\n{result.stderr}"
     if expected_text is not None:
         assert expected_text in result.stderr
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        pytest.param('group_attribute "member";', id="group_attribute"),
+        pytest.param("group_attribute_is_dn on;", id="group_attribute_is_dn-on"),
+        pytest.param("group_attribute_is_dn off;", id="group_attribute_is_dn-off"),
+        pytest.param("satisfy all;", id="satisfy"),
+        pytest.param("referral off;", id="referral"),
+        pytest.param("max_down_retries 2;", id="max_down_retries"),
+        pytest.param("connections 2;", id="connections"),
+        pytest.param("ssl_check_cert on;", id="ssl_check_cert-on"),
+        pytest.param("ssl_check_cert off;", id="ssl_check_cert-off"),
+        pytest.param("ssl_ca_dir /etc/ssl/certs;", id="ssl_ca_dir"),
+        pytest.param("ssl_ca_file /etc/ssl/certs/ca-certificates.crt;", id="ssl_ca_file"),
+        pytest.param("connect_timeout 5s;", id="connect_timeout"),
+        pytest.param("reconnect_timeout 5s;", id="reconnect_timeout"),
+        pytest.param("bind_timeout 5s;", id="bind_timeout"),
+        pytest.param("request_timeout 5s;", id="request_timeout"),
+    ],
+)
+def test_known_directive_is_accepted(nginx, directive):
+    result = nginx.check_config(http=ldap_server("users", f"require valid_user;\n{directive}"), server=LOCATION)
+
+    assert result.returncode == 0, result.stderr

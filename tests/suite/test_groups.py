@@ -92,6 +92,30 @@ class TestSatisfyAllOfTwoGroups:
         assert server.get(auth=creds(uid)).status_code == expected
 
 
+class TestGroupAttributeIsDnOff:
+    """group_attribute_is_dn on, then off: the last value wins and the login is searched."""
+
+    @pytest.fixture(scope="class")
+    def server(self, shared_nginx):
+        body = f"""
+group_attribute memberUid;
+group_attribute_is_dn on;
+group_attribute_is_dn off;
+require group "{group_dn("posix-staff")}";
+"""
+        return shared_nginx.start(http=ldap_server("posix", body), server=protected_location("posix"))
+
+    @pytest.mark.parametrize(
+        ("uid", "expected"),
+        [
+            pytest.param("alice", 200, id="member-by-login"),
+            pytest.param("bob", 401, id="not-a-member"),
+        ],
+    )
+    def test_access(self, server, uid, expected):
+        assert server.get(auth=creds(uid)).status_code == expected
+
+
 @pytest.mark.parametrize(
     ("body", "log_text"),
     [
