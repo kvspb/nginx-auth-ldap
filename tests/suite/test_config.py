@@ -222,3 +222,33 @@ def test_known_directive_is_accepted(nginx, directive):
     )
 
     assert result.returncode == 0, result.stderr
+
+
+SINGLE_VALUE_DIRECTIVES = [
+    "url",
+    "binddn",
+    "binddn_passwd",
+    "group_attribute",
+    "group_attribute_is_dn",
+    "satisfy",
+    "referral",
+    "max_down_retries",
+    "connections",
+    "ssl_check_cert",
+    "ssl_ca_dir",
+    "ssl_ca_file",
+    "connect_timeout",
+    "reconnect_timeout",
+    "bind_timeout",
+    "request_timeout",
+    "include",
+]
+
+
+@pytest.mark.parametrize("args", ["", " on off"], ids=["no-value", "two-values"])
+@pytest.mark.parametrize("name", SINGLE_VALUE_DIRECTIVES)
+def test_single_value_directive_needs_exactly_one_value(nginx, name, args):
+    result = nginx.check_config(http=ldap_server("users", f"require valid_user;\n{name}{args};"), server=LOCATION)
+
+    assert result.returncode == 1, result.stderr
+    assert f'invalid number of arguments in "{name}"' in result.stderr

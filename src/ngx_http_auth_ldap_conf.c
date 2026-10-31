@@ -38,6 +38,16 @@ static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf, ngx_http_auth_ld
 static char * ngx_http_auth_ldap_parse_flag(ngx_conf_t *cf, ngx_flag_t *flag);
 static ngx_int_t ngx_http_auth_ldap_check_filter(const char *filter);
 
+/* ldap_server directives that take exactly one value; "require" is checked
+ * in ngx_http_auth_ldap_parse_require(). */
+static const char *ngx_http_auth_ldap_single_value_directives[] = {
+    "url", "binddn", "binddn_passwd", "group_attribute",
+    "group_attribute_is_dn", "satisfy", "referral", "max_down_retries",
+    "connections", "ssl_check_cert", "ssl_ca_dir", "ssl_ca_file",
+    "connect_timeout", "reconnect_timeout", "bind_timeout",
+    "request_timeout", "include", NULL
+};
+
 /*** Configuration and initialization ***/
 
 /**
@@ -117,11 +127,20 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
     ngx_http_auth_ldap_server_t    *server;
     ngx_http_auth_ldap_main_conf_t *cnf = conf;
     ngx_int_t                      i;
+    const char                     **name;
 
     /* It should be safe to just use latest server from array */
     server = ((ngx_http_auth_ldap_server_t *) cnf->servers->elts + (cnf->servers->nelts - 1));
 
     value = cf->args->elts;
+
+    for (name = ngx_http_auth_ldap_single_value_directives; *name != NULL; name++) {
+        if (ngx_strcmp(value[0].data, *name) == 0 && cf->args->nelts != 2) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                "http_auth_ldap: invalid number of arguments in \"%V\"", &value[0]);
+            return NGX_CONF_ERROR;
+        }
+    }
 
     /* TODO: Add more validation */
     if (ngx_strcmp(value[0].data, "url") == 0) {
