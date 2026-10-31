@@ -19,6 +19,15 @@ flavor="${NGINX_VERSION}-debug${NGINX_DEBUG}-asan${SANITIZE}-cov${COVERAGE}"
 build_dir="/build/nginx-${flavor}"
 tarball="/build/nginx-${NGINX_VERSION}.tar.gz"
 
+# nginx bakes the module's source list into objs/Makefile at configure time,
+# so a changed ./config (e.g. files added or moved) needs a fresh configure.
+config_sum=$(sha256sum /src/config | cut -d' ' -f1)
+if [ -f "${build_dir}/objs/Makefile" ] \
+    && [ "$(cat "${build_dir}/.module-config" 2>/dev/null)" != "${config_sum}" ]; then
+    echo "run-tests: module config changed, reconfiguring"
+    rm -f "${build_dir}/objs/Makefile"
+fi
+
 if [ ! -f "${build_dir}/objs/Makefile" ]; then
     if [ ! -f "${tarball}" ]; then
         echo "run-tests: downloading nginx ${NGINX_VERSION}"
@@ -60,6 +69,7 @@ if [ ! -f "${build_dir}/objs/Makefile" ]; then
             ${extra} >"${build_dir}/configure.log" 2>&1 \
             || { cat "${build_dir}/configure.log"; exit 1; }
     )
+    echo "${config_sum}" >"${build_dir}/.module-config"
 fi
 
 # Incremental: only files changed under /src are recompiled.
