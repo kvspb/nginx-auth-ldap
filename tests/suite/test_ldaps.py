@@ -14,6 +14,9 @@ fix may answer 5xx instead. Either way it must not be let through.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+
 import pytest
 import requests
 
@@ -89,6 +92,18 @@ def test_ip_address_does_not_match_a_dns_san(nginx):
     assert "does not match address" in server.log()
 
 
+def test_ca_directory_is_trusted(nginx, tmp_path):
+    # OpenSSL looks CAs up in a directory by subject hash: <hash>.0.
+    subject_hash = subprocess.run(
+        ["openssl", "x509", "-hash", "-noout", "-in", str(CA)], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    shutil.copy(CA, tmp_path / f"{subject_hash}.0")
+    body = f"require valid_user;\nssl_check_cert on;\nssl_ca_dir {tmp_path};{TIMEOUTS}"
+    server = nginx.start(http=ldap_server("tls", body, url=ldaps_url()), server=protected_location("tls"))
+
+    assert server.get(auth=creds("alice")).status_code == 200
+
+
 def test_certificate_is_not_checked_when_ssl_check_cert_is_off(nginx):
     server = start(nginx, ldaps_url(port=UNTRUSTED_PORT), check="off", ca_file=None)
 
@@ -130,7 +145,6 @@ def test_tls13_only_server_is_accepted(nginx):
     assert server.get(auth=creds("alice")).status_code == 200
 
 
-@pytest.mark.xfail(reason="all ldaps servers share one SSL_CTX, so CA files add up (kvspb#258)")
 def test_ssl_ca_file_applies_to_its_own_server_only(nginx):
     # "other" trusts the other CA and reaches the proxy whose certificate it
     # issued; "main" trusts only the test CA and must not accept that proxy.
@@ -148,3 +162,18 @@ def test_ssl_ca_file_applies_to_its_own_server_only(nginx):
     except requests.ConnectionError:
         return
     assert response.status_code != 200
+
+
+@pytest.mark.parametrize(
+    ("directive", "path"),
+    [
+        pytest.param("ssl_ca_file", "/nonexistent/ca.crt", id="missing-ca-file"),
+        pytest.param("ssl_ca_file", TLS_DIR / "generate.sh", id="ca-file-without-certificates"),
+    ],
+)
+def test_unusable_ca_location_is_a_configuration_error(nginx, directive, path):
+    body = f"require valid_user;\nssl_check_cert on;\n{directive} {path};"
+    result = nginx.check_config(http=ldap_server("tls", body, url=ldaps_url()), server=protected_location("tls"))
+
+    assert result.returncode == 1, result.stderr
+    assert f'cannot load CA certificates from "{path}"' in result.stderr

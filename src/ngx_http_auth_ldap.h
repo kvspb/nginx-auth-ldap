@@ -89,6 +89,9 @@ typedef struct {
     ngx_flag_t ssl_check_cert;
     ngx_str_t ssl_ca_dir;
     ngx_str_t ssl_ca_file;
+#if (NGX_OPENSSL)
+    ngx_ssl_t ssl;                  /* ldaps:// only, one per server */
+#endif
 
     ngx_array_t *require_group;     /* array of ngx_http_complex_value_t */
     ngx_array_t *require_user;      /* array of ngx_http_complex_value_t */
@@ -114,9 +117,6 @@ typedef struct {
     ngx_msec_t cache_expiration_time;
     size_t cache_size;
     ngx_int_t servers_size;
-#if (NGX_OPENSSL)
-    ngx_ssl_t ssl;
-#endif
 } ngx_http_auth_ldap_main_conf_t;
 
 typedef struct {

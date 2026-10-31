@@ -37,6 +37,9 @@ static char * ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_lda
 static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_flag(ngx_conf_t *cf, ngx_flag_t *flag);
 static ngx_int_t ngx_http_auth_ldap_check_filter(const char *filter);
+#if (NGX_OPENSSL)
+static char * ngx_http_auth_ldap_load_ca(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
+#endif
 
 /* ldap_server directives that take exactly one value; "require" is checked
  * in ngx_http_auth_ldap_parse_require(). */
@@ -104,8 +107,47 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         return rv;
     }
 
+#if (NGX_OPENSSL)
+    return ngx_http_auth_ldap_load_ca(cf, server);
+#else
+    return NGX_CONF_OK;
+#endif
+}
+
+#if (NGX_OPENSSL)
+/**
+ * Load the CA certificates of an ldaps server with ssl_check_cert on into
+ * its own SSL context, once, after the whole ldap_server block is read.
+ */
+static char *
+ngx_http_auth_ldap_load_ca(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server)
+{
+    ngx_str_t  *location;
+
+    if (server->ssl.ctx == NULL || !server->ssl_check_cert) {
+        return NGX_CONF_OK;
+    }
+
+    if (server->ssl_ca_file.data != NULL || server->ssl_ca_dir.data != NULL) {
+        if (SSL_CTX_load_verify_locations(server->ssl.ctx,
+                (char *) server->ssl_ca_file.data, (char *) server->ssl_ca_dir.data) != 1)
+        {
+            location = server->ssl_ca_file.data != NULL ? &server->ssl_ca_file : &server->ssl_ca_dir;
+            ngx_ssl_error(NGX_LOG_EMERG, cf->log, 0,
+                "http_auth_ldap: cannot load CA certificates from \"%V\"", location);
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    if (SSL_CTX_set_default_verify_paths(server->ssl.ctx) != 1) {
+        ngx_ssl_error(NGX_LOG_EMERG, cf->log, 0,
+            "http_auth_ldap: cannot use the default CA certificate locations");
+        return NGX_CONF_ERROR;
+    }
+
     return NGX_CONF_OK;
 }
+#endif
 
 #define CONF_MSEC_VALUE(cf,value,server,x) \
 if (ngx_strcmp(value[0].data, #x) == 0) { \
@@ -423,17 +465,32 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
         return NGX_CONF_OK;
 #if (NGX_OPENSSL)
     } else if (ngx_strcmp(server->ludpp->lud_scheme, "ldaps") == 0) {
-        ngx_http_auth_ldap_main_conf_t *halmcf =
-            ngx_http_conf_get_module_main_conf(cf, ngx_http_auth_ldap_module);
         /* SSL 2.0 and 3.0 are broken (RFC 6176, RFC 7568). */
         ngx_uint_t protos = NGX_SSL_TLSv1 | NGX_SSL_TLSv1_1 | NGX_SSL_TLSv1_2
 #ifdef NGX_SSL_TLSv1_3
             | NGX_SSL_TLSv1_3
 #endif
             ;
-        if (halmcf->ssl.ctx == NULL && ngx_ssl_create(&halmcf->ssl, protos, halmcf) != NGX_OK) {
+        ngx_pool_cleanup_t *cln;
+
+        if (server->ssl.ctx != NULL) {
+            return NGX_CONF_OK;
+        }
+
+        /* One context per server: CA locations must not add up (kvspb#258). */
+        server->ssl.log = cf->log;
+        if (ngx_ssl_create(&server->ssl, protos, NULL) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
+
+        cln = ngx_pool_cleanup_add(cf->pool, 0);
+        if (cln == NULL) {
+            ngx_ssl_cleanup_ctx(&server->ssl);
+            return NGX_CONF_ERROR;
+        }
+        cln->handler = ngx_ssl_cleanup_ctx;
+        cln->data = &server->ssl;
+
         return NGX_CONF_OK;
 #endif
     } else {

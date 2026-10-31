@@ -545,7 +545,7 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
 
 #if (NGX_OPENSSL)
             c->pool = cycle->pool;
-            c->ssl = &halmcf->ssl;
+            c->ssl = &server->ssl;
 #endif
 
             ngx_http_auth_ldap_connect(c);
