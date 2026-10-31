@@ -31,5 +31,22 @@ services:
       # Writable output for reports such as make coverage.
       - ./reports:/reports
 
+  # Diff-based mutation testing (make mutate BASE=<ref>).
+  mutation:
+    build: ./mutation
+    depends_on:
+      ldap:
+        condition: service_healthy
+    environment:
+      NGINX_VERSION: "${NGINX_VERSION:-1.30.6}"
+      MUTATE_BASE: "${MUTATE_BASE:-}"
+      MUTATE_TIMEOUT: "${MUTATE_TIMEOUT:-60000}"
+      MUTATE_ASAN: "${MUTATE_ASAN:-1}"
+      LDAP_HOST: ldap
+    volumes:
+      - ${MODULE_SRC:-..}:/src:ro
+      - build-cache:/build
+      - ./reports:/reports
+
 volumes:
   build-cache:

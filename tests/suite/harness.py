@@ -17,6 +17,11 @@ import requests
 
 NGINX_BINARY = os.environ.get("NGINX_BINARY", "nginx")
 
+# Mull enables a mutant through an environment variable named after it,
+# e.g. "cxx_eq_to_ne:/src/x.c:12:5:12:7=1". nginx clears the environment of
+# its workers, so such variables are passed on with the "env" directive.
+MULL_MUTANT_RE = re.compile(r"^cxx_\w+:")
+
 # Written by the master process when a worker dies abnormally.
 CRASH_RE = re.compile(r"worker process \d+ exited on signal \d+")
 ASAN_RE = re.compile(r"ERROR: AddressSanitizer")
@@ -72,9 +77,12 @@ class Nginx:
         (self.prefix / "html" / "ok").write_text("ok")
 
         level = "debug" if "--with-debug" in self._configure_args() else "info"
+        passed_env = "".join(
+            f'env "{name}";\n' for name in {**os.environ, **self.env} if MULL_MUTANT_RE.match(name)
+        )
         conf = textwrap.dedent(
             """\
-            daemon off;
+            {passed_env}daemon off;
             master_process on;
             # The runner container is disposable; running workers as root
             # keeps the private (0700) prefix directory accessible to them.
@@ -105,6 +113,7 @@ class Nginx:
             }}
             """
         ).format(
+            passed_env=passed_env,
             error_log=self.error_log,
             level=level,
             prefix=self.prefix,

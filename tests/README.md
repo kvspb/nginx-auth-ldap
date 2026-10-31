@@ -11,6 +11,7 @@ make test-matrix                            # 1.22.1 (pre-1.23 API), 1.30.6 (sta
 make test PYTEST_ARGS="-k groups -x -vv"    # pytest arguments
 make test PYTEST_ARGS="--runxfail"          # show how known bugs fail today
 make coverage                               # coverage report in tests/reports/coverage/
+make mutate BASE=dev                        # mutation testing of the diff against a git ref
 make test-down                              # stop LDAP, drop the build cache
 ```
 
@@ -40,6 +41,38 @@ suite and writes `tests/reports/coverage/`:
 Counters are reset before each run. A worker that crashes loses the counts of
 its last requests, so xfail crash tests are slightly undercounted.
 
+## Mutation testing
+
+`make mutate BASE=<git ref>` checks that the tests notice changes to the
+code you changed. It builds nginx with clang and the
+[Mull](https://mull-project.com) plugin, which compiles every mutant of the
+lines that differ from `<ref>` (working tree included) into one binary, and
+then runs the suite once per mutant through `mull-runner`. A mutant that
+makes any test fail, crash nginx or trip AddressSanitizer is killed; one that
+passes the whole suite survives. Results go to `tests/reports/mutation/`
+(`mutation.txt` lists survivors with file:line, `mutation.json` is the
+Mutation Testing Elements report).
+
+| Variable / argument | Effect |
+| --- | --- |
+| `BASE` | git ref to diff against; only lines changed since it are mutated |
+| `PYTEST_ARGS` | pytest arguments per mutant, e.g. a test file to go faster |
+| `MUTATE_TIMEOUT` | minimum timeout per mutant run in ms (default 60000) |
+| `MUTATE_ASAN=0` | build without AddressSanitizer and `NGX_DEBUG_PALLOC` |
+| `MODULE_SRC` | another checkout to mutate (must contain `.git`) |
+
+Each mutant runs the suite (`pytest -x`), about 8 s, so a diff with 60
+mutants takes about 8 minutes. AddressSanitizer with `NGX_DEBUG_PALLOC` is
+on by default: without it a mutant that shrinks a buffer by one byte writes
+into pool slack and survives.
+
+nginx clears the environment of its workers, so the harness forwards Mull's
+mutant switches (variables named `cxx_<operator>:<file>:...`) with `env`
+directives; mutants in worker code are therefore active.
+
+A surviving mutant needs either a new test or a reason why no test can kill
+it (equivalent mutant, or a branch that only runs on allocation failure).
+
 ## Layout
 
 ```text
@@ -47,6 +80,7 @@ tests/
   docker-compose.yml   ldap + tests services
   ldap/                OpenLDAP image; seed.ldif holds the directory fixtures
   runner/              toolchain image; run-tests.sh builds nginx and runs pytest
+  mutation/            clang + Mull image; run-mutation.sh for make mutate
   suite/
     harness.py         Nginx: per-test prefix, config, start/stop, crash detection
     conftest.py        `nginx` fixture, ldap_server() / protected_location() helpers
