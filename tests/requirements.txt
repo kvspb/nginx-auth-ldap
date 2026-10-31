@@ -1,0 +1,4 @@
+# Host-side dependencies for editors and linters; the runner image installs
+# the Debian packages python3-pytest and python3-requests instead.
+pytest>=7
+requests>=2.28

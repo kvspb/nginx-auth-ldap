@@ -1,0 +1,99 @@
+# Directory fixtures for the test suite. Keep tests/suite/ldapdata.py in sync.
+#
+# Passwords follow the "<uid>-secret" pattern.
+
+dn: dc=example,dc=org
+objectClass: dcObject
+objectClass: organization
+dc: example
+o: Example
+
+dn: ou=people,dc=example,dc=org
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=example,dc=org
+objectClass: organizationalUnit
+ou: groups
+
+dn: ou=services,dc=example,dc=org
+objectClass: organizationalUnit
+ou: services
+
+# Service account used by nginx for the initial bind and user searches.
+dn: cn=nginx,ou=services,dc=example,dc=org
+objectClass: organizationalRole
+objectClass: simpleSecurityObject
+cn: nginx
+userPassword: nginx-secret
+
+# Member of "admins" and "devs".
+dn: uid=alice,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: alice
+cn: Alice Liddell
+sn: Liddell
+userPassword: alice-secret
+
+# Member of "devs" and "ops".
+dn: uid=bob,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: bob
+cn: Bob Builder
+sn: Builder
+userPassword: bob-secret
+
+# Member of no group.
+dn: uid=carol,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: carol
+cn: Carol Danvers
+sn: Danvers
+userPassword: carol-secret
+
+# Member of both "admins" and "ops".
+dn: uid=dave,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: dave
+cn: Dave Grohl
+sn: Grohl
+userPassword: dave-secret
+
+# Login name with characters that are special in LDAP filters (RFC 4515).
+dn: uid=john(x),ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: john(x)
+cn: John X
+sn: X
+userPassword: john(x)-secret
+
+# DN with an escaped comma, as is common in Active Directory ("Doe, John").
+dn: cn=Doe\, John,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: jdoe
+cn: Doe, John
+sn: Doe
+userPassword: jdoe-secret
+
+dn: cn=admins,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: admins
+member: uid=alice,ou=people,dc=example,dc=org
+member: uid=dave,ou=people,dc=example,dc=org
+
+dn: cn=devs,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: devs
+member: uid=alice,ou=people,dc=example,dc=org
+member: uid=bob,ou=people,dc=example,dc=org
+
+dn: cn=ops,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: ops
+member: uid=bob,ou=people,dc=example,dc=org
+member: uid=dave,ou=people,dc=example,dc=org
+
+dn: cn=staff,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: staff
+member: cn=Doe\, John,ou=people,dc=example,dc=org

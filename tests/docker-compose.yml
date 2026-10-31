@@ -1,0 +1,32 @@
+# Integration test environment: an OpenLDAP server and a runner that builds
+# nginx with this module and executes the pytest suite against it.
+#
+#   docker compose -f tests/docker-compose.yml run --rm --build tests
+#
+# See tests/README.md for options.
+name: nginx-auth-ldap-tests
+
+services:
+  ldap:
+    build: ./ldap
+    environment:
+      SLAPD_LOG_LEVEL: "${SLAPD_LOG_LEVEL:-256}"
+
+  tests:
+    build: ./runner
+    depends_on:
+      ldap:
+        condition: service_healthy
+    environment:
+      NGINX_VERSION: "${NGINX_VERSION:-1.30.6}"
+      NGINX_DEBUG: "${NGINX_DEBUG:-0}"
+      SANITIZE: "${SANITIZE:-0}"
+      LDAP_HOST: ldap
+    volumes:
+      # The module source is mounted read-only; build artifacts live in the
+      # build-cache volume.
+      - ..:/src:ro
+      - build-cache:/build
+
+volumes:
+  build-cache:
