@@ -54,3 +54,30 @@ def test_require_user_dn_is_compared_case_insensitively(nginx):
     server = users_server(nginx, "any", dns=(f"UID=alice,{PEOPLE_DN.upper()}",))
 
     assert server.get(auth=creds("alice")).status_code == 200
+
+
+class TestValidUserDnTemplate:
+    """require valid_user "<dn>": bind with a DN built from the login, no search.
+
+    Regression for nal-5br.12: the evaluated template was passed to
+    ldap_sasl_bind() without a NUL terminator (heap over-read under ASan,
+    wrong DN and 401 for valid users without it).
+    """
+
+    @pytest.fixture(scope="class")
+    def server(self, shared_nginx):
+        body = f'require valid_user "uid=$remote_user,{PEOPLE_DN}";'
+        return shared_nginx.start(http=ldap_server("template", body), server=protected_location("template"))
+
+    @pytest.mark.parametrize(
+        ("auth", "expected"),
+        [
+            pytest.param(creds("alice"), 200, id="valid-credentials"),
+            pytest.param(("alice", "not-the-password"), 401, id="wrong-password"),
+            pytest.param(("mallory", "mallory-secret"), 401, id="unknown-user"),
+            # jdoe exists, but under cn=..., so the template DN does not.
+            pytest.param(creds("jdoe"), 401, id="dn-outside-the-template"),
+        ],
+    )
+    def test_access(self, server, auth, expected):
+        assert server.get(auth=auth).status_code == expected

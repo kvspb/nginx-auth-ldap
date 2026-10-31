@@ -1855,6 +1855,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
     ngx_int_t rc;
     ngx_uint_t i;
     ngx_http_auth_ldap_server_t *s;
+    u_char *p;
 
     if (r->connection->write->timedout) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: Authentication timed out");
@@ -1936,6 +1937,16 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                         ngx_del_timer(r->connection->write);
                         return NGX_ERROR;
                     }
+
+                    /* The DN goes to ldap_sasl_bind() as a C string, but a
+                     * complex value is not NUL-terminated (nal-5br.12). */
+                    p = ngx_pnalloc(r->pool, ctx->user_dn.len + 1);
+                    if (p == NULL) {
+                        ngx_del_timer(r->connection->write);
+                        return NGX_ERROR;
+                    }
+                    *ngx_cpymem(p, ctx->user_dn.data, ctx->user_dn.len) = '\0';
+                    ctx->user_dn.data = p;
                     ctx->phase = PHASE_CHECK_USER;
                     break;
                 }
