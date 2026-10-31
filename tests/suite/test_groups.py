@@ -95,6 +95,12 @@ class TestSatisfyAllOfTwoGroups:
 @pytest.mark.parametrize(
     ("body", "log_text"),
     [
+        # Debug builds crashed here: a NULL u_char * was logged with %V (nal-5br.13).
+        pytest.param(
+            f'require group "{group_dn("admins")}";',
+            None,
+            id="no-group-attribute",
+        ),
         pytest.param(
             'group_attribute member;\ngroup_attribute_is_dn on;\nrequire group "admins";',
             'Incorrect group DN: "admins"',

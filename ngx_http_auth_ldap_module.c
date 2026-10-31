@@ -2345,7 +2345,8 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search user in group \"%V\"", &val);
 
     if (ctx->server->group_attribute.data == NULL) {
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: group_attribute.data is \"%V\" so calling a failure here", ctx->server->group_attribute.data);
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+            "http_auth_ldap: group_attribute is not set, the group check fails");
         rc = !LDAP_SUCCESS;
     } else {
         for_filter = ngx_strlen(cn_gr) + ctx->server->group_attribute.len + user_val.len + ngx_strlen("(&()(=))") + 1;
