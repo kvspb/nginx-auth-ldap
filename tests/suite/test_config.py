@@ -9,9 +9,6 @@ USERS = ldap_server("users")
 LOCATION = protected_location("users")
 QUERY = f"{PEOPLE_DN}?uid?sub?(objectClass=*)"
 
-# Accepted silently or with a misleading result today; see nal-5br.7.
-NOT_VALIDATED = pytest.mark.xfail(reason="invalid ldap_server values are not rejected (#69, #87, nal-5br.7)")
-
 
 def server_case(
     case_id: str, text: str | None, body: str = "require valid_user;", url: str | None = None, marks=()
@@ -80,11 +77,26 @@ def server_case(
             "host not found in LDAP hostname",
             url=f"ldap://no-such-host.invalid/{QUERY}",
         ),
-        server_case(
-            "url-with-bad-filter",
+        *[
+            server_case(
+                case_id,
+                f'Invalid filter "{bad_filter}" in auth_ldap_url',
+                url=f"ldap://{LDAP_HOST}/{PEOPLE_DN}?uid?sub?{bad_filter}",
+            )
+            for case_id, bad_filter in [
+                ("url-with-bad-filter", "objectClass=*)("),
+                ("url-with-filter-without-parentheses", "objectClass=*"),
+                ("url-with-unclosed-filter", "(objectClass=*"),
+                ("url-with-two-filters", "(objectClass=*)(uid=*)"),
+                ("url-with-empty-filter", "()"),
+            ]
+        ],
+        pytest.param(
+            ldap_server("users", url=f"ldap://{LDAP_HOST}/{PEOPLE_DN}?uid?sub?(&(objectClass=*)(!(uid=nobody)))"),
+            LOCATION,
+            0,
             None,
-            url=f"ldap://{LDAP_HOST}/{PEOPLE_DN}?uid?sub?objectClass=*)(",
-            marks=NOT_VALIDATED,
+            id="url-with-nested-filter",
         ),
         server_case(
             "url-with-port-out-of-range", 'Invalid port 99999 in auth_ldap_url', url=f"ldap://{LDAP_HOST}:99999/{QUERY}"

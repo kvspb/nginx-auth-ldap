@@ -36,6 +36,7 @@ static char * ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_lda
 static char * ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_flag(ngx_conf_t *cf, ngx_flag_t *flag);
+static ngx_int_t ngx_http_auth_ldap_check_filter(const char *filter);
 
 /*** Configuration and initialization ***/
 
@@ -373,6 +374,14 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
         return NGX_CONF_ERROR;
     }
 
+    if (server->ludpp->lud_filter != NULL
+        && ngx_http_auth_ldap_check_filter(server->ludpp->lud_filter) != NGX_OK)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: Invalid filter \"%s\" in auth_ldap_url.", server->ludpp->lud_filter);
+        return NGX_CONF_ERROR;
+    }
+
     server->url.data = ngx_palloc(cf->pool, ngx_strlen(server->ludpp->lud_scheme) + sizeof("://") - 1 +
         ngx_strlen(server->ludpp->lud_host) + sizeof(":65535"));
     p = ngx_sprintf(server->url.data, "%s://%s:%d%Z", server->ludpp->lud_scheme, server->ludpp->lud_host,
@@ -409,6 +418,44 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
             server->ludpp->lud_scheme);
         return NGX_CONF_ERROR;
     }
+}
+
+/**
+ * Check that the URL filter is one parenthesized filter with balanced
+ * parentheses: it is placed into "(&<filter>(<attr>=<login>))" verbatim.
+ * Parentheses inside values are escaped as \28 and \29 (RFC 4515).
+ */
+static ngx_int_t
+ngx_http_auth_ldap_check_filter(const char *filter)
+{
+    const char  *p;
+    ngx_uint_t   depth;
+
+    if (filter[0] != '(') {
+        return NGX_ERROR;
+    }
+
+    depth = 0;
+
+    for (p = filter; *p != '\0'; p++) {
+        if (*p == '(') {
+            if (p[1] == ')') {
+                return NGX_ERROR;
+            }
+            depth++;
+
+        } else if (*p == ')') {
+            if (depth == 0) {
+                return NGX_ERROR;
+            }
+            depth--;
+            if (depth == 0 && p[1] != '\0') {
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    return depth == 0 ? NGX_OK : NGX_ERROR;
 }
 
 /**
