@@ -1,0 +1,86 @@
+/**
+ * Copyright (C) 2011-2013 Valery Komarov <komarov@valerka.net>
+ * Copyright (C) 2013 Jiri Hruska <jirka@fud.cz>
+ * Copyright (C) 2015-2016 Victor Hahn Castell <victor.hahn@flexoptix.net>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+/* Escaping of values placed into LDAP search filters. */
+
+#include "ngx_http_auth_ldap.h"
+
+/*
+ * Escape a value for use inside an LDAP search filter (RFC 4515, section 3):
+ * '*', '(', ')', '\' and NUL become "\XX". The result is NUL-terminated.
+ */
+ngx_int_t
+ngx_http_auth_ldap_escape_filter_value(ngx_pool_t *pool, ngx_str_t *src, ngx_str_t *dst)
+{
+    static u_char hex[] = "0123456789abcdef";
+    u_char *p, c;
+    size_t i, len;
+
+    len = src->len;
+    for (i = 0; i < src->len; i++) {
+        switch (src->data[i]) {
+        case '*':
+        case '(':
+        case ')':
+        case '\\':
+        case '\0':
+            len += 2;
+            break;
+        default:
+            break;
+        }
+    }
+
+    dst->data = ngx_pnalloc(pool, len + 1);
+    if (dst->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    p = dst->data;
+    for (i = 0; i < src->len; i++) {
+        c = src->data[i];
+        switch (c) {
+        case '*':
+        case '(':
+        case ')':
+        case '\\':
+        case '\0':
+            *p++ = '\\';
+            *p++ = hex[c >> 4];
+            *p++ = hex[c & 0x0f];
+            break;
+        default:
+            *p++ = c;
+            break;
+        }
+    }
+    *p = '\0';
+    dst->len = len;
+
+    return NGX_OK;
+}

@@ -8,16 +8,29 @@ case "$NGX_PLATFORM" in
     ;;
 esac
 
+LDAP_AUTH_DEPS="$ngx_addon_dir/src/ngx_http_auth_ldap.h"
+LDAP_AUTH_SRCS=" \
+    $ngx_addon_dir/src/ngx_http_auth_ldap_module.c \
+    $ngx_addon_dir/src/ngx_http_auth_ldap_conf.c \
+    $ngx_addon_dir/src/ngx_http_auth_ldap_cache.c \
+    $ngx_addon_dir/src/ngx_http_auth_ldap_sockbuf.c \
+    $ngx_addon_dir/src/ngx_http_auth_ldap_connection.c \
+    $ngx_addon_dir/src/ngx_http_auth_ldap_ssl.c \
+    $ngx_addon_dir/src/ngx_http_auth_ldap_auth.c \
+    $ngx_addon_dir/src/ngx_http_auth_ldap_filter.c \
+    "
+
 if test -n "$ngx_module_link"; then
     ngx_module_type=HTTP
     ngx_module_name=ngx_http_auth_ldap_module
     ngx_module_incs=
-    ngx_module_deps=
-    ngx_module_srcs="$ngx_addon_dir/src/ngx_http_auth_ldap_module.c"
+    ngx_module_deps="$LDAP_AUTH_DEPS"
+    ngx_module_srcs="$LDAP_AUTH_SRCS"
     ngx_module_libs="$LDAP_REQUIRED_LIBS"
     . auto/module
 else
     HTTP_MODULES="$HTTP_MODULES ngx_http_auth_ldap_module"
-    NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/src/ngx_http_auth_ldap_module.c"
+    NGX_ADDON_DEPS="$NGX_ADDON_DEPS $LDAP_AUTH_DEPS"
+    NGX_ADDON_SRCS="$NGX_ADDON_SRCS $LDAP_AUTH_SRCS"
     CORE_LIBS="$CORE_LIBS $LDAP_REQUIRED_LIBS"
 fi
