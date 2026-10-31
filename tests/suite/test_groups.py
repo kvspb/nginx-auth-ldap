@@ -90,3 +90,28 @@ class TestSatisfyAllOfTwoGroups:
     )
     def test_access(self, server, uid, expected):
         assert server.get(auth=creds(uid)).status_code == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "log_text"),
+    [
+        pytest.param(
+            'group_attribute member;\ngroup_attribute_is_dn on;\nrequire group "admins";',
+            'Incorrect group DN: "admins"',
+            id="group-dn-without-parent",
+        ),
+        pytest.param(
+            'group_attribute member;\ngroup_attribute_is_dn on;\nrequire group "cn=admins,ou=nowhere,dc=example,dc=org";',
+            # The search fails with 32 (No such object), but no entry was found
+            # either, and that check comes first.
+            "ldap_search_ext() returned NULL result",
+            id="group-under-missing-base",
+        ),
+    ],
+)
+def test_misconfigured_group_denies_even_members(nginx, body, log_text):
+    server = nginx.start(http=ldap_server("groups", body), server=protected_location("groups"))
+
+    assert server.get(auth=creds("alice")).status_code == 401
+    if log_text is not None:
+        assert log_text in server.log()

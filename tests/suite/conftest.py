@@ -10,13 +10,18 @@ from harness import Nginx, new_prefix
 from ldapdata import BIND_DN, BIND_SECRET, USERS_URL
 
 
-def ldap_server(name: str, body: str = "require valid_user;", url: str = USERS_URL) -> str:
+def ldap_server(
+    name: str,
+    body: str = "require valid_user;",
+    url: str = USERS_URL,
+    bind_secret: str = BIND_SECRET,
+) -> str:
     """Render an ``ldap_server`` block bound with the service account."""
     return f"""
 ldap_server {name} {{
     url "{url}";
     binddn "{BIND_DN}";
-    binddn_passwd "{BIND_SECRET}";
+    binddn_passwd "{bind_secret}";
     {body}
 }}
 """
