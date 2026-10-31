@@ -92,23 +92,37 @@ def server_case(
             ]
         ],
         pytest.param(
-            ldap_server("users", url=f"ldap://{LDAP_HOST}/{PEOPLE_DN}?uid?sub?(&(objectClass=*)(!(uid=nobody)))"),
+            ldap_server(
+                "users", url=f"ldap://{LDAP_HOST}/{PEOPLE_DN}?uid?sub?(&(objectClass=*)(!(uid=nobody)))"
+            ),
             LOCATION,
             0,
             None,
             id="url-with-nested-filter",
         ),
         server_case(
-            "url-with-port-out-of-range", 'Invalid port 99999 in auth_ldap_url', url=f"ldap://{LDAP_HOST}:99999/{QUERY}"
+            "url-with-port-out-of-range",
+            "Invalid port 99999 in auth_ldap_url",
+            url=f"ldap://{LDAP_HOST}:99999/{QUERY}",
         ),
         server_case(
-            "url-with-port-above-65535", 'Invalid port 65536 in auth_ldap_url', url=f"ldap://{LDAP_HOST}:65536/{QUERY}"
+            "url-with-port-above-65535",
+            "Invalid port 65536 in auth_ldap_url",
+            url=f"ldap://{LDAP_HOST}:65536/{QUERY}",
         ),
         pytest.param(
-            ldap_server("users", url=f"ldap://{LDAP_HOST}:65535/{QUERY}"), LOCATION, 0, None, id="url-with-port-65535"
+            ldap_server("users", url=f"ldap://{LDAP_HOST}:65535/{QUERY}"),
+            LOCATION,
+            0,
+            None,
+            id="url-with-port-65535",
         ),
-        pytest.param(ldap_server("users", url=f"ldap://{LDAP_HOST}:1/{QUERY}"), LOCATION, 0, None, id="url-with-port-1"),
-        server_case("url-with-negative-port", "Invalid port -1 in auth_ldap_url", url=f"ldap://{LDAP_HOST}:-1/{QUERY}"),
+        pytest.param(
+            ldap_server("users", url=f"ldap://{LDAP_HOST}:1/{QUERY}"), LOCATION, 0, None, id="url-with-port-1"
+        ),
+        server_case(
+            "url-with-negative-port", "Invalid port -1 in auth_ldap_url", url=f"ldap://{LDAP_HOST}:-1/{QUERY}"
+        ),
         # require / satisfy
         server_case(
             "require-unknown-kind",
@@ -116,10 +130,16 @@ def server_case(
             "require nobody;",
         ),
         server_case("require-without-kind", 'invalid number of arguments in "require"', "require;"),
-        server_case("require-user-without-value", 'invalid number of arguments in "require"', "require user;"),
-        server_case("require-group-without-value", 'invalid number of arguments in "require"', "require group;"),
         server_case(
-            "require-user-with-two-values", 'invalid number of arguments in "require"', 'require user "a" "b";'
+            "require-user-without-value", 'invalid number of arguments in "require"', "require user;"
+        ),
+        server_case(
+            "require-group-without-value", 'invalid number of arguments in "require"', "require group;"
+        ),
+        server_case(
+            "require-user-with-two-values",
+            'invalid number of arguments in "require"',
+            'require user "a" "b";',
         ),
         server_case(
             "require-valid-user-template-twice",
@@ -197,6 +217,8 @@ def test_nginx_t(nginx, http, server, expected_rc, expected_text):
     ],
 )
 def test_known_directive_is_accepted(nginx, directive):
-    result = nginx.check_config(http=ldap_server("users", f"require valid_user;\n{directive}"), server=LOCATION)
+    result = nginx.check_config(
+        http=ldap_server("users", f"require valid_user;\n{directive}"), server=LOCATION
+    )
 
     assert result.returncode == 0, result.stderr
