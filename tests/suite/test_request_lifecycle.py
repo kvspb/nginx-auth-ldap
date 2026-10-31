@@ -11,6 +11,9 @@ and cut the connections. connections 1 keeps the pool easy to reason about.
 
 from __future__ import annotations
 
+import base64
+import socket
+import subprocess
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -19,7 +22,8 @@ import pytest
 import requests
 
 from conftest import ldap_server, protected_location, url_for
-from ldapdata import creds
+from harness import nginx_version
+from ldapdata import creds, password
 from ldapproxy import LdapProxy
 
 TIMEOUTS = """
@@ -157,3 +161,53 @@ def test_request_that_timed_out_in_the_queue_is_forgotten(nginx, proxy):
     assert status(server, "bob") is None
     proxy.release()
     wait_until_ready(server)
+
+
+def abort_http1(server, uid: str, after: float) -> None:
+    """Send a request and close the connection before the answer comes."""
+    sock = socket.create_connection(("127.0.0.1", server.port))
+    token = base64.b64encode(f"{uid}:{password(uid)}".encode()).decode()
+    sock.sendall(f"GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic {token}\r\n\r\n".encode())
+    time.sleep(after)
+    sock.close()
+
+
+def abort_http2(server, uid: str, after: float) -> None:
+    """The same over HTTP/2: curl resets the stream and closes the connection."""
+    subprocess.run(
+        ["curl", "-s", "--http2-prior-knowledge", "--max-time", str(after), "-u", f"{uid}:{password(uid)}",
+         server.url()],
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("abort", [abort_http1, abort_http2], ids=["http1", "http2"])
+@pytest.mark.parametrize("where", ["in-flight", "queued"])
+def test_client_that_goes_away_leaves_the_pool_usable(nginx, proxy, abort, where):
+    # nginx does not notice a client that leaves during the access phase
+    # (HTTP/1 reading is blocked; an HTTP/2 reset or close only marks the
+    # stream), so the request lives on until its LDAP operation or its
+    # request_timeout ends. Afterwards the pool must work as before.
+    if abort is abort_http2 and nginx_version() < (1, 25, 1):
+        pytest.skip("\"http2 on\" needs nginx 1.25.1")
+    body = f"require valid_user;\nconnections 1;{TIMEOUTS}"
+    url = url_for("127.0.0.1", proxy.port)
+    extra = "http2 on;\n" if abort is abort_http2 else ""
+    server = nginx.start(
+        http=ldap_server("proxied", body, url=url), server=extra + protected_location("proxied")
+    )
+    wait_until_ready(server)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        proxy.hold()
+        blocker = pool.submit(status, server, "bob", 10) if where == "queued" else None
+        time.sleep(0.1)
+        abort(server, "alice", 0.3)
+        proxy.release()
+        if blocker is not None:
+            blocker.result()
+
+    # The aborted request is finished by its request_timeout at the latest.
+    time.sleep(1.2)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert list(pool.map(lambda uid: status(server, uid), ["alice", "bob", "carol", "dave"])) == [200] * 4
