@@ -1897,17 +1897,36 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: request_timeout=%d",ctx->server->request_timeout);
 
 
-                /* Check cache if enabled */
+                /*
+                 * Check cache if enabled. An ALLOW cached by any server of this
+                 * location admits the user (kvspb#201); a DENY only skips the
+                 * server that produced it, the next server may still allow.
+                 */
                 if (ngx_http_auth_ldap_cache.buckets != NULL) {
                     for (i = 0; i < conf->servers->nelts; i++) {
-                        s = &((ngx_http_auth_ldap_server_t *) conf->servers->elts)[i];
+                        s = ((ngx_http_auth_ldap_server_t **) conf->servers->elts)[i];
+                        if (s == ctx->server) {
+                            continue;
+                        }
                         rc = ngx_http_auth_ldap_check_cache(r, ctx, &ngx_http_auth_ldap_cache, s);
-                        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Using cached outcome %d from server %d", rc, i);
-                        if (rc == OUTCOME_DENY || rc == OUTCOME_ALLOW) {
-                            ctx->outcome = (rc == OUTCOME_DENY ? OUTCOME_CACHED_DENY : OUTCOME_CACHED_ALLOW);
+                        if (rc == OUTCOME_ALLOW) {
+                            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                                "http_auth_ldap: Using cached allow from server %ui", i);
+                            ctx->outcome = OUTCOME_CACHED_ALLOW;
                             ctx->phase = PHASE_NEXT;
                             goto loop;
                         }
+                    }
+
+                    /* Last, so that ctx keeps the key of ctx->server for
+                     * ngx_http_auth_ldap_update_cache() in PHASE_NEXT. */
+                    rc = ngx_http_auth_ldap_check_cache(r, ctx, &ngx_http_auth_ldap_cache, ctx->server);
+                    if (rc == OUTCOME_DENY || rc == OUTCOME_ALLOW) {
+                        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                            "http_auth_ldap: Using cached outcome %d", rc);
+                        ctx->outcome = (rc == OUTCOME_DENY ? OUTCOME_CACHED_DENY : OUTCOME_CACHED_ALLOW);
+                        ctx->phase = PHASE_NEXT;
+                        goto loop;
                     }
                 }
 

@@ -59,6 +59,15 @@ cn: Dave Grohl
 sn: Grohl
 userPassword: dave-secret
 
+# Member of no group. Reserved for cache tests, which change its password
+# temporarily to tell cached answers from fresh ones.
+dn: uid=erin,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: erin
+cn: Erin Brockovich
+sn: Brockovich
+userPassword: erin-secret
+
 # Login name with characters that are special in LDAP filters (RFC 4515).
 dn: uid=john(x),ou=people,dc=example,dc=org
 objectClass: inetOrgPerson
