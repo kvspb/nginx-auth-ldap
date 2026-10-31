@@ -13,13 +13,14 @@ LDAP_IPV4 = "10.213.57.10"
 LDAP_IPV6 = "fd5b:a1d4:0:1::10"
 
 # Test PKI from tests/ldap/tls/generate.sh. Ports of the ldap container:
-# 636 slapd with server.crt; 6361-6364 TLS proxies (tests/ldap/entrypoint.sh).
+# 636 slapd with server.crt; 6361-6365 TLS proxies (tests/ldap/entrypoint.sh).
 TLS_DIR = Path(__file__).resolve().parent.parent / "ldap" / "tls"
 LDAPS_PORT = 636
 CN_ONLY_PORT = 6361
 WRONG_HOST_PORT = 6362
 UNTRUSTED_PORT = 6363
 TLS13_ONLY_PORT = 6364
+DNS_ONLY_PORT = 6365
 
 BASE_DN = "dc=example,dc=org"
 PEOPLE_DN = f"ou=people,{BASE_DN}"

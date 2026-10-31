@@ -20,6 +20,7 @@ import requests
 from conftest import TIMEOUTS, ldap_server, protected_location
 from ldapdata import (
     CN_ONLY_PORT,
+    DNS_ONLY_PORT,
     LDAP_IPV4,
     LDAP_IPV6,
     TLS13_ONLY_PORT,
@@ -75,6 +76,19 @@ def test_valid_certificate_is_accepted(nginx, host):
     assert server.get(auth=("alice", "wrong")).status_code == 401
 
 
+def test_host_name_matches_without_ip_sans(nginx):
+    server = start(nginx, ldaps_url(port=DNS_ONLY_PORT))
+
+    assert server.get(auth=creds("alice")).status_code == 200
+
+
+def test_ip_address_does_not_match_a_dns_san(nginx):
+    server = start(nginx, ldaps_url(LDAP_IPV4, port=DNS_ONLY_PORT))
+
+    assert_denied(server)
+    assert "does not match address" in server.log()
+
+
 def test_certificate_is_not_checked_when_ssl_check_cert_is_off(nginx):
     server = start(nginx, ldaps_url(port=UNTRUSTED_PORT), check="off", ca_file=None)
 
@@ -102,11 +116,12 @@ def test_certificate_for_another_host_is_rejected(nginx):
     assert "does not match address" in server.log()
 
 
-@pytest.mark.xfail(reason="the subject CN is accepted when there is no subjectAltName (RFC 9525, kvspb#254)")
 def test_host_name_only_in_subject_cn_is_rejected(nginx):
+    # RFC 9525: the subject CN is never used as a reference identifier.
     server = start(nginx, ldaps_url(port=CN_ONLY_PORT))
 
     assert_denied(server)
+    assert "does not match address" in server.log()
 
 
 @pytest.mark.xfail(reason="TLS 1.3 is not enabled for ldaps connections")

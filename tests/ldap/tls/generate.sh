@@ -43,6 +43,8 @@ ca other-ca "nginx-auth-ldap other test CA"
 
 # What a correctly configured server presents.
 leaf server ca "/CN=ldap" "DNS:ldap,IP:$ldap_ipv4,IP:$ldap_ipv6"
+# Host name only, no IP SANs: matched by name or not at all.
+leaf dns-only ca "/CN=ldap" "DNS:ldap"
 # Host name only in the subject CN, no subjectAltName (RFC 9525: not valid).
 leaf cn-only ca "/CN=ldap"
 # Valid chain, but issued for another host.

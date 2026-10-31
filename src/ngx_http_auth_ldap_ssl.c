@@ -34,6 +34,11 @@
 static ngx_int_t ngx_http_auth_ldap_restore_handlers(ngx_connection_t *conn);
 #if OPENSSL_VERSION_NUMBER >= 0x10002000
 #include <openssl/x509v3.h>
+#ifdef X509_CHECK_FLAG_NEVER_CHECK_SUBJECT
+#define NGX_HTTP_AUTH_LDAP_X509_CHECK_FLAGS X509_CHECK_FLAG_NEVER_CHECK_SUBJECT
+#else
+#define NGX_HTTP_AUTH_LDAP_X509_CHECK_FLAGS 0
+#endif
 static ngx_int_t ngx_http_auth_ldap_check_peer(ngx_http_auth_ldap_connection_t *c,
     ngx_connection_t *conn);
 #endif
@@ -127,7 +132,10 @@ ngx_http_auth_ldap_check_peer(ngx_http_auth_ldap_connection_t *c,
         goto done;
     }
 
-    if (X509_check_host(cert, c->server->ludpp->lud_host, 0, 0, NULL) == 1) {
+    /* RFC 9525: the subject CN is not a reference identifier. */
+    if (X509_check_host(cert, c->server->ludpp->lud_host, 0,
+                        NGX_HTTP_AUTH_LDAP_X509_CHECK_FLAGS, NULL) == 1)
+    {
         rc = NGX_OK;
         goto done;
     }
@@ -154,7 +162,7 @@ ngx_http_auth_ldap_check_peer(ngx_http_auth_ldap_connection_t *c,
 
     ngx_log_error(NGX_LOG_ERR, c->log, 0,
         "http_auth_ldap: Remote side presented invalid SSL certificate: "
-        "does not match address (neither server's domain nor IP in certificate's CN or SAN)");
+        "does not match address (neither server's domain nor IP in certificate's SAN)");
 
 done:
 

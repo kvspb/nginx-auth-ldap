@@ -26,6 +26,7 @@ proxy 6361 cn-only
 proxy 6362 wrong-host
 proxy 6363 untrusted
 proxy 6364 server ",openssl-min-proto-version=TLS1.3"
+proxy 6365 dns-only
 
 # -d 256 logs every operation (connections, binds, searches) to stderr,
 # which is what you want to see in "docker compose logs ldap".
