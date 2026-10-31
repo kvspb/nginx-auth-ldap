@@ -128,6 +128,8 @@ class Nginx:
         )
 
     def start(self, http: str = "", server: str = "") -> Nginx:
+        # Restarting is allowed, e.g. by a parametrized class-scoped fixture.
+        self.stop()
         self.write_config(http, server)
         self.process = subprocess.Popen(
             [NGINX_BINARY, "-p", str(self.prefix), "-c", str(self.conf_path)],
