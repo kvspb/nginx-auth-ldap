@@ -11,6 +11,12 @@ services:
     build: ./ldap
     environment:
       SLAPD_LOG_LEVEL: "${SLAPD_LOG_LEVEL:-256}"
+    networks:
+      default:
+        # Fixed so that the test certificates can carry them as IP SANs
+        # (tests/ldap/tls/generate.sh, LDAP_IPV4/LDAP_IPV6 in ldapdata.py).
+        ipv4_address: 10.213.57.10
+        ipv6_address: fd5b:a1d4:0:1::10
 
   tests:
     build: ./runner
@@ -47,6 +53,14 @@ services:
       - ${MODULE_SRC:-..}:/src:ro
       - build-cache:/build
       - ./reports:/reports
+
+networks:
+  default:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 10.213.57.0/24
+        - subnet: fd5b:a1d4:0:1::/64
 
 volumes:
   build-cache:

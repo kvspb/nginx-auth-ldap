@@ -79,6 +79,7 @@ it (equivalent mutant, or a branch that only runs on allocation failure).
 tests/
   docker-compose.yml   ldap + tests services
   ldap/                OpenLDAP image; seed.ldif holds the directory fixtures
+    tls/               test CA and certificates (generate.sh), test-only keys
   runner/              toolchain image; run-tests.sh builds nginx and runs pytest
   mutation/            clang + Mull image; run-mutation.sh for make mutate
   suite/
@@ -90,6 +91,14 @@ tests/
 
 The module source is mounted read-only at `/src`; nginx objects live in the
 `build-cache` volume, so editing the module only recompiles one file.
+
+The `ldap` service has fixed addresses (10.213.57.10, fd5b:a1d4:0:1::10) so
+that its certificates can carry them as IP SANs. It listens on 389 (ldap),
+636 (ldaps with a valid certificate) and on TLS proxies to 389 that present
+broken certificates: 6361 subject CN only, 6362 another host name, 6363 an
+untrusted CA, 6364 TLS 1.3 only. The ports are named in `suite/ldapdata.py`.
+To change a certificate, edit and run `ldap/tls/generate.sh` (the command is
+in the script), then `make test-down`.
 
 ## Writing a test
 

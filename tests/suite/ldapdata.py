@@ -4,8 +4,22 @@ import os
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 LDAP_HOST = os.environ.get("LDAP_HOST", "ldap")
+
+# Fixed in tests/docker-compose.yml; the test certificates carry them as SANs.
+LDAP_IPV4 = "10.213.57.10"
+LDAP_IPV6 = "fd5b:a1d4:0:1::10"
+
+# Test PKI from tests/ldap/tls/generate.sh. Ports of the ldap container:
+# 636 slapd with server.crt; 6361-6364 TLS proxies (tests/ldap/entrypoint.sh).
+TLS_DIR = Path(__file__).resolve().parent.parent / "ldap" / "tls"
+LDAPS_PORT = 636
+CN_ONLY_PORT = 6361
+WRONG_HOST_PORT = 6362
+UNTRUSTED_PORT = 6363
+TLS13_ONLY_PORT = 6364
 
 BASE_DN = "dc=example,dc=org"
 PEOPLE_DN = f"ou=people,{BASE_DN}"
@@ -22,6 +36,13 @@ ADMIN_SECRET = os.environ.get("LDAP_ADMIN_SECRET", "admin-" + "secret")  # nosec
 
 # User search URL: base, login attribute, scope and filter (RFC 4516).
 USERS_URL = f"ldap://{LDAP_HOST}:389/{PEOPLE_DN}?uid?sub?(objectClass=inetOrgPerson)"
+
+
+def ldaps_url(host: str = LDAP_HOST, port: int = LDAPS_PORT) -> str:
+    """USERS_URL over ldaps://; an IPv6 address is put in brackets."""
+    if ":" in host:
+        host = f"[{host}]"
+    return f"ldaps://{host}:{port}/{PEOPLE_DN}?uid?sub?(objectClass=inetOrgPerson)"
 
 
 def group_dn(cn: str) -> str:
