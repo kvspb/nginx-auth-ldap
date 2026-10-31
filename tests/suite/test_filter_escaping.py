@@ -1,16 +1,14 @@
 """Values placed into LDAP search filters must be escaped (RFC 4515).
 
-Upstream: #618, #180, #224, CVE-2020-14013; unmerged fix in PR #239.
+Regression tests for CVE-2020-14013 (kvspb#618, #180, #224; PR #239): the
+login name and the user DN went into the filters verbatim, so a login could
+inject filter syntax and legitimate names with special characters failed.
 """
 
 import pytest
 
 from conftest import ldap_server, protected_location
 from ldapdata import group_dn, password
-
-UNESCAPED = pytest.mark.xfail(
-    reason="user and group filters are built without escaping (#618, #180, #224, CVE-2020-14013)"
-)
 
 
 class TestUserSearchFilter:
@@ -23,18 +21,21 @@ class TestUserSearchFilter:
     @pytest.mark.parametrize(
         ("auth", "expected"),
         [
-            # "ali*" must be looked up literally; unescaped it matches uid=alice
-            # and lets the caller authenticate with a name that does not exist.
-            pytest.param(("ali*", password("alice")), 401, id="wildcard-matches-nobody", marks=UNESCAPED),
-            pytest.param(("john(x)", password("john(x)")), 200, id="parentheses-in-login", marks=UNESCAPED),
+            # Unescaped, "ali*" matches uid=alice and the caller authenticates
+            # under a name that does not exist.
+            pytest.param(("ali*", password("alice")), 401, id="wildcard-matches-nobody"),
+            # Unescaped, this closes the uid clause and adds one of its own.
+            pytest.param(("alice)(uid=alice", password("alice")), 401, id="injected-filter-clause"),
+            pytest.param(("john(x)", password("john(x)")), 200, id="parentheses-in-login"),
+            pytest.param(("back\\slash", password("back\\slash")), 200, id="backslash-in-login"),
         ],
     )
     def test_login_is_matched_literally(self, server, auth, expected):
         assert server.get(auth=auth).status_code == expected
 
 
-class TestGroupFilter:
-    """The user DN goes into the group search when group_attribute_is_dn is on."""
+class TestGroupFilterByDn:
+    """group_attribute_is_dn on: the user DN goes into the group search."""
 
     @pytest.fixture(scope="class")
     def server(self, shared_nginx):
@@ -45,8 +46,37 @@ require group "{group_dn("staff")}";
 """
         return shared_nginx.start(http=ldap_server("staff", body), server=protected_location("staff"))
 
-    @UNESCAPED
-    def test_escaped_comma_in_user_dn(self, server):
-        # The user DN is "cn=Doe\, John,ou=people,..."; its backslash must be
-        # escaped as \5c inside the group filter.
-        assert server.get(auth=("jdoe", password("jdoe"))).status_code == 200
+    @pytest.mark.parametrize(
+        ("uid", "expected"),
+        [
+            # The user DN is "cn=Doe\, John,ou=people,..."; its backslash must
+            # be escaped as \5c inside the group filter.
+            pytest.param("jdoe", 200, id="escaped-comma-in-member-dn"),
+            pytest.param("alice", 401, id="not-a-member"),
+        ],
+    )
+    def test_access(self, server, uid, expected):
+        assert server.get(auth=(uid, password(uid))).status_code == expected
+
+
+class TestGroupFilterByLogin:
+    """group_attribute_is_dn off: the login name goes into the group search."""
+
+    @pytest.fixture(scope="class")
+    def server(self, shared_nginx):
+        body = f"""
+group_attribute memberUid;
+require group "{group_dn("posix-staff")}";
+"""
+        return shared_nginx.start(http=ldap_server("posix", body), server=protected_location("posix"))
+
+    @pytest.mark.parametrize(
+        ("uid", "expected"),
+        [
+            pytest.param("alice", 200, id="plain-login"),
+            pytest.param("john(x)", 200, id="parentheses-in-login"),
+            pytest.param("bob", 401, id="not-a-member"),
+        ],
+    )
+    def test_access(self, server, uid, expected):
+        assert server.get(auth=(uid, password(uid))).status_code == expected

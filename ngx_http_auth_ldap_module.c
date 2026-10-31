@@ -218,6 +218,8 @@ static ngx_int_t ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle);
 static ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
         ngx_http_auth_ldap_loc_conf_t *conf);
+static ngx_int_t ngx_http_auth_ldap_escape_filter_value(ngx_pool_t *pool, ngx_str_t *src,
+        ngx_str_t *dst);
 static ngx_int_t ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_check_user(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
@@ -2060,6 +2062,61 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
     }
 }
 
+/*
+ * Escape a value for use inside an LDAP search filter (RFC 4515, section 3):
+ * '*', '(', ')', '\' and NUL become "\XX". The result is NUL-terminated.
+ */
+static ngx_int_t
+ngx_http_auth_ldap_escape_filter_value(ngx_pool_t *pool, ngx_str_t *src, ngx_str_t *dst)
+{
+    static u_char hex[] = "0123456789abcdef";
+    u_char *p, c;
+    size_t i, len;
+
+    len = src->len;
+    for (i = 0; i < src->len; i++) {
+        switch (src->data[i]) {
+        case '*':
+        case '(':
+        case ')':
+        case '\\':
+        case '\0':
+            len += 2;
+            break;
+        default:
+            break;
+        }
+    }
+
+    dst->data = ngx_pnalloc(pool, len + 1);
+    if (dst->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    p = dst->data;
+    for (i = 0; i < src->len; i++) {
+        c = src->data[i];
+        switch (c) {
+        case '*':
+        case '(':
+        case ')':
+        case '\\':
+        case '\0':
+            *p++ = '\\';
+            *p++ = hex[c >> 4];
+            *p++ = hex[c & 0x0f];
+            break;
+        default:
+            *p++ = c;
+            break;
+        }
+    }
+    *p = '\0';
+    dst->len = len;
+
+    return NGX_OK;
+}
+
 static ngx_int_t
 ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
 {
@@ -2067,9 +2124,15 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
     u_char *filter;
     char *attrs[2];
     ngx_int_t rc;
+    ngx_str_t user;
 
     /* On the first call, initiate the LDAP search operation */
     if (ctx->iteration == 0) {
+        /* The login name comes from the client: never let it change the filter. */
+        if (ngx_http_auth_ldap_escape_filter_value(r->pool, &r->headers_in.user, &user) != NGX_OK) {
+            return NGX_ERROR;
+        }
+
         if (!ngx_http_auth_ldap_get_connection(ctx)) {
             return NGX_AGAIN;
         }
@@ -2078,10 +2141,14 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
         filter = ngx_pcalloc(
             r->pool,
             (ludpp->lud_filter != NULL ? ngx_strlen(ludpp->lud_filter) : ngx_strlen("(objectClass=*)")) +
-            ngx_strlen("(&(=))") + ngx_strlen(ludpp->lud_attrs[0]) + r->headers_in.user.len + 1);
+            ngx_strlen("(&(=))") + ngx_strlen(ludpp->lud_attrs[0]) + user.len + 1);
+        if (filter == NULL) {
+            ngx_http_auth_ldap_return_connection(ctx->c);
+            return NGX_ERROR;
+        }
         ngx_sprintf(filter, "(&%s(%s=%V))%Z",
                 ludpp->lud_filter != NULL ? ludpp->lud_filter : "(objectClass=*)",
-                ludpp->lud_attrs[0], &r->headers_in.user);
+                ludpp->lud_attrs[0], &user);
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search filter is \"%s\"",
             (const char *) filter);
 
@@ -2161,7 +2228,7 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
     ngx_http_complex_value_t *values;
     ngx_int_t rc;
     u_char *filter;
-    char *user_val;
+    ngx_str_t user_val;
     char *attrs[2];
     size_t for_filter;
 
@@ -2231,18 +2298,14 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
     tail_gr++;
     cn_gr = gr;
 
-    if (ctx->server->group_attribute_dn == 1) {
-        user_val = ngx_pcalloc(
-            r->pool,
-            ctx->user_dn.len + 1);
-        ngx_memcpy(user_val, ctx->user_dn.data, ctx->user_dn.len);
-        user_val[ctx->user_dn.len] = '\0';
-    } else {
-        user_val = ngx_pcalloc(
-            r->pool,
-            r->headers_in.user.len + 1);
-        ngx_memcpy(user_val, r->headers_in.user.data, r->headers_in.user.len);
-        user_val[r->headers_in.user.len] = '\0';
+    /* Both the DN (e.g. "cn=Doe\, John,...") and the login name may contain
+     * characters that are special in a filter. */
+    rc = ngx_http_auth_ldap_escape_filter_value(r->pool,
+        ctx->server->group_attribute_dn == 1 ? &ctx->user_dn : &r->headers_in.user, &user_val);
+    if (rc != NGX_OK) {
+        ctx->outcome = OUTCOME_ERROR;
+        ngx_http_auth_ldap_return_connection(ctx->c);
+        return NGX_ERROR;
     }
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search user in group \"%V\"", &val);
@@ -2251,11 +2314,16 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: group_attribute.data is \"%V\" so calling a failure here", ctx->server->group_attribute.data);
         rc = !LDAP_SUCCESS;
     } else {
-        for_filter = ngx_strlen(cn_gr) + ctx->server->group_attribute.len + ngx_strlen((const char *) user_val) + ngx_strlen("(&()(=))") + 1;
+        for_filter = ngx_strlen(cn_gr) + ctx->server->group_attribute.len + user_val.len + ngx_strlen("(&()(=))") + 1;
         filter = ngx_pcalloc(
             r->pool,
             for_filter);
-        ngx_sprintf(filter, "(&(%s)(%s=%s))", cn_gr, ctx->server->group_attribute.data, user_val);
+        if (filter == NULL) {
+            ctx->outcome = OUTCOME_ERROR;
+            ngx_http_auth_ldap_return_connection(ctx->c);
+            return NGX_ERROR;
+        }
+        ngx_sprintf(filter, "(&(%s)(%s=%V))", cn_gr, ctx->server->group_attribute.data, &user_val);
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search group filter is \"%s\"", (const char *) filter);
         attrs[0] = LDAP_NO_ATTRS;
         attrs[1] = NULL;

@@ -67,6 +67,14 @@ cn: John X
 sn: X
 userPassword: john(x)-secret
 
+# Login name with a backslash, which must become \5c inside a filter.
+dn: uid=back\\slash,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: back\slash
+cn: Back Slash
+sn: Slash
+userPassword: back\slash-secret
+
 # DN with an escaped comma, as is common in Active Directory ("Doe, John").
 dn: cn=Doe\, John,ou=people,dc=example,dc=org
 objectClass: inetOrgPerson
@@ -97,3 +105,11 @@ dn: cn=staff,ou=groups,dc=example,dc=org
 objectClass: groupOfNames
 cn: staff
 member: cn=Doe\, John,ou=people,dc=example,dc=org
+
+# Membership by login name (group_attribute memberUid, group_attribute_is_dn off).
+dn: cn=posix-staff,ou=groups,dc=example,dc=org
+objectClass: posixGroup
+cn: posix-staff
+gidNumber: 5000
+memberUid: alice
+memberUid: john(x)
