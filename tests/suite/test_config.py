@@ -87,8 +87,16 @@ def server_case(
             marks=NOT_VALIDATED,
         ),
         server_case(
-            "url-with-port-out-of-range", None, url=f"ldap://{LDAP_HOST}:99999/{QUERY}", marks=NOT_VALIDATED
+            "url-with-port-out-of-range", 'Invalid port 99999 in auth_ldap_url', url=f"ldap://{LDAP_HOST}:99999/{QUERY}"
         ),
+        server_case(
+            "url-with-port-above-65535", 'Invalid port 65536 in auth_ldap_url', url=f"ldap://{LDAP_HOST}:65536/{QUERY}"
+        ),
+        pytest.param(
+            ldap_server("users", url=f"ldap://{LDAP_HOST}:65535/{QUERY}"), LOCATION, 0, None, id="url-with-port-65535"
+        ),
+        pytest.param(ldap_server("users", url=f"ldap://{LDAP_HOST}:1/{QUERY}"), LOCATION, 0, None, id="url-with-port-1"),
+        server_case("url-with-negative-port", "Invalid port -1 in auth_ldap_url", url=f"ldap://{LDAP_HOST}:-1/{QUERY}"),
         # require / satisfy
         server_case(
             "require-unknown-kind",

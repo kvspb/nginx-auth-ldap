@@ -367,6 +367,12 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
         return NGX_CONF_ERROR;
     }
 
+    if (server->ludpp->lud_port < 1 || server->ludpp->lud_port > 65535) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: Invalid port %d in auth_ldap_url.", server->ludpp->lud_port);
+        return NGX_CONF_ERROR;
+    }
+
     server->url.data = ngx_palloc(cf->pool, ngx_strlen(server->ludpp->lud_scheme) + sizeof("://") - 1 +
         ngx_strlen(server->ludpp->lud_host) + sizeof(":65535"));
     p = ngx_sprintf(server->url.data, "%s://%s:%d%Z", server->ludpp->lud_scheme, server->ludpp->lud_host,
