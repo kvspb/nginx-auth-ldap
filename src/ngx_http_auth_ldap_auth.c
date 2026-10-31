@@ -108,6 +108,7 @@ ngx_http_auth_ldap_handler(ngx_http_request_t *r)
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
         ctx->r = r;
+        ngx_queue_init(&ctx->queue);
         /* Other fields have been initialized to zero/NULL */
         ngx_http_set_ctx(r, ctx, ngx_http_auth_ldap_module);
     }
@@ -133,10 +134,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
             ngx_http_auth_ldap_return_connection(ctx->c);
         }
 
-        // Remove ctx from waiting_requests queue if it was added.
-        if (ngx_queue_next(&ctx->queue)) {
-            ngx_queue_remove(&ctx->queue);
-        }
+        ngx_http_auth_ldap_unqueue_request(ctx);
 
         return NGX_ERROR;
     }

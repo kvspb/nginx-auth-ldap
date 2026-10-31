@@ -146,8 +146,22 @@ ngx_http_auth_ldap_return_connection(ngx_http_auth_ldap_connection_t *c)
     ngx_queue_insert_head(&c->server->free_connections, &c->queue);
     if (!ngx_queue_empty(&c->server->waiting_requests)) {
         q = ngx_queue_last(&c->server->waiting_requests);
-        ngx_queue_remove(q);
+        ngx_http_auth_ldap_unqueue_request(ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue));
         ngx_http_auth_ldap_wake_request((ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue))->r);
+    }
+}
+
+/*
+ * Take a request out of the waiting queue of its server, if it is there.
+ * ctx->queue is initialised when the context is created and again after
+ * every removal, so a second call cannot unlink it twice.
+ */
+void
+ngx_http_auth_ldap_unqueue_request(ngx_http_auth_ldap_ctx_t *ctx)
+{
+    if (ctx->queue.prev != &ctx->queue) {
+        ngx_queue_remove(&ctx->queue);
+        ngx_queue_init(&ctx->queue);
     }
 }
 
