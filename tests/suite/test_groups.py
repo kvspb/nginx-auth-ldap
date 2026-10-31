@@ -64,26 +64,28 @@ class TestSatisfyAnyOfTwoGroups:
 
 
 class TestSatisfyAllOfTwoGroups:
-    """satisfy all; require group admins; require group ops."""
+    """satisfy all over admins and ops, in both orders.
 
-    @pytest.fixture(scope="class")
-    def server(self, shared_nginx):
-        return groups_server(shared_nginx, "all", "admins", "ops")
+    Regression for kvspb#194, #225, #240: the DN found by one group search
+    was kept for the next one, so membership in the first group satisfied
+    every later group. Checking both orders catches that from either side.
+    """
+
+    @pytest.fixture(
+        scope="class",
+        params=[("admins", "ops"), ("ops", "admins")],
+        ids=["admins-then-ops", "ops-then-admins"],
+    )
+    def server(self, request, shared_nginx):
+        return groups_server(shared_nginx, "all", *request.param)
 
     @pytest.mark.parametrize(
         ("uid", "expected"),
         [
             pytest.param("dave", 200, id="both-groups"),
-            pytest.param("bob", 401, id="second-group-only"),
-            pytest.param(
-                "alice",
-                401,
-                id="first-group-only",
-                marks=pytest.mark.xfail(
-                    reason="ctx->dn keeps the DN found for the previous group, so membership in the "
-                    "first group satisfies every later one (#194, #225, #240)"
-                ),
-            ),
+            pytest.param("alice", 401, id="admins-only"),
+            pytest.param("bob", 401, id="ops-only"),
+            pytest.param("carol", 401, id="neither-group"),
         ],
     )
     def test_access(self, server, uid, expected):

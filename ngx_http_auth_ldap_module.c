@@ -2273,6 +2273,10 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
     }
 
     ctx->replied = 0;
+    /* The read handler only records the first entry DN while ctx->dn is
+     * empty; without this reset the entry found for the previous group would
+     * count as a match for this one (kvspb#194). */
+    ngx_str_null(&ctx->dn);
     ngx_str_t val;
     values = ctx->server->require_group->elts;
     if (ngx_http_complex_value(r, &values[ctx->iteration], &val) != NGX_OK) {
