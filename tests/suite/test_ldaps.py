@@ -124,7 +124,6 @@ def test_host_name_only_in_subject_cn_is_rejected(nginx):
     assert "does not match address" in server.log()
 
 
-@pytest.mark.xfail(reason="TLS 1.3 is not enabled for ldaps connections")
 def test_tls13_only_server_is_accepted(nginx):
     server = start(nginx, ldaps_url(port=TLS13_ONLY_PORT))
 

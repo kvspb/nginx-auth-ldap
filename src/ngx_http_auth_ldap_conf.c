@@ -425,8 +425,12 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
     } else if (ngx_strcmp(server->ludpp->lud_scheme, "ldaps") == 0) {
         ngx_http_auth_ldap_main_conf_t *halmcf =
             ngx_http_conf_get_module_main_conf(cf, ngx_http_auth_ldap_module);
-        ngx_uint_t protos = NGX_SSL_SSLv2 | NGX_SSL_SSLv3 |
-            NGX_SSL_TLSv1 | NGX_SSL_TLSv1_1 | NGX_SSL_TLSv1_2;
+        /* SSL 2.0 and 3.0 are broken (RFC 6176, RFC 7568). */
+        ngx_uint_t protos = NGX_SSL_TLSv1 | NGX_SSL_TLSv1_1 | NGX_SSL_TLSv1_2
+#ifdef NGX_SSL_TLSv1_3
+            | NGX_SSL_TLSv1_3
+#endif
+            ;
         if (halmcf->ssl.ctx == NULL && ngx_ssl_create(&halmcf->ssl, protos, halmcf) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
