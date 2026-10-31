@@ -29,6 +29,11 @@ services:
       SANITIZE: "${SANITIZE:-0}"
       COVERAGE: "${COVERAGE:-0}"
       LDAP_HOST: ldap
+    extra_hosts: &ldap-aliases
+      # Names of the ldap service that are not in its certificate, so that
+      # verification has to fall back to the IP SAN (suite/test_ldaps.py).
+      - "ldap4=10.213.57.10"
+      - "ldap6=fd5b:a1d4:0:1::10"
     volumes:
       # The module source is mounted read-only; build artifacts live in the
       # build-cache volume.
@@ -49,6 +54,7 @@ services:
       MUTATE_TIMEOUT: "${MUTATE_TIMEOUT:-60000}"
       MUTATE_ASAN: "${MUTATE_ASAN:-1}"
       LDAP_HOST: ldap
+    extra_hosts: *ldap-aliases
     volumes:
       - ${MODULE_SRC:-..}:/src:ro
       - build-cache:/build

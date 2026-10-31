@@ -30,11 +30,6 @@ from ldapdata import (
     ldaps_url,
 )
 
-# The fallback to the IP SAN, taken whenever the host name does not match,
-# dereferences conn->sockaddr, which is NULL, and compares sa_family with
-# 4/6 instead of AF_INET/AF_INET6.
-IP_SAN_CHECK = "IP SAN fallback crashes on a NULL conn->sockaddr (kvspb#236)"
-
 CA = TLS_DIR / "ca.crt"
 OTHER_CA = TLS_DIR / "other-ca.crt"
 
@@ -62,11 +57,10 @@ def assert_denied(server) -> None:
     "host",
     [
         pytest.param("ldap", id="host-name"),
-        pytest.param(
-            LDAP_IPV4,
-            id="ipv4-address",
-            marks=pytest.mark.xfail(reason=IP_SAN_CHECK),
-        ),
+        pytest.param(LDAP_IPV4, id="ipv4-address"),
+        # Aliases that resolve to one address only and match no DNS SAN.
+        pytest.param("ldap4", id="ipv4-san-of-host-name"),
+        pytest.param("ldap6", id="ipv6-san-of-host-name"),
         pytest.param(
             LDAP_IPV6,
             id="ipv6-address",
@@ -101,7 +95,6 @@ def test_test_ca_is_not_trusted_without_ssl_ca_file(nginx):
     assert "presented invalid SSL certificate: error" in server.log()
 
 
-@pytest.mark.xfail(reason=IP_SAN_CHECK)
 def test_certificate_for_another_host_is_rejected(nginx):
     server = start(nginx, ldaps_url(port=WRONG_HOST_PORT))
 
