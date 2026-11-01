@@ -53,7 +53,9 @@ class TestSingleServer:
     ],
 )
 def test_server_given_by_address(nginx, host):
-    server = nginx.start(http=ldap_server("byaddr", url=url_for(host, 389)), server=protected_location("byaddr"))
+    server = nginx.start(
+        http=ldap_server("byaddr", url=url_for(host, 389)), server=protected_location("byaddr")
+    )
 
     assert server.get(auth=creds("alice")).status_code == 200
     assert server.get(auth=("alice", "wrong")).status_code == 401
