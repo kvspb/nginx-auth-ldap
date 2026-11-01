@@ -1054,6 +1054,30 @@ Empty passwords are rejected before LDAP is asked: many servers treat a
 simple bind with an empty password as an anonymous bind that succeeds
 (RFC 4513, section 5.1.2).
 
+`error_page 401` replaces the response of the module and keeps its
+`WWW-Authenticate` header. The error page is served by an internal redirect,
+which runs the access phase again, so its location needs `auth_ldap off`;
+otherwise it fails authentication too and nginx sends its built-in page:
+
+```nginx
+ldap_server corp {
+    url "ldap://ldap.example.com/ou=people,dc=example,dc=com?uid?sub?(objectClass=inetOrgPerson)";
+    include /etc/nginx/ldap/bind.conf;
+}
+
+server {
+    listen 80;
+    root /var/www/html;
+    auth_ldap "Restricted";
+    auth_ldap_servers corp;
+    error_page 401 /errors/401.html;
+
+    location /errors/ {
+        auth_ldap off;
+    }
+}
+```
+
 Do not use `return` in a protected location: it runs in the rewrite phase,
 before the access phase, so it answers without authentication. Serve content
 or use `proxy_pass`, `try_files` and the like.

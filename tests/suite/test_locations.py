@@ -112,3 +112,59 @@ location /zone {
     def test_geo_lets_a_network_in(self, server):
         # The suite talks to nginx from 127.0.0.1, which the geo block exempts.
         assert server.get("/").status_code == 200
+
+
+class TestErrorPage401:
+    """error_page 401 replaces the module's response (kvspb#174), as long as
+    the error page itself is not protected: it is served by an internal
+    redirect, which runs the access phase again."""
+
+    @pytest.fixture(scope="class")
+    def server(self, shared_nginx):
+        locations = """
+auth_ldap "Restricted";
+auth_ldap_servers users;
+root html;
+
+location /open/ {
+    error_page 401 /errors/401.txt;
+    try_files /ok =404;
+}
+
+location /closed/ {
+    error_page 401 /protected-errors/401.txt;
+    try_files /ok =404;
+}
+
+location /errors/ {
+    auth_ldap off;
+    default_type text/plain;
+    alias html/errors/;
+}
+
+location /protected-errors/ {
+    default_type text/plain;
+    alias html/errors/;
+}
+"""
+        server = shared_nginx.start(http=ldap_server("users"), server=locations)
+        (shared_nginx.prefix / "html" / "errors").mkdir(exist_ok=True)
+        (shared_nginx.prefix / "html" / "errors" / "401.txt").write_text("custom 401\n")
+        return server
+
+    @pytest.mark.parametrize("auth", [None, ("alice", "wrong")], ids=["no-credentials", "wrong-password"])
+    def test_custom_page_with_the_challenge(self, server, auth):
+        response = server.get("/open/", auth=auth)
+
+        assert response.status_code == 401
+        assert response.text == "custom 401\n"
+        assert response.headers["WWW-Authenticate"] == 'Basic realm="Restricted", charset="UTF-8"'
+
+    def test_valid_credentials_are_not_affected(self, server):
+        assert server.get("/open/", auth=creds("alice")).text == "ok"
+
+    def test_protected_error_page_falls_back_to_the_builtin_page(self, server):
+        response = server.get("/closed/")
+
+        assert response.status_code == 401
+        assert "custom 401" not in response.text
