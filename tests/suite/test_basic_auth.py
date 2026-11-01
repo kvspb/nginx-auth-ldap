@@ -3,7 +3,7 @@
 import pytest
 
 from conftest import ldap_server, protected_location, url_for
-from ldapdata import LDAP_IPV4, LDAP_IPV6, creds
+from ldapdata import LDAP_IPV4, LDAP_IPV6, TWIN_OTHER_SECRET, TWIN_UID, creds, password
 
 
 class TestSingleServer:
@@ -42,6 +42,31 @@ class TestSingleServer:
         statuses = [server.get(auth=creds(uid)).status_code for uid in ("alice", "bob", "alice", "carol")]
 
         assert statuses == [200, 200, 200, 200]
+
+
+class TestAmbiguousUser:
+    """A login whose search matches several entries is rejected, whichever password is given."""
+
+    @pytest.fixture(scope="class")
+    def server(self, shared_nginx):
+        return shared_nginx.start(http=ldap_server("ambiguous"), server=protected_location("ambiguous"))
+
+    @pytest.mark.parametrize(
+        "secret",
+        [
+            pytest.param(password(TWIN_UID), id="first-entry-password"),
+            pytest.param(TWIN_OTHER_SECRET, id="second-entry-password"),
+        ],
+    )
+    def test_login_matching_two_entries_is_rejected(self, server, secret):
+        offset = server.log_size()
+
+        assert server.get(auth=(TWIN_UID, secret)).status_code == 401
+        assert "more than one entry" in server.log(offset)
+
+    @pytest.mark.parametrize("uid", [pytest.param("bob", id="bob"), pytest.param("carol", id="carol")])
+    def test_unique_login_is_accepted(self, server, uid):
+        assert server.get(auth=creds(uid)).status_code == 200
 
 
 @pytest.mark.parametrize(

@@ -88,12 +88,23 @@ def test_ip_address_does_not_match_a_dns_san(nginx):
     assert "does not match address" in server.log()
 
 
-def test_ca_directory_is_trusted(nginx, tmp_path):
+def ca_directory(path, ca=CA):
     # OpenSSL looks CAs up in a directory by subject hash: <hash>.0.
     subject_hash = subprocess.run(
-        ["openssl", "x509", "-hash", "-noout", "-in", str(CA)], capture_output=True, text=True, check=True
+        ["openssl", "x509", "-hash", "-noout", "-in", str(ca)], capture_output=True, text=True, check=True
     ).stdout.strip()
-    shutil.copy(CA, tmp_path / f"{subject_hash}.0")
+    shutil.copy(ca, path / f"{subject_hash}.0")
+    return path
+
+
+def trust_other_ca_system_wide(nginx) -> None:
+    # OpenSSL reads the default CA bundle from SSL_CERT_FILE, so the other CA
+    # (issuer of the UNTRUSTED_PORT certificate) acts as a public CA here.
+    nginx.env["SSL_CERT_FILE"] = str(OTHER_CA)
+
+
+def test_ca_directory_is_trusted(nginx, tmp_path):
+    ca_directory(tmp_path)
     body = f"require valid_user;\nssl_check_cert on;\nssl_ca_dir {tmp_path};{TIMEOUTS}"
     server = nginx.start(http=ldap_server("tls", body, url=ldaps_url()), server=protected_location("tls"))
 
@@ -118,6 +129,34 @@ def test_test_ca_is_not_trusted_without_ssl_ca_file(nginx):
 
     assert_denied(server)
     assert "presented invalid SSL certificate: error" in server.log()
+
+
+def test_system_store_is_used_without_ssl_ca_file(nginx):
+    trust_other_ca_system_wide(nginx)
+    server = start(nginx, ldaps_url(port=UNTRUSTED_PORT), ca_file=None)
+
+    assert server.get(auth=creds("alice")).status_code == 200
+
+
+@pytest.mark.parametrize("directive", ["ssl_ca_file", "ssl_ca_dir"])
+def test_configured_ca_replaces_the_system_store(nginx, tmp_path, directive):
+    # A server pinned to the test CA must not accept a certificate for its
+    # host name from a system-trusted CA.
+    trust_other_ca_system_wide(nginx)
+    location = CA if directive == "ssl_ca_file" else ca_directory(tmp_path)
+    body = f"require valid_user;\nssl_check_cert on;\n{directive} {location};{TIMEOUTS}"
+    server = nginx.start(
+        http=ldap_server("tls", body, url=ldaps_url(port=UNTRUSTED_PORT))
+        + ldap_server("main", body, url=ldaps_url()),
+        server=protected_location("tls", "/untrusted/") + protected_location("main", "/main/"),
+    )
+
+    assert server.get("/main/", auth=creds("alice")).status_code == 200
+    try:
+        response = server.get("/untrusted/", auth=creds("alice"))
+    except requests.ConnectionError:
+        return
+    assert response.status_code != 200, "ssl_ca_file/ssl_ca_dir added to the system store"
 
 
 def test_certificate_for_another_host_is_rejected(nginx):

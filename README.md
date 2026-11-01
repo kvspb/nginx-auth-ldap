@@ -126,12 +126,14 @@ This options needs OpenSSL >= 1.0.2; it is unavailable if compiled with older ve
 ## ssl_ca_file
 expected value: file path
 
-Trust the CA certificate in this file (see ssl_check_cert above).
+Trust the CA certificate in this file (see ssl_check_cert above). With
+ssl_ca_file or ssl_ca_dir set, the system CA store is not used.
 
 ## ssl_ca_dir
 expected value: directory path
 
-Trust all CA certificates in this directory (see ssl_check_cert above).
+Trust all CA certificates in this directory (see ssl_check_cert above). With
+ssl_ca_file or ssl_ca_dir set, the system CA store is not used.
 
 Note that you need to provide hash-based symlinks in the directory for this to work;
 you'll basically need to run OpenSSL's c_rehash command in this directory.
@@ -139,7 +141,9 @@ you'll basically need to run OpenSSL's c_rehash command in this directory.
 ## referral
 expected value: on, off
 
-LDAP library default is on. This option disables usage of referral messages from
-LDAP server. Useful for authenticating against read only AD server without access
-to read write.
+Accepted for compatibility and ignored: referrals are never chased. Chasing a
+referral made the LDAP library open a blocking connection, outside the nginx
+event loop, to any host the server named, which stalled the worker for every
+client. Search references in answers are skipped, and a search answered with a
+referral fails like any other LDAP error.
 

@@ -1,9 +1,11 @@
 """User requirements: "require user <dn>" and "require valid_user <dn template>"."""
 
+import base64
+
 import pytest
 
 from conftest import ldap_server, protected_location
-from ldapdata import PEOPLE_DN, creds, user_dn
+from ldapdata import NESTED_UID, PEOPLE_DN, creds, password, user_dn
 
 
 def users_server(nginx, satisfy: str, *uids: str, dns: tuple[str, ...] = ()):
@@ -90,3 +92,45 @@ class TestValidUserDnTemplate:
     )
     def test_access(self, server, auth, expected):
         assert server.get(auth=auth).status_code == expected
+
+
+def basic(login: str, secret: str) -> dict[str, str]:
+    """A raw Authorization header, so that the login may hold any byte."""
+    token = base64.b64encode(f"{login}:{secret}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+class TestValidUserDnTemplateLoginIsAnRdnValue:
+    """The login fills one RDN value of the template, never more of the DN.
+
+    A NUL used to cut the DN where ldap_sasl_bind() read it, and DN
+    metacharacters in the login changed its structure, so a user could bind
+    as an entry outside the template (FIX-04).
+    """
+
+    @pytest.fixture(scope="class")
+    def server(self, shared_nginx):
+        body = f'require valid_user "uid=$remote_user,{PEOPLE_DN}";'
+        return shared_nginx.start(http=ldap_server("rdn", body), server=protected_location("rdn"))
+
+    @pytest.mark.parametrize(
+        ("login", "secret", "expected"),
+        [
+            pytest.param("alice", password("alice"), 200, id="plain-login"),
+            pytest.param(f"alice,{PEOPLE_DN}\x00x", password("alice"), 401, id="nul-cuts-the-suffix"),
+            pytest.param(f"{NESTED_UID},ou=services", password(NESTED_UID), 401, id="comma-adds-an-rdn"),
+            # A backslash is a literal character of the uid, not a DN escape.
+            pytest.param("back\\slash", password("back\\slash"), 200, id="backslash-is-literal"),
+            # A leading '#' would start a hex-encoded (BER) value.
+            pytest.param("#hash", password("#hash"), 200, id="leading-hash-is-literal"),
+        ],
+    )
+    def test_access(self, server, login, secret, expected):
+        assert server.get(headers=basic(login, secret)).status_code == expected
+
+    def test_login_with_nul_is_rejected(self, server):
+        # The DN would be cut at the NUL, whatever the escaping: reject it.
+        since = server.log_size()
+
+        assert server.get(headers=basic("\x00alice", password("alice"))).status_code == 401
+        assert "http_auth_ldap: Login with a NUL byte rejected" in server.log(since)

@@ -23,7 +23,7 @@ import requests
 
 from conftest import ldap_server, protected_location, url_for
 from harness import nginx_version
-from ldapdata import ROTATING_DN, ROTATING_SECRET, creds, password, rotating_service_password
+from ldapdata import PEOPLE_DN, ROTATING_DN, ROTATING_SECRET, creds, password, rotating_service_password
 from ldapproxy import LdapProxy
 
 TIMEOUTS = """
@@ -254,6 +254,25 @@ def test_max_down_retries_reconnects_without_waiting(nginx, proxy, retries, reco
     assert (proxy.connections == 2) is reconnected
 
 
+@pytest.mark.parametrize("retries", [1, 2])
+def test_max_down_retries_does_not_loop_against_a_server_that_closes_at_once(nginx, proxy, retries):
+    # The retry counter was reset on every connect, before the bind, so a
+    # server that accepts and closes at once was reconnected in a busy loop.
+    # Now it makes exactly max_down_retries immediate attempts, then waits
+    # for reconnect_timeout.
+    body = f"require valid_user;\nconnections 1;\nmax_down_retries {retries};\nreconnect_timeout 5s;"
+    url = url_for("127.0.0.1", proxy.port)
+    server = nginx.start(http=ldap_server("proxied", body, url=url), server=protected_location("proxied"))
+    wait_until_ready(server)
+    proxy.refuse()
+    connections = proxy.connections
+
+    proxy.drop()
+    time.sleep(1)
+
+    assert proxy.connections - connections == retries
+
+
 def test_keepalive_connection_works_after_a_timed_out_request(nginx, proxy):
     server = start(nginx, proxy)
 
@@ -298,3 +317,121 @@ def test_connection_is_not_reused_when_the_rebind_fails(nginx):
         assert status(server, "carol") == 503
 
     wait_until_ready(server)
+
+
+def start_with_user_bind(nginx, proxy: LdapProxy):
+    """A server whose first operation for a request is the user bind."""
+    body = f'require valid_user "uid=$remote_user,{PEOPLE_DN}";\nconnections 1;{TIMEOUTS}'
+    url = url_for("127.0.0.1", proxy.port)
+    server = nginx.start(http=ldap_server("proxied", body, url=url), server=protected_location("proxied"))
+    wait_until_ready(server)
+    return server
+
+
+def test_connection_is_not_reused_when_the_user_bind_timed_out(nginx, proxy):
+    # The request times out while its user bind is in flight. The connection
+    # may still become bound as that user, and the next request would send
+    # its operation before the BindResponse arrives: close it instead.
+    server = start_with_user_bind(nginx, proxy)
+    assert proxy.connections == 1
+
+    with proxy.holding():
+        assert status(server, "alice") == 503
+
+    wait_until_ready(server)
+    assert proxy.connections == 2
+
+
+def test_dead_connection_is_not_handed_out_after_a_timeout(nginx, proxy):
+    # The server stops answering for good. The connection of the request
+    # that timed out must not be given to the next request: a new one is
+    # opened instead.
+    server = start_with_user_bind(nginx, proxy)
+
+    with proxy.holding():
+        assert status(server, "alice") == 503
+        assert status(server, "bob") == 503
+        assert proxy.connections >= 2
+
+    wait_until_ready(server)
+
+
+def test_request_freed_while_it_waits_is_forgotten(nginx, proxy, closed_port):
+    # A reload makes the old worker shut down; worker_shutdown_timeout then
+    # terminates the requests still in the access phase and frees them
+    # without going through the module. A in flight on the only connection
+    # and B in the waiting queue must not be left behind: the answer that
+    # arrives later on A's connection must not wake a freed request. The
+    # second server never connects, so its reconnect timer keeps the old
+    # worker alive until that answer comes.
+    body = f"require valid_user;\nconnections 1;{TIMEOUTS}"
+    url = url_for("127.0.0.1", proxy.port)
+    http = ldap_server("proxied", body, url=url) + ldap_server(
+        "refused", body, url=url_for("127.0.0.1", closed_port)
+    )
+    server = nginx.start(
+        http=http, server=protected_location("proxied"), main="worker_shutdown_timeout 300ms;"
+    )
+    wait_until_ready(server)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        proxy.hold()
+        pending = [pool.submit(status, server, uid) for uid in ["alice", "bob"]]
+        time.sleep(0.3)
+        server.reload()
+        time.sleep(0.6)
+        proxy.release()
+        time.sleep(0.5)
+        results = [p.result() for p in pending]
+
+    # Terminated by the shutdown: closed without an answer.
+    assert results == [None, None]
+    wait_until_ready(server)
+
+
+def start_with_reruns(nginx, proxy: LdapProxy):
+    """A server whose requests run their phases again every 10 ms.
+
+    test_rerun_phases (tests/modules/rerun_phases) stands in for events that
+    run the phase engine while an LDAP operation is in flight, as an HTTP/3
+    MAX_STREAM_DATA frame or another module may do.
+    """
+    body = f"require valid_user;\nconnections 1;{TIMEOUTS}"
+    url = url_for("127.0.0.1", proxy.port)
+    server = nginx.start(
+        http=ldap_server("proxied", body, url=url),
+        server="test_rerun_phases 10ms;\n" + protected_location("proxied"),
+    )
+    wait_until_ready(server)
+    return server
+
+
+@pytest.mark.parametrize(
+    ("auth", "skip", "expected"),
+    [
+        pytest.param(("alice", "not-the-password"), 0, 401, id="user-bind"),
+        pytest.param(creds("alice"), 1, 200, id="rebind"),
+    ],
+)
+def test_bind_is_not_judged_before_its_answer_arrives(nginx, proxy, auth, skip, expected):
+    # The search answer leaves ctx->replied set and ctx->error_code at
+    # LDAP_SUCCESS. A run of the phases while the user bind is in flight
+    # took that for a successful bind and allowed a wrong password; while
+    # the rebind was in flight it returned the connection to the pool.
+    server = start_with_reruns(nginx, proxy)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        proxy.hold_at(0x61, skip=skip)
+        future = pool.submit(lambda: server.get(auth=auth, timeout=5).status_code)
+        end = time.monotonic() + 2
+        while not proxy.is_holding and time.monotonic() < end:
+            time.sleep(0.01)
+        assert proxy.is_holding, "the bind never reached the server"
+        time.sleep(0.2)
+        answered_early = future.done()
+        proxy.release()
+        result = future.result()
+
+    assert not answered_early, f"answered {result} before the BindResponse arrived"
+    assert result == expected
+    assert "running the phases again" in server.log()

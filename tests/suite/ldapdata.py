@@ -26,6 +26,15 @@ BASE_DN = "dc=example,dc=org"
 PEOPLE_DN = f"ou=people,{BASE_DN}"
 GROUPS_DN = f"ou=groups,{BASE_DN}"
 
+# A user one level below PEOPLE_DN (uid=svc,ou=services,ou=people,...).
+NESTED_PEOPLE_DN = f"ou=services,{PEOPLE_DN}"
+NESTED_UID = "svc"
+
+# A uid with two entries: uid=twin,PEOPLE_DN (password "twin-secret") and
+# uid=twin,ou=contractors,PEOPLE_DN (password TWIN_OTHER_SECRET).
+TWIN_UID = "twin"
+TWIN_OTHER_SECRET = "twin-other-" + "secret"  # nosec B105
+
 # Service account from seed.ldif. Test-only credential of a disposable
 # container; override via the environment if the fixture changes.
 BIND_DN = os.environ.get("LDAP_BIND_DN", f"cn=nginx,ou=services,{BASE_DN}")
@@ -52,6 +61,16 @@ def ldaps_url(host: str = LDAP_HOST, port: int = LDAPS_PORT) -> str:
 
 def group_dn(cn: str) -> str:
     return f"cn={cn},{GROUPS_DN}"
+
+
+# Groups whose DN holds characters that are special in a filter or a DN; the
+# only member of each is alice. bob is the only member of cn=a-b, which the
+# filter (cn=a*b) would also match.
+SPECIAL_GROUP_DNS = {
+    "filter-specials": group_dn("R&D (EU)"),
+    "escaped-comma": group_dn("Doe\\, Jane"),
+    "asterisk": group_dn("a*b"),
+}
 
 
 def password(uid: str) -> str:

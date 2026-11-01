@@ -15,14 +15,36 @@ from contextlib import contextmanager
 from ldapdata import LDAP_HOST
 
 
+def _operation_tags(data: bytes) -> list[int]:
+    """The protocolOp tags of the complete LDAPMessages at the start of data."""
+    tags = []
+    pos = 0
+    while pos + 2 <= len(data) and data[pos] == 0x30:
+        length = data[pos + 1]
+        start = pos + 2
+        if length & 0x80:
+            count = length & 0x7F
+            length = int.from_bytes(data[start : start + count], "big")
+            start += count
+        # messageID: INTEGER, short length form.
+        op = start + 2 + data[start + 1] if start + 1 < len(data) else len(data)
+        if op < len(data):
+            tags.append(data[op])
+        pos = start + length
+    return tags
+
+
 class LdapProxy:
     def __init__(self, upstream: tuple[str, int] = (LDAP_HOST, 389)) -> None:
         self.upstream = upstream
         self._listener = socket.create_server(("127.0.0.1", 0))
         self.port: int = self._listener.getsockname()[1]
         self._held = threading.Event()
+        self._hold_tag: int | None = None
+        self._hold_skip = 0
         self._released = threading.Condition()
         self._stopping = threading.Event()
+        self._refusing = threading.Event()
         self._threads: list[threading.Thread] = []
         self._sockets: list[socket.socket] = []
         self.connections = 0
@@ -35,9 +57,23 @@ class LdapProxy:
         """Buffer the server's answers from now on."""
         self._held.set()
 
+    def hold_at(self, tag: int, skip: int = 0) -> None:
+        """Hold from a server message whose protocolOp has this tag.
+
+        For example 0x61 holds the next BindResponse; skip=1 lets one
+        through and holds the one after it. Answers before it pass through.
+        """
+        self._hold_skip = skip
+        self._hold_tag = tag
+
+    @property
+    def is_holding(self) -> bool:
+        return self._held.is_set()
+
     def release(self) -> None:
         """Deliver what was buffered and pass answers through again."""
         with self._released:
+            self._hold_tag = None
             self._held.clear()
             self._released.notify_all()
 
@@ -59,6 +95,10 @@ class LdapProxy:
                 pass
             sock.close()
 
+    def refuse(self) -> None:
+        """Close every new connection right after accepting it."""
+        self._refusing.set()
+
     def close(self) -> None:
         self._stopping.set()
         self.release()
@@ -77,6 +117,10 @@ class LdapProxy:
                 client, _ = self._listener.accept()
             except OSError:
                 return
+            if self._refusing.is_set():
+                self.connections += 1
+                client.close()
+                continue
             try:
                 server = socket.create_connection(self.upstream, timeout=5)
             except OSError:
@@ -103,6 +147,14 @@ class LdapProxy:
                     data = server.recv(65536)
                     if not data:
                         return
+                    if self._hold_tag is not None:
+                        for tag in _operation_tags(data):
+                            if tag != self._hold_tag:
+                                continue
+                            if self._hold_skip == 0:
+                                self._held.set()
+                                break
+                            self._hold_skip -= 1
                     pending += data
                 if pending and not self._held.is_set():
                     client.sendall(pending)

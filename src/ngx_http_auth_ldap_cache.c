@@ -32,6 +32,11 @@
 
 ngx_http_auth_ldap_cache_t ngx_http_auth_ldap_cache;
 
+static void ngx_http_auth_ldap_cache_hash_str(ngx_md5_t *md5ctx,
+    ngx_str_t *value);
+static ngx_int_t ngx_http_auth_ldap_cache_hash_templates(ngx_http_request_t *r,
+    ngx_md5_t *md5ctx, ngx_http_complex_value_t *values, ngx_uint_t n);
+
 /*** Authentication cache ***/
 
 ngx_int_t
@@ -87,10 +92,34 @@ ngx_http_auth_ldap_check_cache(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
 
     ctx->cache_small_hash = ngx_murmur_hash2(r->headers_in.user.data, r->headers_in.user.len) ^ (uint32_t) (ngx_uint_t) server;
 
+    /*
+     * The key holds the server identity and every require template as the
+     * request expands it: with a variable in a template, the same login and
+     * password can be allowed for one request and denied for another.
+     */
     ngx_md5_init(&md5ctx);
-    ngx_md5_update(&md5ctx, r->headers_in.user.data, r->headers_in.user.len);
-    ngx_md5_update(&md5ctx, server, offsetof(ngx_http_auth_ldap_server_t, free_connections));
-    ngx_md5_update(&md5ctx, r->headers_in.passwd.data, r->headers_in.passwd.len);
+    ngx_http_auth_ldap_cache_hash_str(&md5ctx, &r->headers_in.user);
+    ngx_http_auth_ldap_cache_hash_str(&md5ctx, &server->alias);
+    ngx_http_auth_ldap_cache_hash_str(&md5ctx, &server->url);
+    ngx_http_auth_ldap_cache_hash_str(&md5ctx, &r->headers_in.passwd);
+
+    ctx->cache_bucket = NULL;
+
+    if (ngx_http_auth_ldap_cache_hash_templates(r, &md5ctx,
+            &server->require_valid_user_dn,
+            server->require_valid_user_dn.value.data != NULL) != NGX_OK
+        || (server->require_user != NULL
+            && ngx_http_auth_ldap_cache_hash_templates(r, &md5ctx,
+                   server->require_user->elts, server->require_user->nelts)
+               != NGX_OK)
+        || (server->require_group != NULL
+            && ngx_http_auth_ldap_cache_hash_templates(r, &md5ctx,
+                   server->require_group->elts, server->require_group->nelts)
+               != NGX_OK))
+    {
+        return -1;
+    }
+
     ngx_md5_final(ctx->cache_big_hash, &md5ctx);
 
     ctx->cache_bucket = &cache->buckets[ctx->cache_small_hash % cache->num_buckets];
@@ -115,6 +144,11 @@ ngx_http_auth_ldap_update_cache(ngx_http_auth_ldap_ctx_t *ctx,
     ngx_http_auth_ldap_cache_elt_t *elt, *oldest_elt;
     ngx_uint_t i;
 
+    if (ctx->cache_bucket == NULL) {
+        /* The key could not be built: never store under a partial key. */
+        return;
+    }
+
     elt = ctx->cache_bucket;
     oldest_elt = elt;
     for (i = 1; i < cache->elts_per_bucket; i++, elt++) {
@@ -127,4 +161,33 @@ ngx_http_auth_ldap_update_cache(ngx_http_auth_ldap_ctx_t *ctx,
     oldest_elt->outcome = outcome;
     oldest_elt->small_hash = ctx->cache_small_hash;
     ngx_memcpy(oldest_elt->big_hash, ctx->cache_big_hash, 16);
+}
+
+/* Length-prefixed, so that adjacent values cannot run into each other. */
+static void
+ngx_http_auth_ldap_cache_hash_str(ngx_md5_t *md5ctx, ngx_str_t *value)
+{
+    ngx_md5_update(md5ctx, &value->len, sizeof(value->len));
+    ngx_md5_update(md5ctx, value->data, value->len);
+}
+
+static ngx_int_t
+ngx_http_auth_ldap_cache_hash_templates(ngx_http_request_t *r,
+    ngx_md5_t *md5ctx, ngx_http_complex_value_t *values, ngx_uint_t n)
+{
+    ngx_str_t val;
+    ngx_uint_t i;
+
+    for (i = 0; i < n; i++) {
+        if (ngx_http_complex_value(r, &values[i], &val) != NGX_OK) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "http_auth_ldap: Unable to expand a require template "
+                "for the cache key");
+            return NGX_ERROR;
+        }
+
+        ngx_http_auth_ldap_cache_hash_str(md5ctx, &val);
+    }
+
+    return NGX_OK;
 }

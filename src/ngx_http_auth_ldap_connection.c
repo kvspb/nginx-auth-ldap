@@ -238,13 +238,16 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
         return;
     }
 
-    if (c->server->referral == 0) {
-        rc = ldap_set_option(c->ld, LDAP_OPT_REFERRALS, LDAP_OPT_OFF);
-        if (rc != LDAP_OPT_SUCCESS) {
-            ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_set_option() failed (%d: %s)", rc, ldap_err2string(rc));
-            ngx_http_auth_ldap_close_connection(c);
-            return;
-        }
+    /*
+     * Never chase referrals, whatever "referral" says: libldap would
+     * connect to the referred host with a blocking connect() outside the
+     * event loop and to any host a server names.
+     */
+    rc = ldap_set_option(c->ld, LDAP_OPT_REFERRALS, LDAP_OPT_OFF);
+    if (rc != LDAP_OPT_SUCCESS) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_set_option() failed (%d: %s)", rc, ldap_err2string(rc));
+        ngx_http_auth_ldap_close_connection(c);
+        return;
     }
 
     rc = ldap_get_option(c->ld, LDAP_OPT_SOCKBUF, (void *) &sb);
@@ -351,15 +354,11 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
 
             // if LDAP_SERVER_DOWN (usually timeouts or server disconnects)
             if (rc == LDAP_SERVER_DOWN && \
-                c->server->max_down_retries_count < c->server->max_down_retries) {
-                /**
-                    update counter (this is always reset in
-                    ngx_http_auth_ldap_connect() for a successful ldap
-                    connection
-                **/
-                c->server->max_down_retries_count++;
-                ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: LDAP_SERVER_DOWN: retry count: %d",
-                    c->server->max_down_retries_count);
+                c->down_retries < c->server->max_down_retries) {
+                /* reset only after a successful initial bind */
+                c->down_retries++;
+                ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: LDAP_SERVER_DOWN: retry count: %ui",
+                    c->down_retries);
                 /*
                  * Reconnect at once, through the reconnect timer that
                  * close_connection() above has set: connecting directly
@@ -405,6 +404,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 if (error_code == LDAP_SUCCESS) {
                     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Initial bind successful");
                     c->state = STATE_READY;
+                    c->down_retries = 0;
                     ngx_http_auth_ldap_return_connection(c);
                 } else {
                     ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Initial bind failed (%d: %s [%s])",
@@ -428,6 +428,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
             case STATE_SEARCHING:
                 if (ldap_msgtype(result) == LDAP_RES_SEARCH_ENTRY) {
                     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received a search entry");
+                    c->rctx->search_entries++;
                     if (c->rctx->dn.data == NULL) {
                         dn = ldap_get_dn(c->ld, result);
                         if (dn != NULL) {
@@ -513,7 +514,6 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
     ngx_add_timer(conn->read, c->server->connect_timeout);
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: connect_timeout=%d.", c->server->connect_timeout);
 
-    c->server->max_down_retries_count = 0;   /* reset retries count */
     c->state = STATE_CONNECTING;
 }
 
@@ -551,7 +551,7 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
     ldap_set_option(NULL, LDAP_OPT_PROTOCOL_VERSION, &option);
 
     for (i = 0; i < halmcf->servers->nelts; i++) {
-        server = &((ngx_http_auth_ldap_server_t *) halmcf->servers->elts)[i];
+        server = ((ngx_http_auth_ldap_server_t **) halmcf->servers->elts)[i];
         ngx_queue_init(&server->free_connections);
         ngx_queue_init(&server->waiting_requests);
         if (server->connections <= 1) {

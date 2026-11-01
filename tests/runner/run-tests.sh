@@ -21,7 +21,7 @@ tarball="/build/nginx-${NGINX_VERSION}.tar.gz"
 
 # nginx bakes the module's source list into objs/Makefile at configure time,
 # so a changed ./config (e.g. files added or moved) needs a fresh configure.
-config_sum=$(sha256sum /src/config | cut -d' ' -f1)
+config_sum=$(cat /src/config /src/tests/modules/rerun_phases/config | sha256sum | cut -d' ' -f1)
 if [ -f "${build_dir}/objs/Makefile" ] \
     && [ "$(cat "${build_dir}/.module-config" 2>/dev/null)" != "${config_sum}" ]; then
     echo "run-tests: module config changed, reconfiguring"
@@ -66,6 +66,7 @@ if [ ! -f "${build_dir}/objs/Makefile" ]; then
             --with-cc-opt="${cc_opt}" \
             --with-ld-opt="${ld_opt}" \
             --add-module=/src \
+            --add-module=/src/tests/modules/rerun_phases \
             ${extra} >"${build_dir}/configure.log" 2>&1 \
             || { cat "${build_dir}/configure.log"; exit 1; }
     )
@@ -104,6 +105,7 @@ mkdir -p "${report_dir}"
 (
     cd "${build_dir}"
     gcovr --root /src objs/addon \
+        --exclude 'tests/' \
         --txt "${report_dir}/summary.txt" \
         --html-details "${report_dir}/index.html" \
         --json "${report_dir}/coverage.json" \

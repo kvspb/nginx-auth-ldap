@@ -78,7 +78,8 @@ echo "run-mutation: configuring nginx ${NGINX_VERSION} with the Mull plugin"
         --with-http_v2_module \
         --with-cc-opt="${cc_opt}" \
         --with-ld-opt="${ld_opt}" \
-        --add-module=/src >"${build_dir}/configure.log" 2>&1 \
+        --add-module=/src \
+        --add-module=/src/tests/modules/rerun_phases >"${build_dir}/configure.log" 2>&1 \
         || { cat "${build_dir}/configure.log"; exit 1; }
 )
 echo "run-mutation: building (mutants of the diff against ${MUTATE_BASE})"

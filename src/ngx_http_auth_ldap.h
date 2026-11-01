@@ -97,12 +97,12 @@ typedef struct {
     ngx_array_t *require_user;      /* array of ngx_http_complex_value_t */
     ngx_flag_t require_valid_user;
     ngx_http_complex_value_t require_valid_user_dn;
+    ngx_uint_t remote_user_index;   /* $remote_user, with the DN template */
     ngx_flag_t satisfy_all;
     ngx_flag_t referral;
 
     ngx_uint_t connections;
     ngx_uint_t max_down_retries;
-    ngx_uint_t max_down_retries_count;
     ngx_msec_t connect_timeout;
     ngx_msec_t reconnect_timeout;
     ngx_msec_t bind_timeout;
@@ -112,7 +112,7 @@ typedef struct {
 } ngx_http_auth_ldap_server_t;
 
 typedef struct {
-    ngx_array_t *servers;        /* array of ngx_http_auth_ldap_server_t */
+    ngx_array_t *servers;        /* array of ngx_http_auth_ldap_server_t* */
     ngx_flag_t cache_enabled;
     ngx_msec_t cache_expiration_time;
     size_t cache_size;
@@ -128,7 +128,8 @@ typedef struct {
     uint32_t small_hash;     /* murmur2 hash of username ^ &server       */
     uint32_t outcome;        /* OUTCOME_DENY or OUTCOME_ALLOW            */
     ngx_msec_t time;         /* ngx_current_msec when created            */
-    u_char big_hash[16];     /* md5 hash of (username, server, password) */
+    u_char big_hash[16];     /* md5 of username, server alias and url,
+                                password, expanded require templates */
 } ngx_http_auth_ldap_cache_elt_t;
 
 typedef struct {
@@ -162,6 +163,7 @@ typedef struct {
     int error_code;
     ngx_str_t error_msg;
     ngx_str_t dn;
+    ngx_uint_t search_entries;
     ngx_str_t user_dn;
     ngx_str_t group_dn;
 
@@ -197,6 +199,8 @@ typedef struct ngx_http_auth_ldap_connection {
     LDAP* ld;
     ngx_http_auth_ldap_connection_state_t state;
     int msgid;
+    ngx_uint_t down_retries;    /* LDAP_SERVER_DOWN retries since the last
+                                   successful initial bind */
 } ngx_http_auth_ldap_connection_t;
 
 
@@ -234,5 +238,6 @@ ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r);
 
 /* ngx_http_auth_ldap_filter.c */
 ngx_int_t ngx_http_auth_ldap_escape_filter_value(ngx_pool_t *pool, ngx_str_t *src, ngx_str_t *dst);
+ngx_int_t ngx_http_auth_ldap_escape_dn_value(ngx_pool_t *pool, ngx_str_t *src, ngx_str_t *dst);
 
 #endif /* _NGX_HTTP_AUTH_LDAP_H_INCLUDED_ */

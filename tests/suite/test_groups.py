@@ -4,10 +4,13 @@ Fixture users: alice (admins, devs), bob (devs, ops), carol (no group),
 dave (admins, ops).
 """
 
+import base64
+import http.client
+
 import pytest
 
 from conftest import ldap_server, protected_location
-from ldapdata import creds, group_dn
+from ldapdata import GROUPS_DN, SPECIAL_GROUP_DNS, creds, group_dn
 
 
 def groups_server(nginx, satisfy: str, *groups: str):
@@ -90,6 +93,78 @@ class TestSatisfyAllOfTwoGroups:
     )
     def test_access(self, server, uid, expected):
         assert server.get(auth=creds(uid)).status_code == expected
+
+
+class TestGroupDnWithSpecialCharacters:
+    """require group with a DN that holds filter or DN special characters.
+
+    The group check used to cut the DN at its first comma and put the RDN
+    into a filter unescaped: "(" ")" made the filter invalid, an escaped
+    comma split the DN in the wrong place, and "*" became a wildcard that
+    also matched cn=a-b, whose only member is bob.
+    """
+
+    @pytest.fixture(scope="class", params=list(SPECIAL_GROUP_DNS), ids=list(SPECIAL_GROUP_DNS))
+    def server(self, request, shared_nginx):
+        body = f"""
+group_attribute member;
+group_attribute_is_dn on;
+require group "{SPECIAL_GROUP_DNS[request.param]}";
+"""
+        return shared_nginx.start(http=ldap_server("special", body), server=protected_location("special"))
+
+    @pytest.mark.parametrize(
+        ("uid", "expected"),
+        [
+            pytest.param("alice", 200, id="member"),
+            pytest.param("bob", 401, id="member-of-a-wildcard-match"),
+            pytest.param("carol", 401, id="member-of-no-group"),
+        ],
+    )
+    def test_access(self, server, uid, expected):
+        assert server.get(auth=creds(uid)).status_code == expected
+
+
+def get_raw(server, path: str, uid: str) -> int:
+    """GET ``path`` sent as is: requests would percent-encode "|", and $arg_* is not decoded."""
+    token = base64.b64encode(":".join(creds(uid)).encode()).decode()
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=15)
+    try:
+        conn.request("GET", path, headers={"Authorization": f"Basic {token}"})
+        return conn.getresponse().status
+    finally:
+        conn.close()
+
+
+class TestGroupDnFromRequestVariable:
+    """require group "cn=$arg_team,<groups>": the request picks the group.
+
+    The RDN used to reach the filter unescaped: ?team=* gave
+    (&(cn=*)(member=...)) and a member of any group passed. libldap rejects
+    the unbalanced filter of ?team=*)(|(cn=*, but nothing may depend on that.
+    """
+
+    @pytest.fixture(scope="class")
+    def server(self, shared_nginx):
+        body = f"""
+group_attribute member;
+group_attribute_is_dn on;
+require group "cn=$arg_team,{GROUPS_DN}";
+"""
+        return shared_nginx.start(http=ldap_server("team", body), server=protected_location("team"))
+
+    @pytest.mark.parametrize(
+        ("uid", "query", "expected"),
+        [
+            pytest.param("alice", "team=admins", 200, id="member"),
+            pytest.param("carol", "team=admins", 401, id="not-a-member"),
+            pytest.param("bob", "team=*", 401, id="wildcard-injection"),
+            pytest.param("bob", "team=a*", 401, id="partial-wildcard-injection"),
+            pytest.param("carol", "team=*)(|(cn=*", 401, id="filter-injection"),
+        ],
+    )
+    def test_access(self, server, uid, query, expected):
+        assert get_raw(server, f"/?{query}", uid) == expected
 
 
 class TestGroupAttributeIsDnOff:

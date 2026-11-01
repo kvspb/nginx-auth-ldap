@@ -62,7 +62,7 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     char                           *rv;
     ngx_str_t                      *value, name;
     ngx_conf_t                     save;
-    ngx_http_auth_ldap_server_t    *server;
+    ngx_http_auth_ldap_server_t    *server, **slot;
     ngx_http_auth_ldap_main_conf_t *cnf = conf;
 
     value = cf->args->elts;
@@ -78,18 +78,28 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         if (cnf->servers_size == NGX_CONF_UNSET) {
             cnf->servers_size = NGX_HTTP_AUTH_LDAP_MAX_SERVERS_SIZE;
         }
-        cnf->servers = ngx_array_create(cf->pool, cnf->servers_size, sizeof(ngx_http_auth_ldap_server_t));
+        cnf->servers = ngx_array_create(cf->pool, cnf->servers_size,
+                                        sizeof(ngx_http_auth_ldap_server_t *));
         if (cnf->servers == NULL) {
             return NGX_CONF_ERROR;
         }
     }
 
-    server = ngx_array_push(cnf->servers);
+    /*
+     * Each server is allocated on its own: auth_ldap_servers keeps pointers
+     * to it, which must stay valid when the array grows and moves.
+     */
+    server = ngx_pcalloc(cf->pool, sizeof(ngx_http_auth_ldap_server_t));
     if (server == NULL) {
         return NGX_CONF_ERROR;
     }
 
-    ngx_memzero(server, sizeof(*server));
+    slot = ngx_array_push(cnf->servers);
+    if (slot == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    *slot = server;
     server->connect_timeout = 10000;
     server->reconnect_timeout = 10000;
     server->bind_timeout = 5000;
@@ -105,6 +115,13 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
 
     if (rv != NGX_CONF_OK) {
         return rv;
+    }
+
+    if (server->ludpp == NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "http_auth_ldap: no \"url\" in ldap_server \"%V\"",
+                           &server->alias);
+        return NGX_CONF_ERROR;
     }
 
 #if (NGX_OPENSSL)
@@ -137,6 +154,8 @@ ngx_http_auth_ldap_load_ca(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server)
                 "http_auth_ldap: cannot load CA certificates from \"%V\"", location);
             return NGX_CONF_ERROR;
         }
+
+        return NGX_CONF_OK;
     }
 
     if (SSL_CTX_set_default_verify_paths(server->ssl.ctx) != 1) {
@@ -172,7 +191,7 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
     const char                     **name;
 
     /* It should be safe to just use latest server from array */
-    server = ((ngx_http_auth_ldap_server_t *) cnf->servers->elts + (cnf->servers->nelts - 1));
+    server = ((ngx_http_auth_ldap_server_t **) cnf->servers->elts)[cnf->servers->nelts - 1];
 
     value = cf->args->elts;
 
@@ -330,7 +349,7 @@ ngx_http_auth_ldap_servers(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 	}
 
         for (j = 0; j < mconf->servers->nelts; j++) {
-            s = &((ngx_http_auth_ldap_server_t *) mconf->servers->elts)[j];
+            s = ((ngx_http_auth_ldap_server_t **) mconf->servers->elts)[j];
             if (s->alias.len == value->len && ngx_memcmp(s->alias.data, value->data, s->alias.len) == 0) {
                 server = s;
                 break;
@@ -566,6 +585,8 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
     ngx_str_t *value;
     ngx_http_complex_value_t* target = NULL;
     ngx_http_compile_complex_value_t ccv;
+    ngx_str_t remote_user = ngx_string("remote_user");
+    ngx_int_t index;
 
     value = cf->args->elts;
     ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "http_auth_ldap: parse_require");
@@ -582,6 +603,12 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
         if (server->require_valid_user_dn.value.data != NULL) {
             return "is duplicate";
         }
+        /* The template expands $remote_user as an escaped RDN value. */
+        index = ngx_http_get_variable_index(cf, &remote_user);
+        if (index == NGX_ERROR) {
+            return NGX_CONF_ERROR;
+        }
+        server->remote_user_index = index;
         target = &server->require_valid_user_dn;
     } else if (ngx_strcmp(value[1].data, "user") == 0) {
         if (cf->args->nelts < 3) {

@@ -26,9 +26,11 @@
  * SUCH DAMAGE.
  */
 
-/* Escaping of values placed into LDAP search filters. */
+/* Escaping of values placed into LDAP search filters and DNs. */
 
 #include "ngx_http_auth_ldap.h"
+
+static ngx_uint_t ngx_http_auth_ldap_dn_special(ngx_str_t *value, size_t i);
 
 /*
  * Escape a value for use inside an LDAP search filter (RFC 4515, section 3):
@@ -83,4 +85,67 @@ ngx_http_auth_ldap_escape_filter_value(ngx_pool_t *pool, ngx_str_t *src, ngx_str
     dst->len = len;
 
     return NGX_OK;
+}
+
+/*
+ * Escape a value for use as an attribute value of an RDN (RFC 4514,
+ * section 2.4): '"', '+', ',', ';', '<', '>', '=' and '\' anywhere, a
+ * leading '#' or space and a trailing space get a backslash. A value with
+ * a NUL cannot be one of a DN passed as a C string: NGX_DECLINED.
+ */
+ngx_int_t
+ngx_http_auth_ldap_escape_dn_value(ngx_pool_t *pool, ngx_str_t *src, ngx_str_t *dst)
+{
+    u_char *p, c;
+    size_t i, len;
+
+    len = src->len;
+    for (i = 0; i < src->len; i++) {
+        c = src->data[i];
+        if (c == '\0') {
+            return NGX_DECLINED;
+        }
+        if (ngx_http_auth_ldap_dn_special(src, i)) {
+            len++;
+        }
+    }
+
+    dst->data = ngx_pnalloc(pool, len);
+    if (dst->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    p = dst->data;
+    for (i = 0; i < src->len; i++) {
+        if (ngx_http_auth_ldap_dn_special(src, i)) {
+            *p++ = '\\';
+        }
+        *p++ = src->data[i];
+    }
+    dst->len = len;
+
+    return NGX_OK;
+}
+
+/* Whether byte i of an RDN value needs a backslash (RFC 4514, 2.4). */
+static ngx_uint_t
+ngx_http_auth_ldap_dn_special(ngx_str_t *value, size_t i)
+{
+    switch (value->data[i]) {
+    case '"':
+    case '+':
+    case ',':
+    case ';':
+    case '<':
+    case '>':
+    case '=':
+    case '\\':
+        return 1;
+    case '#':
+        return i == 0;
+    case ' ':
+        return i == 0 || i == value->len - 1;
+    default:
+        return 0;
+    }
 }

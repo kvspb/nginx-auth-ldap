@@ -95,6 +95,7 @@ tests/
   runner/              toolchain image; run-tests.sh builds nginx and runs pytest
   mutation/            clang + Mull image; run-mutation.sh for make mutate,
                        summary.py for the CI job summary
+  modules/rerun_phases test-only nginx module, built into every test binary
   suite/
     harness.py         Nginx: per-test prefix, config, start/stop, crash detection
     conftest.py        `nginx` fixture, ldap_server() / protected_location() helpers
@@ -150,6 +151,11 @@ test classes.
   worker died.
 - `nginx.check_config()` runs `nginx -t`. A negative return code means it was
   killed by a signal.
+- `test_rerun_phases <interval>;` (from `modules/rerun_phases`, built only
+  into test binaries) runs the phases of a request again every `<interval>`
+  while it is still in them, as HTTP/3 or other modules may do. Use it to
+  check that the access handler copes with runs while an LDAP operation is in
+  flight.
 - To add directory data, edit `ldap/seed.ldif` and `suite/ldapdata.py`
   together, then run `make test-down` so the LDAP image is reseeded.
 

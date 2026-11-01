@@ -70,7 +70,7 @@ class Nginx:
     def url(self, path: str = "/") -> str:
         return f"http://127.0.0.1:{self.port}{path}"
 
-    def write_config(self, http: str = "", server: str = "") -> Path:
+    def write_config(self, http: str = "", server: str = "", main: str = "") -> Path:
         for sub in ("conf", "html", "logs", "temp"):
             (self.prefix / sub).mkdir(parents=True, exist_ok=True)
         # Served by protected_location() once access is granted.
@@ -89,6 +89,7 @@ class Nginx:
             user root;
             worker_processes 1;
             error_log {error_log} {level};
+            {main}
             pid {prefix}/logs/nginx.pid;
 
             events {{
@@ -114,6 +115,7 @@ class Nginx:
             """
         ).format(
             passed_env=passed_env,
+            main=main,
             error_log=self.error_log,
             level=level,
             prefix=self.prefix,
@@ -136,10 +138,11 @@ class Nginx:
             check=False,
         )
 
-    def start(self, http: str = "", server: str = "") -> Nginx:
+    def start(self, http: str = "", server: str = "", main: str = "") -> Nginx:
+        """Start nginx; ``main`` goes into the main (top-level) context."""
         # Restarting is allowed, e.g. by a parametrized class-scoped fixture.
         self.stop()
-        self.write_config(http, server)
+        self.write_config(http, server, main)
         self.process = subprocess.Popen(
             [NGINX_BINARY, "-p", str(self.prefix), "-c", str(self.conf_path)],
             env={**os.environ, **self.env},
@@ -160,6 +163,21 @@ class Nginx:
                     pass
             time.sleep(0.02)
         raise RuntimeError(f"nginx did not start:\n{self.log()}")
+
+    def reload(self, deadline: float = 10) -> None:
+        """Reload the configuration (SIGHUP) and wait for a new worker.
+
+        The old worker shuts down gracefully and may outlive this call.
+        """
+        assert self.process is not None
+        old = self.worker_pids() or frozenset()
+        self.process.send_signal(signal.SIGHUP)
+        end = time.monotonic() + deadline
+        while time.monotonic() < end:
+            if (self.worker_pids() or frozenset()) - old:
+                return
+            time.sleep(0.02)
+        raise RuntimeError(f"nginx did not start a new worker:\n{self.log()}")
 
     def stop(self) -> None:
         if self.process is None or self.process.poll() is not None:

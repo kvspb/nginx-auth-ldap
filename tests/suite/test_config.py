@@ -8,6 +8,12 @@ from ldapdata import LDAP_HOST, PEOPLE_DN
 USERS = ldap_server("users")
 LOCATION = protected_location("users")
 QUERY = f"{PEOPLE_DN}?uid?sub?(objectClass=*)"
+WITHOUT_URL = """
+ldap_server users {
+    require valid_user;
+}
+"""
+NO_URL_TEXT = 'no "url" in ldap_server "users"'
 
 
 def server_case(
@@ -44,6 +50,8 @@ def server_case(
             "No host specified",
             id="url-without-host",
         ),
+        pytest.param(WITHOUT_URL, LOCATION, 1, NO_URL_TEXT, id="ldap-server-without-url"),
+        pytest.param(WITHOUT_URL, "", 1, NO_URL_TEXT, id="unused-ldap-server-without-url"),
         server_case("url-with-port-without-host", "No host specified", url=f"ldap://:389/{QUERY}"),
         server_case(
             "unknown-directive-in-ldap-server",
@@ -194,6 +202,12 @@ def test_nginx_t(nginx, http, server, expected_rc, expected_text):
     assert result.returncode == expected_rc, f"nginx -t exited with {result.returncode}:\n{result.stderr}"
     if expected_text is not None:
         assert expected_text in result.stderr
+
+
+def test_ldap_server_without_url_does_not_start(nginx):
+    # It used to pass nginx -t and kill every worker with SIGFPE at start.
+    with pytest.raises(RuntimeError, match="nginx exited with 1"):
+        nginx.start(http=WITHOUT_URL, server=LOCATION)
 
 
 @pytest.mark.parametrize(
