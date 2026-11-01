@@ -83,9 +83,10 @@ def test_request_in_flight_when_the_connection_dies_gets_an_answer(nginx, proxy)
         result = future.result()
         elapsed = time.monotonic() - started
 
-    # Not answered by the request_timeout (1 s) long after the failure.
+    # Not answered by the request_timeout (1 s) long after the failure, and
+    # not with 401: a broken connection says nothing about the password.
     assert elapsed < 0.8, f"the request waited {elapsed:.1f} s for a dead connection"
-    assert result == 401
+    assert result == 503
 
 
 def test_pool_stays_consistent_after_a_connection_died_under_a_request(nginx, proxy):

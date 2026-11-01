@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Entries refer to issues of the original repository as kvspb#N
 (<https://github.com/kvspb/nginx-auth-ldap/issues/N>).
 
+## [Unreleased]
+
+### Fixed
+
+- An LDAP error that says nothing about the credentials no longer denies
+  the user. A connection that breaks during the user bind or a
+  search, or a server that answers busy, unavailable, time or admin limit
+  exceeded, or other, made the module answer `401` and, with the cache on,
+  cache that DENY for `auth_ldap_cache_expiration_time`: a user with the
+  right password was locked out. Such a result is now not cached, the next
+  server is tried, and when no server allows, the answer is
+  `503 Service Unavailable`. Invalid credentials, a missing entry and the
+  other answers about the credentials still deny with `401`.
+
 ## [1.0.0] - 2026-11-01
 
 The first release since 0.1 (2011) and after a long pause of upstream
@@ -155,5 +169,6 @@ Known before this release:
 First tagged version by Valery Komarov. Later upstream changes until 2024
 were not released under a version number.
 
+[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v0.1...v1.0.0
 [0.1]: https://github.com/kvspb/nginx-auth-ldap/releases/tag/v0.1

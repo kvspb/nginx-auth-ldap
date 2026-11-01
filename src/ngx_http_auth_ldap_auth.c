@@ -44,8 +44,33 @@ static ngx_int_t ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http
 static ngx_int_t ngx_http_auth_ldap_wait_result(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
         const char *call, int rc, ngx_http_auth_ldap_connection_state_t state);
 static void ngx_http_auth_ldap_cleanup_request(void *data);
+static ngx_flag_t ngx_http_auth_ldap_server_failed(int code);
 
 /*** Per-request authentication processing ***/
+
+/*
+ * Whether an LDAP result says the server could not answer, as opposed to
+ * an answer about the request: the connection broke or timed out (the
+ * client-side codes), or the server is busy, unavailable or over a limit.
+ * Such a result decides nothing about the credentials (nal-5br.17).
+ */
+static ngx_flag_t
+ngx_http_auth_ldap_server_failed(int code)
+{
+    switch (code) {
+    case LDAP_NO_RESULTS_RETURNED:   /* set by the read handler, an answer */
+        return 0;
+    case LDAP_TIMELIMIT_EXCEEDED:
+    case LDAP_ADMINLIMIT_EXCEEDED:
+    case LDAP_BUSY:
+    case LDAP_UNAVAILABLE:
+    case LDAP_OTHER:
+        return 1;
+    default:
+        /* OpenLDAP API errors (LDAP_SERVER_DOWN, LDAP_TIMEOUT...) */
+        return code < 0;
+    }
+}
 
 /**
  * Respond with "403 Forbidden" and add correct headers
@@ -356,8 +381,16 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                     return NGX_OK;
                 }
 
+                if (ctx->outcome == OUTCOME_UNAVAILABLE) {
+                    ctx->unavailable = 1;
+                }
+
                 ctx->server_index++;
                 if (ctx->server_index >= conf->servers->nelts) {
+                    /* A server that could not decide may know the user. */
+                    if (ctx->unavailable) {
+                        return NGX_HTTP_SERVICE_UNAVAILABLE;
+                    }
                     return ngx_http_auth_ldap_set_realm(r, &conf->realm);
                 }
 
@@ -567,6 +600,9 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
     if (ctx->error_code != LDAP_SUCCESS) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_search_ext() request failed (%d: %s)",
             ctx->error_code, ldap_err2string(ctx->error_code));
+        if (ngx_http_auth_ldap_server_failed(ctx->error_code)) {
+            ctx->outcome = OUTCOME_UNAVAILABLE;
+        }
         return NGX_ERROR;
     }
 
@@ -633,6 +669,12 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
 
     /* Handle result of the search started during previous call */
     if (ctx->iteration > 0) {
+        if (ngx_http_auth_ldap_server_failed(ctx->error_code)) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_search_ext() request failed (%d: %s)",
+                ctx->error_code, ldap_err2string(ctx->error_code));
+            ctx->outcome = OUTCOME_UNAVAILABLE;
+            return NGX_ERROR;
+        }
         if (ctx->dn.data == NULL) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_search_ext() returned NULL result");
             if (ctx->server->satisfy_all == 1) {
@@ -760,7 +802,8 @@ ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *c
     if (ctx->error_code != LDAP_SUCCESS) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: User bind failed (%d: %s)",
             ctx->error_code, ldap_err2string(ctx->error_code));
-        ctx->outcome = OUTCOME_DENY;
+        ctx->outcome = ngx_http_auth_ldap_server_failed(ctx->error_code)
+                       ? OUTCOME_UNAVAILABLE : OUTCOME_DENY;
     } else {
         ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: User bind successful");
         ctx->outcome = OUTCOME_ALLOW;

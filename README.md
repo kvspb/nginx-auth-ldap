@@ -56,9 +56,11 @@ and [`auth_ldap_servers`](#auth_ldap_servers) with the names of one or more
    7. **Rebind.** The connection binds as `binddn` again before it serves the
       next request.
 3. Allows the request as soon as one server allows it. When every server
-   denies the user or fails, the answer is `401`. When a server does not
-   finish within its [`request_timeout`](#request_timeout), the answer is
-   `503 Service Unavailable`.
+   denies the user, the answer is `401`. When a server could not decide
+   (the connection broke, the server is busy, unavailable or over a limit)
+   and no later server allows, or a server does not finish within its
+   [`request_timeout`](#request_timeout), the answer is
+   `503 Service Unavailable`: the credentials may be right.
 
 Each nginx worker opens [`connections`](#connections) connections to every
 `ldap_server` when it starts, keeps them open, and reconnects them after
@@ -783,6 +785,7 @@ server {
 | --- | --- |
 | No `Authorization` header, not Basic, or empty password | `401` with `WWW-Authenticate`, LDAP is not asked |
 | User not found, found twice, rules not met, wrong password, on every server | `401` with `WWW-Authenticate` |
+| A server could not decide: the connection broke, or the server answered busy (51), unavailable (52), time or admin limit exceeded (3, 11) or other (80); and no other server allowed | `503`, not cached |
 | A server did not finish within its `request_timeout` (unreachable, every connection busy, slow) | `503` |
 | Internal error, such as a failed memory allocation | `500` |
 

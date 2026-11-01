@@ -54,6 +54,7 @@ extern int ldap_init_fd(ber_socket_t fd, int proto, const char *url, LDAP **ld);
 #define OUTCOME_CACHED_DENY     2 /* Cached results */
 #define OUTCOME_CACHED_ALLOW    3
 #define OUTCOME_UNCERTAIN       4 /* Not yet decided */
+#define OUTCOME_UNAVAILABLE     5 /* The server could not decide; not cached */
 
 #define NGX_HTTP_AUTH_LDAP_MAX_SERVERS_SIZE 7
 
@@ -143,6 +144,7 @@ typedef struct {
     ngx_queue_t queue;
     int replied;
     int error_code;
+    ngx_flag_t unavailable;  /* a server could not decide: answer 503 */
     ngx_str_t dn;
     ngx_uint_t search_entries;
     ngx_str_t user_dn;

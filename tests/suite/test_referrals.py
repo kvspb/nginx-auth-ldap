@@ -44,7 +44,7 @@ class ReferringLdapServer(FakeLdapServer):
         self.referred = threading.Event()
         super().__init__()
 
-    def answer_search(self, msgid: int) -> bytes:
+    def answer_search(self, msgid: int, base: str) -> bytes:
         self.referred.set()
         if self.kind == "reference":
             reference = message(msgid, ber(0x73, string(self.referral_url)))

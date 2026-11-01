@@ -98,6 +98,11 @@ def bind_dn(content: bytes) -> str:
     return name[2 : 2 + name[1]].decode()
 
 
+def search_base(content: bytes) -> str:
+    """The baseObject of a SearchRequest, its first element."""
+    return content[2 : 2 + content[1]].decode()
+
+
 class FakeLdapServer:
     """Accepts connections on 127.0.0.1 and answers each request through
     the answer_bind() and answer_search() methods, which return the bytes
@@ -120,7 +125,7 @@ class FakeLdapServer:
     def answer_bind(self, msgid: int, dn: str) -> bytes | None:
         return message(msgid, result(BIND_RESPONSE, 0))
 
-    def answer_search(self, msgid: int) -> bytes | None:
+    def answer_search(self, msgid: int, base: str) -> bytes | None:
         return message(msgid, result(SEARCH_DONE, 0))
 
     def _accept(self) -> None:
@@ -139,7 +144,7 @@ class FakeLdapServer:
                 if op == BIND_REQUEST:
                     answer = self.answer_bind(msgid, bind_dn(content))
                 elif op == SEARCH_REQUEST:
-                    answer = self.answer_search(msgid)
+                    answer = self.answer_search(msgid, search_base(content))
                 elif op == UNBIND_REQUEST:
                     return
                 else:
