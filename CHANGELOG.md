@@ -6,14 +6,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Entries refer to issues of the original repository as kvspb#N
 (<https://github.com/kvspb/nginx-auth-ldap/issues/N>).
 
-## [Unreleased]
+## [1.0.0] - 2026-11-01
 
-The first release after a long pause of upstream development (last upstream
-change: 2024-04, pull request #255). It fixes the known crashes and security
-defects, makes configuration errors visible and adds an integration test
-suite.
+The first release since 0.1 (2011) and after a long pause of upstream
+development (last upstream change: 2024-04, pull request #255). It fixes the
+known crashes and security defects, those found by a security audit of the
+whole module, makes configuration errors visible and adds an integration
+test suite with continuous integration.
+
+### Upgrading from 0.x
+
+Run `nginx -t` with the new module before you reload: configurations that
+were silently accepted before may now be rejected (see "Changed"). Then
+check these changes in behaviour:
+
+- `referral on` (the old default) no longer follows referrals; the directive
+  is accepted and ignored. A search that the server answers with a referral
+  fails. Point `url` at a server that holds the entries (for Active
+  Directory, usually the global catalog on port 3268).
+- With `ssl_ca_file` or `ssl_ca_dir`, only those CAs are trusted; the system
+  store is used only when neither is set. With `ssl_check_cert on`, the
+  certificate must name the host in its subjectAltName; the subject CN is
+  not used.
+- A login whose user search finds more than one entry is denied. Make the
+  base DN and filter of the `url` select one entry per login.
+- When the LDAP servers do not answer in time (`request_timeout`), the
+  client gets `503 Service Unavailable` instead of a closed connection.
+- `require group` searches the group entry itself (scope base) instead of
+  one level below its parent, so the group DN in the configuration must be
+  the exact DN of the group entry.
+- `max_down_retries` now limits immediate reconnects per connection; after
+  that a connection waits for `reconnect_timeout`.
 
 ### Security
+
+Found by the security audit and code review of this release:
+
+- A request that timed out returned its connection to the pool with an
+  operation in flight: a pending user bind could bind the connection as that
+  user, and the next request ran with the user's rights.
+- A run of the phase engine while a bind was in flight took the answer of
+  the earlier search for the bind result: a wrong password was allowed and
+  could be cached.
+- `require valid_user "<dn template>"` put the raw login into the DN: a NUL
+  or DN metacharacters in the login bound another entry. The login is
+  escaped as an RFC 4514 value; a login with a NUL is denied.
+- A login whose search matched several entries was bound against the first
+  one, and its DN could leak into the search of the next server.
+- `require group` put part of the group DN into the filter unescaped; with a
+  request variable in the group DN a member of any group could pass.
+- The cache key ignored what the `require` templates expand to and hashed
+  raw server memory, so an ALLOW could be reused for another expansion.
+- Referrals were followed with blocking connects to any host the answer
+  named, stalling the worker.
+- `ssl_ca_file` and `ssl_ca_dir` added to the system trust store instead of
+  replacing it.
+
+Known before this release:
 
 - Escape the login name and the user DN in every LDAP search filter
   (RFC 4515). A client could inject filter syntax through the login, and
@@ -51,6 +100,15 @@ suite.
   - a waiting request is never removed from the queue twice.
 - With `max_down_retries`, a dropped LDAP connection is reconnected once,
   through the reconnect timer; the old code used a freed event.
+- A request freed while it waited for LDAP (worker_shutdown_timeout,
+  HTTP/2 stream teardown, another module) left dangling pointers in the
+  queue and on its connection.
+- An `ldap_server` block without `url` passed `nginx -t`, then every worker
+  died with SIGFPE.
+- `auth_ldap_servers` kept pointers into the array of servers, which moved
+  when more `ldap_server` blocks followed: crash on the first request.
+- `max_down_retries` never limited anything: a server that closed new
+  connections at once caused a busy reconnect loop.
 - A timed-out authentication is answered with `503 Service Unavailable`
   instead of closing the client connection without a response; keep-alive
   connections stay usable (kvspb#115).
@@ -73,7 +131,14 @@ suite.
     is not one parenthesized filter;
   - an `ssl_ca_file` or `ssl_ca_dir` that cannot be loaded (checked at
     startup instead of at the first handshake).
-- The source is split into files by subsystem under `src/`.
+- The source is split into files by subsystem under `src/`, and refactored
+  for less code and fewer special cases; OpenSSL before 1.1 is no longer
+  supported.
+- `referral on|off` is accepted and ignored (see "Upgrading from 0.x").
+- `auth_ldap_servers_size` only sets the initial capacity of the list of
+  servers; any number of `ldap_server` blocks works.
+- The README is rewritten from the code; every nginx example in it and
+  `example.conf` is checked with `nginx -t` by the test suite.
 
 ### Added
 
@@ -81,11 +146,14 @@ suite.
   AddressSanitizer and debug builds, coverage report and diff-based mutation
   testing: `make test`, `make test-matrix`, `make coverage`, `make mutate`.
   See `tests/README.md`.
+- GitHub Actions for pull requests and the main branches: lint, the suite on
+  nginx 1.22.1, 1.30.6 and 1.31.8, AddressSanitizer and debug builds, and
+  mutation testing of the changed lines.
 
 ## [0.1] - 2011-11-16
 
 First tagged version by Valery Komarov. Later upstream changes until 2024
 were not released under a version number.
 
-[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v0.1...HEAD
+[1.0.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v0.1...v1.0.0
 [0.1]: https://github.com/kvspb/nginx-auth-ldap/releases/tag/v0.1
