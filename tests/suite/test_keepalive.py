@@ -109,7 +109,8 @@ def test_keepalive_options(nginx, proxy, extra, expected):
 )
 def test_invalid_so_keepalive(nginx, value):
     result = nginx.check_config(
-        http=ldap_server("users", f"require valid_user;\nso_keepalive {value};"), server=protected_location("users")
+        http=ldap_server("users", f"require valid_user;\nso_keepalive {value};"),
+        server=protected_location("users"),
     )
 
     assert result.returncode == 1, result.stderr

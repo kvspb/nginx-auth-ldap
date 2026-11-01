@@ -18,7 +18,8 @@ def test_quit_while_the_server_is_down(nginx, closed_port):
     # Longer than the wait below: the worker must not wait for the timer.
     body = "require valid_user;\nconnect_timeout 1s;\nreconnect_timeout 30s;"
     server = nginx.start(
-        http=ldap_server("down", body, url=url_for("127.0.0.1", closed_port)), server=protected_location("down")
+        http=ldap_server("down", body, url=url_for("127.0.0.1", closed_port)),
+        server=protected_location("down"),
     )
 
     assert server.quit(timeout=5), "the worker kept reconnecting and never exited"

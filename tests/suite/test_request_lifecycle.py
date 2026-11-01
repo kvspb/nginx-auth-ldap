@@ -386,7 +386,9 @@ def test_request_freed_while_it_waits_is_forgotten(nginx, proxy):
     with LdapProxy() as silent:
         silent.hold()
         http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)) + ldap_server(
-            "silent", "require valid_user;\nconnections 1;\nbind_timeout 30s;", url=url_for("127.0.0.1", silent.port)
+            "silent",
+            "require valid_user;\nconnections 1;\nbind_timeout 30s;",
+            url=url_for("127.0.0.1", silent.port),
         )
         server = nginx.start(
             http=http, server=protected_location("proxied"), main="worker_shutdown_timeout 300ms;"
