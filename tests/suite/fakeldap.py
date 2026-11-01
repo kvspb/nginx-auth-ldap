@@ -18,6 +18,9 @@ SEARCH_REQUEST = 0x63
 SEARCH_ENTRY = 0x64
 SEARCH_DONE = 0x65
 UNBIND_REQUEST = 0x42
+EXTENDED_REQUEST = 0x77
+EXTENDED_RESPONSE = 0x78
+NOT_LDAP = -1
 
 
 def ber(tag: int, content: bytes) -> bytes:
@@ -109,6 +112,10 @@ class FakeLdapServer:
     to send or None to close the connection instead."""
 
     def __init__(self) -> None:
+        # protocolOp tags of the LDAP requests received, in order; NOT_LDAP
+        # when something that is not an LDAP message arrived (a TLS record).
+        self.requests: list[int] = []
+        self.connections = 0
         self._listener = socket.create_server(("127.0.0.1", 0))
         self.port: int = self._listener.getsockname()[1]
         self._clients: list[socket.socket] = []
@@ -128,6 +135,10 @@ class FakeLdapServer:
     def answer_search(self, msgid: int, base: str) -> bytes | None:
         return message(msgid, result(SEARCH_DONE, 0))
 
+    def answer_extended(self, msgid: int) -> bytes | None:
+        """Refuse every extended operation (protocolError)."""
+        return message(msgid, result(EXTENDED_RESPONSE, 2))
+
     def _accept(self) -> None:
         while True:
             try:
@@ -135,16 +146,23 @@ class FakeLdapServer:
             except OSError:
                 return
             self._clients.append(client)
+            self.connections += 1
             threading.Thread(target=self._serve, args=(client,), daemon=True).start()
 
     def _serve(self, client: socket.socket) -> None:
         try:
             while (data := read_element(client)) is not None:
+                if data[0] != 0x30:
+                    self.requests.append(NOT_LDAP)
+                    return
                 msgid, op, content = parse_message(data)
+                self.requests.append(op)
                 if op == BIND_REQUEST:
                     answer = self.answer_bind(msgid, bind_dn(content))
                 elif op == SEARCH_REQUEST:
                     answer = self.answer_search(msgid, search_base(content))
+                elif op == EXTENDED_REQUEST:
+                    answer = self.answer_extended(msgid)
                 elif op == UNBIND_REQUEST:
                     return
                 else:

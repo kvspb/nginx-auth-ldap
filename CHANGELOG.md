@@ -161,6 +161,10 @@ Known before this release:
 
 ### Added
 
+- StartTLS on `ldap://` urls with `starttls on` (kvspb#44, kvspb#175).
+  Nothing is sent in clear before the TLS handshake, and a server that
+  refuses StartTLS is never sent a bind: there is no fallback to plain LDAP.
+  `ssl_check_cert`, `ssl_ca_file` and `ssl_ca_dir` apply as for `ldaps://`.
 - Integration test suite (Docker Compose, OpenLDAP, pytest) with ldaps,
   AddressSanitizer and debug builds, coverage report and diff-based mutation
   testing: `make test`, `make test-matrix`, `make coverage`, `make mutate`.

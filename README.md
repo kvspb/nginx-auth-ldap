@@ -277,7 +277,8 @@ Default: -
 
 Where and how to search for users (an RFC 4516 LDAP URL). Required.
 
-- `ldap://` or `ldaps://` (LDAP over TLS). StartTLS is not supported.
+- `ldap://` or `ldaps://` (LDAP over TLS). For StartTLS on `ldap://`, see
+  `starttls`.
 - `host`: a host name, an IPv4 address, or an IPv6 address in brackets, for
   example `ldaps://[2001:db8::10]/...`. A host name is resolved once, when
   nginx reads the configuration; with several addresses each connection
@@ -444,6 +445,21 @@ to the next server in `auth_ldap_servers`, with that server's
 `request_timeout`; after the last server it is answered with
 `503 Service Unavailable`. Must be greater than 0.
 
+#### starttls
+
+```text
+Syntax:  starttls on | off;
+Default: starttls off;
+```
+
+For `ldap://`: ask for TLS with the StartTLS extended operation (RFC 4511,
+section 4.14) right after connecting, and send the bind as `binddn` and
+every search and user bind only over TLS. A server that refuses StartTLS or
+does not complete the TLS handshake is treated as unreachable: the module
+never falls back to plain LDAP. `ssl_check_cert`, `ssl_ca_file` and
+`ssl_ca_dir` apply as for `ldaps://`. With an `ldaps://` url, `starttls on`
+fails the configuration check.
+
 #### ssl_check_cert
 
 ```text
@@ -451,7 +467,7 @@ Syntax:  ssl_check_cert on | off;
 Default: ssl_check_cert off;
 ```
 
-For `ldaps://`: verify the server certificate. The chain must lead to a
+For `ldaps://` and `starttls on`: verify the server certificate. The chain must lead to a
 trusted CA, and the certificate must name the host of the `url` in a DNS
 subjectAltName, or the address connected to in an IP subjectAltName. The
 subject CN is not used. With `off` any certificate is accepted, which
@@ -467,8 +483,8 @@ Default: -
 Trust the CA certificates in this PEM file for `ssl_check_cert`. Use an
 absolute path. With `ssl_ca_file` or `ssl_ca_dir` set, only these CAs are
 trusted; without both, the default CA store of OpenSSL is used. A file that
-cannot be loaded fails the configuration check. Only read for `ldaps://`
-with `ssl_check_cert on`.
+cannot be loaded fails the configuration check. Only read for `ldaps://` or
+`starttls on`, with `ssl_check_cert on`.
 
 #### ssl_ca_dir
 
@@ -661,6 +677,31 @@ server {
 
 For an address in the `url`, the certificate needs that address as an IP
 subjectAltName.
+
+### StartTLS
+
+The same verification on port 389, for servers that offer StartTLS instead
+of ldaps:
+
+```nginx
+ldap_server starttls {
+    url "ldap://ldap.example.com/ou=people,dc=example,dc=com?uid?sub?(objectClass=inetOrgPerson)";
+    include /etc/nginx/ldap/bind.conf;
+    starttls on;
+    ssl_check_cert on;
+    ssl_ca_file /etc/nginx/ldap/ca.pem;
+}
+
+server {
+    listen 80;
+
+    location / {
+        auth_ldap "Restricted";
+        auth_ldap_servers starttls;
+        root /var/www/html;
+    }
+}
+```
 
 ### Several servers
 

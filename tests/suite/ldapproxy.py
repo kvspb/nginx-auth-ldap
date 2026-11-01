@@ -50,6 +50,8 @@ class LdapProxy:
         self._threads: list[threading.Thread] = []
         self._sockets: list[socket.socket] = []
         self.connections = 0
+        # Everything nginx sent, to check what crosses the wire in clear.
+        self.sent = bytearray()
         self._accept_thread = threading.Thread(target=self._accept, daemon=True)
         self._accept_thread.start()
 
@@ -155,6 +157,7 @@ class LdapProxy:
                     data = client.recv(65536)
                     if not data:
                         return
+                    self.sent += data
                     server.sendall(data)
                 if server in readable:
                     data = server.recv(65536)

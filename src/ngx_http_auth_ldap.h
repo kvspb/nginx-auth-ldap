@@ -71,11 +71,12 @@ typedef struct {
     ngx_str_t group_attribute;
     ngx_flag_t group_attribute_dn;
 
+    ngx_flag_t starttls;            /* StartTLS on an ldap:// url */
     ngx_flag_t ssl_check_cert;
     ngx_str_t ssl_ca_dir;
     ngx_str_t ssl_ca_file;
 #if (NGX_OPENSSL)
-    ngx_ssl_t ssl;                  /* ldaps:// only, one per server */
+    ngx_ssl_t ssl;                  /* ldaps:// or StartTLS, one per server */
 #endif
 
     ngx_array_t *require_group;     /* array of ngx_http_complex_value_t */
@@ -157,6 +158,7 @@ typedef struct {
 
 typedef enum {
     STATE_DISCONNECTED,
+    STATE_STARTTLS,          /* waiting for the StartTLS response */
     STATE_INITIAL_BINDING,
     STATE_CONNECTING,
     STATE_READY,

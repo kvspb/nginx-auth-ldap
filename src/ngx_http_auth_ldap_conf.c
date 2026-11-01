@@ -38,6 +38,7 @@ static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf);
 static char * ngx_http_auth_ldap_parse_flag(ngx_conf_t *cf, ngx_flag_t *flag);
 static ngx_int_t ngx_http_auth_ldap_check_filter(const char *filter);
 #if (NGX_OPENSSL)
+static char * ngx_http_auth_ldap_create_ssl(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_load_ca(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 #endif
 
@@ -46,7 +47,7 @@ static char * ngx_http_auth_ldap_load_ca(ngx_conf_t *cf, ngx_http_auth_ldap_serv
 static const char *ngx_http_auth_ldap_single_value_directives[] = {
     "url", "binddn", "binddn_passwd", "group_attribute",
     "group_attribute_is_dn", "satisfy", "referral", "max_down_retries",
-    "connections", "ssl_check_cert", "ssl_ca_dir", "ssl_ca_file",
+    "connections", "starttls", "ssl_check_cert", "ssl_ca_dir", "ssl_ca_file",
     "connect_timeout", "reconnect_timeout", "bind_timeout",
     "request_timeout", "include", NULL
 };
@@ -141,12 +142,68 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         return NGX_CONF_ERROR;
     }
 
+    if (server->starttls) {
+        if (ngx_strcmp(server->ludpp->lud_scheme, "ldap") != 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                "http_auth_ldap: \"starttls\" needs an ldap:// url in ldap_server \"%V\"",
+                &server->alias);
+            return NGX_CONF_ERROR;
+        }
+#if (NGX_OPENSSL)
+        rv = ngx_http_auth_ldap_create_ssl(cf, server);
+        if (rv != NGX_CONF_OK) {
+            return rv;
+        }
+#else
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: \"starttls\" needs nginx built with OpenSSL");
+        return NGX_CONF_ERROR;
+#endif
+    }
+
 #if (NGX_OPENSSL)
     return ngx_http_auth_ldap_load_ca(cf, server);
 #else
     return NGX_CONF_OK;
 #endif
 }
+
+#if (NGX_OPENSSL)
+/**
+ * Create the SSL context of a server for ldaps:// or StartTLS, once.
+ */
+static char *
+ngx_http_auth_ldap_create_ssl(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server)
+{
+    /* SSL 2.0 and 3.0 are broken (RFC 6176, RFC 7568). */
+    ngx_uint_t protos = NGX_SSL_TLSv1 | NGX_SSL_TLSv1_1 | NGX_SSL_TLSv1_2
+#ifdef NGX_SSL_TLSv1_3
+        | NGX_SSL_TLSv1_3
+#endif
+        ;
+    ngx_pool_cleanup_t *cln;
+
+    if (server->ssl.ctx != NULL) {
+        return NGX_CONF_OK;
+    }
+
+    /* One context per server: CA locations must not add up (kvspb#258). */
+    server->ssl.log = cf->log;
+    if (ngx_ssl_create(&server->ssl, protos, NULL) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    cln = ngx_pool_cleanup_add(cf->pool, 0);
+    if (cln == NULL) {
+        ngx_ssl_cleanup_ctx(&server->ssl);
+        return NGX_CONF_ERROR;
+    }
+    cln->handler = ngx_ssl_cleanup_ctx;
+    cln->data = &server->ssl;
+
+    return NGX_CONF_OK;
+}
+#endif
 
 #if (NGX_OPENSSL)
 /**
@@ -250,6 +307,8 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
             return NGX_CONF_ERROR;
         }
         server->connections = i;
+    } else if (ngx_strcmp(value[0].data, "starttls") == 0) {
+        return ngx_http_auth_ldap_parse_flag(cf, &server->starttls);
     } else if (ngx_strcmp(value[0].data, "ssl_check_cert") == 0) {
         return ngx_http_auth_ldap_parse_flag(cf, &server->ssl_check_cert);
     } else if (ngx_strcmp(value[0].data, "ssl_ca_dir") == 0) {
@@ -474,33 +533,7 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
         return NGX_CONF_OK;
 #if (NGX_OPENSSL)
     } else if (ngx_strcmp(server->ludpp->lud_scheme, "ldaps") == 0) {
-        /* SSL 2.0 and 3.0 are broken (RFC 6176, RFC 7568). */
-        ngx_uint_t protos = NGX_SSL_TLSv1 | NGX_SSL_TLSv1_1 | NGX_SSL_TLSv1_2
-#ifdef NGX_SSL_TLSv1_3
-            | NGX_SSL_TLSv1_3
-#endif
-            ;
-        ngx_pool_cleanup_t *cln;
-
-        if (server->ssl.ctx != NULL) {
-            return NGX_CONF_OK;
-        }
-
-        /* One context per server: CA locations must not add up (kvspb#258). */
-        server->ssl.log = cf->log;
-        if (ngx_ssl_create(&server->ssl, protos, NULL) != NGX_OK) {
-            return NGX_CONF_ERROR;
-        }
-
-        cln = ngx_pool_cleanup_add(cf->pool, 0);
-        if (cln == NULL) {
-            ngx_ssl_cleanup_ctx(&server->ssl);
-            return NGX_CONF_ERROR;
-        }
-        cln->handler = ngx_ssl_cleanup_ctx;
-        cln->data = &server->ssl;
-
-        return NGX_CONF_OK;
+        return ngx_http_auth_ldap_create_ssl(cf, server);
 #endif
     } else {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Protocol \"%s://\" is not supported.",

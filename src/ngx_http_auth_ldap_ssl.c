@@ -26,7 +26,7 @@
  * SUCH DAMAGE.
  */
 
-/* TLS handshake and certificate verification for ldaps://. */
+/* TLS handshake and certificate verification for ldaps:// and StartTLS. */
 
 #include "ngx_http_auth_ldap.h"
 

@@ -32,6 +32,7 @@
 
 static void ngx_http_auth_ldap_reconnect_handler(ngx_event_t *);
 static void ngx_http_auth_ldap_wake_request(ngx_http_request_t *r);
+static void ngx_http_auth_ldap_initial_bind(ngx_http_auth_ldap_connection_t *c);
 
 /*** Asynchronous LDAP connection handling ***/
 
@@ -237,12 +238,18 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
     ngx_connection_t *conn;
     Sockbuf *sb;
     ngx_int_t rc;
-    struct berval cred;
 
     conn = c->conn.connection;
-    ngx_del_timer(conn->read);
+    if (conn->read->timer_set) {
+        ngx_del_timer(conn->read);
+    }
     conn->write->handler = ngx_http_auth_ldap_dummy_write_handler;
 
+    /* Called again after the StartTLS handshake: OpenLDAP is set up. */
+    if (c->ld != NULL) {
+        ngx_http_auth_ldap_initial_bind(c);
+        return;
+    }
 
     /* Initialize OpenLDAP on the connection */
 
@@ -278,8 +285,34 @@ ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c)
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connection initialized");
 
+#if (NGX_OPENSSL)
+    if (c->server->starttls) {
+        /*
+         * Ask for TLS before anything else is sent; the handshake runs on
+         * this connection when the server agrees (RFC 4511, 4.14).
+         */
+        rc = ldap_extended_operation(c->ld, LDAP_EXOP_START_TLS, NULL, NULL, NULL, &c->msgid);
+        if (rc != LDAP_SUCCESS) {
+            ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: StartTLS request failed (%d: %s)",
+                rc, ldap_err2string(rc));
+            ngx_http_auth_ldap_close_connection(c);
+            return;
+        }
+        c->state = STATE_STARTTLS;
+        ngx_add_timer(conn->read, c->server->bind_timeout);
+        return;
+    }
+#endif
 
-    /* Perform initial bind to the server */
+    ngx_http_auth_ldap_initial_bind(c);
+}
+
+/* Bind as binddn: the connection becomes usable when the server agrees. */
+static void
+ngx_http_auth_ldap_initial_bind(ngx_http_auth_ldap_connection_t *c)
+{
+    ngx_int_t rc;
+    struct berval cred;
 
     cred.bv_val = (char *) c->server->bind_dn_passwd.data;
     cred.bv_len = c->server->bind_dn_passwd.len;
@@ -413,6 +446,32 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
         }
 
         switch (c->state) {
+#if (NGX_OPENSSL)
+            case STATE_STARTTLS:
+                if (ldap_msgtype(result) != LDAP_RES_EXTENDED) {
+                    break;
+                }
+                ngx_del_timer(conn->read);
+                ldap_msgfree(result);
+                if (error_code != LDAP_SUCCESS) {
+                    /* Never fall back to plain LDAP. */
+                    ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: StartTLS refused (%d: %s [%s])",
+                        error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
+                    ldap_memfree(error_msg);
+                    ngx_http_auth_ldap_close_connection(c);
+                    return;
+                }
+                ldap_memfree(error_msg);
+                /*
+                 * The handshake calls connection_established() again. A
+                 * server that never answers it is given up after
+                 * connect_timeout, as for ldaps://.
+                 */
+                ngx_add_timer(conn->read, c->server->connect_timeout);
+                ngx_http_auth_ldap_ssl_handshake(c);
+                return;
+#endif
+
             case STATE_INITIAL_BINDING:
                 if (ldap_msgtype(result) != LDAP_RES_BIND) {
                     break;
