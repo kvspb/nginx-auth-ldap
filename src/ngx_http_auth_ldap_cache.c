@@ -81,7 +81,6 @@ ngx_http_auth_ldap_check_cache(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
 {
     ngx_http_auth_ldap_cache_elt_t *elt;
     ngx_md5_t md5ctx;
-    ngx_msec_t time_limit;
     ngx_uint_t i;
 
     ctx->cache_small_hash = ngx_murmur_hash2(r->headers_in.user.data, r->headers_in.user.len) ^ (uint32_t) (ngx_uint_t) server;
@@ -118,11 +117,16 @@ ngx_http_auth_ldap_check_cache(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
 
     ctx->cache_bucket = &cache->buckets[ctx->cache_small_hash % cache->num_buckets];
 
+    /*
+     * Compare ages, not times: ngx_current_msec counts from the boot of the
+     * host, and "now - expiration" wrapped below zero while the host had
+     * been up for less than the expiration time, so nothing was ever used.
+     * An unused entry (time 0) never matches the hashes.
+     */
     elt = ctx->cache_bucket;
-    time_limit = ngx_current_msec - cache->expiration_time;
     for (i = 0; i < cache->elts_per_bucket; i++, elt++) {
         if (elt->small_hash == ctx->cache_small_hash &&
-                elt->time > time_limit &&
+                ngx_current_msec - elt->time < cache->expiration_time &&
                 memcmp(elt->big_hash, ctx->cache_big_hash, 16) == 0) {
             return elt->outcome;
         }

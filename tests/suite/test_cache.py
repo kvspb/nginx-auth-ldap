@@ -124,3 +124,28 @@ def test_every_slot_of_a_bucket_is_used(nginx, proxy):
     # Answered from the cache (401), or held until request_timeout (503).
     with proxy.holding():
         assert [server.get(auth=("alice", secret)).status_code for secret in wrong] == [503] + [401] * 8
+
+
+@pytest.mark.parametrize(
+    ("expiration", "wait", "expected"),
+    [
+        # The age limit was computed as now - expiration on the monotonic
+        # clock of nginx, which counts from the boot of the host: while the
+        # host had been up for less than the expiration time it wrapped below
+        # zero, and no cached outcome was ever used (fresh CI runners, any
+        # host after a reboot). Ten years is longer than any uptime.
+        pytest.param("3650d", 0, 200, id="longer-than-the-uptime"),
+        pytest.param("1s", 1.2, 503, id="expired"),
+    ],
+)
+def test_cache_expiration(nginx, proxy, expiration, wait, expected):
+    http = f"auth_ldap_cache_enabled on;\nauth_ldap_cache_expiration_time {expiration};\n" + ldap_server(
+        "cached", "require valid_user;\nrequest_timeout 1s;", url=url_for("127.0.0.1", proxy.port)
+    )
+    server = nginx.start(http=http, server=protected_location("cached"))
+    assert server.get(auth=creds("alice")).status_code == 200
+    time.sleep(wait)
+
+    # Answered from the cache (200), or held until request_timeout (503).
+    with proxy.holding():
+        assert server.get(auth=creds("alice")).status_code == expected

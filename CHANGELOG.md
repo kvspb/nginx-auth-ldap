@@ -8,6 +8,13 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+### Fixed
+
+- The cache was never used while the host had been up for less than
+  `auth_ldap_cache_expiration_time`, for example during the first hour
+  after a reboot with an expiration of `1h`: the age limit of an entry
+  was computed on a clock that starts at boot and wrapped below zero.
+
 ## [1.0.0] - 2026-11-01
 
 The first release since 0.1 (2011) and after a long pause of upstream
