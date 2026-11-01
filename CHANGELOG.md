@@ -22,8 +22,9 @@ check these changes in behaviour:
 
 - `referral on` (the old default) no longer follows referrals; the directive
   is accepted and ignored. A search that the server answers with a referral
-  fails. Point `url` at a server that holds the entries (for Active
-  Directory, usually the global catalog on port 3268).
+  is answered with `503` and the referral is logged. Point `url` at a server
+  that holds the entries (for Active Directory, usually the Global Catalog
+  on port 3268).
 - With `ssl_ca_file` or `ssl_ca_dir`, only those CAs are trusted; the system
   store is used only when neither is set. With `ssl_check_cert on`, the
   certificate must name the host in its subjectAltName; the subject CN is
@@ -34,17 +35,22 @@ check these changes in behaviour:
 - A login whose user search finds more than one entry is denied. Make the
   base DN and filter of the `url` select one entry per login.
 - When the LDAP servers cannot decide (they do not answer in time, the
-  connection breaks, or they answer busy, unavailable, over a limit or
-  other), the client gets `503 Service Unavailable` instead of `401` or a
-  closed connection, and nothing is cached.
+  connection breaks, or they answer busy, unavailable, over a limit, other
+  or with a referral), the client gets `503 Service Unavailable` instead of
+  `401` or a closed connection, and nothing is cached.
+- The module runs after the other access modules (`allow`/`deny`,
+  `auth_basic`, `auth_request`). With nginx `satisfy all`, a request they
+  deny is no longer sent to LDAP; with `satisfy any`, one they admit is not
+  either.
 - `require group` searches the group entry itself (scope base) instead of
   one level below its parent, so the group DN in the configuration must be
   the exact DN of the group entry.
 - `request_timeout` applies to each server in turn: when it expires the
   request goes on to the next server, so the longest wait is the sum of the
   timeouts of all servers in `auth_ldap_servers`.
-- `max_down_retries` now limits immediate reconnects per connection; after
-  that a connection waits for `reconnect_timeout`.
+- `max_down_retries` now limits immediate reconnects of a connection that
+  broke under a request; after that it waits for `reconnect_timeout`. An
+  idle connection closed by the server is always reconnected at once.
 
 ### Security
 
@@ -107,7 +113,7 @@ Known before this release:
 - Worker crashes in the connection pool (kvspb#62, kvspb#99, kvspb#104,
   kvspb#118, kvspb#132):
   - a request whose LDAP connection is closed under it is released at once
-    and fails over or answers 401, instead of returning the connection to
+    and fails over or answers 503, instead of returning the connection to
     the pool a second time after `request_timeout`;
   - a waiting request is never removed from the queue twice.
 - A worker hung for good when an LDAP connection reset by the server was
@@ -233,12 +239,13 @@ Known before this release:
   refuses StartTLS is never sent a bind: there is no fallback to plain LDAP.
   `ssl_check_cert`, `ssl_ca_file` and `ssl_ca_dir` apply as for `ldaps://`.
 - Integration test suite (Docker Compose, OpenLDAP, pytest) with ldaps,
-  AddressSanitizer and debug builds, coverage report and diff-based mutation
-  testing: `make test`, `make test-matrix`, `make coverage`, `make mutate`.
-  See `tests/README.md`.
+  AddressSanitizer and debug builds, a dynamic module, Alpine Linux (musl)
+  and OpenSSL 1.1.1 builds, coverage report and diff-based mutation
+  testing: `make test`, `make test-matrix`, `make test-builds`,
+  `make coverage`, `make mutate`. See `tests/README.md`.
 - GitHub Actions for pull requests and the main branches: lint, the suite on
-  nginx 1.22.1, 1.30.6 and 1.31.8, AddressSanitizer and debug builds, and
-  mutation testing of the changed lines.
+  nginx 1.22.1, 1.30.6 and 1.31.8, AddressSanitizer, debug, dynamic, Alpine
+  and OpenSSL 1.1.1 builds, and mutation testing of the changed lines.
 
 ## [0.1] - 2011-11-16
 

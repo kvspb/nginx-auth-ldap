@@ -1190,7 +1190,11 @@ GitHub Actions runs the same checks on every pull request
 ## Changes
 
 See [CHANGELOG.md](CHANGELOG.md), including the notes on upgrading from
-earlier versions.
+earlier versions. Releases follow [Semantic Versioning](https://semver.org/):
+a release that changes how an existing configuration behaves or what it
+accepts raises the major version. Each release is a `vX.Y.Z` tag, with its
+source archive on the
+[releases page](https://github.com/kvspb/nginx-auth-ldap/releases).
 
 ## Credits and license
 
