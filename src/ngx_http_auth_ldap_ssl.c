@@ -31,17 +31,11 @@
 #include "ngx_http_auth_ldap.h"
 
 #if (NGX_OPENSSL)
-static ngx_int_t ngx_http_auth_ldap_restore_handlers(ngx_connection_t *conn);
-#if OPENSSL_VERSION_NUMBER >= 0x10002000
 #include <openssl/x509v3.h>
-#ifdef X509_CHECK_FLAG_NEVER_CHECK_SUBJECT
-#define NGX_HTTP_AUTH_LDAP_X509_CHECK_FLAGS X509_CHECK_FLAG_NEVER_CHECK_SUBJECT
-#else
-#define NGX_HTTP_AUTH_LDAP_X509_CHECK_FLAGS 0
-#endif
+
+static ngx_int_t ngx_http_auth_ldap_restore_handlers(ngx_connection_t *conn);
 static ngx_int_t ngx_http_auth_ldap_check_peer(ngx_http_auth_ldap_connection_t *c,
     ngx_connection_t *conn);
-#endif
 #endif
 
 #if (NGX_OPENSSL)
@@ -74,32 +68,29 @@ ngx_http_auth_ldap_restore_handlers(ngx_connection_t *conn)
 
 #if (NGX_OPENSSL)
 static void
-ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn, ngx_flag_t validate)
+ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn)
 {
     ngx_http_auth_ldap_connection_t *c;
+
     c = conn->data;
 
-    if (conn->ssl->handshaked) {
-        #if OPENSSL_VERSION_NUMBER >= 0x10002000
-        if (validate && ngx_http_auth_ldap_check_peer(c, conn) != NGX_OK) {
-            ngx_http_auth_ldap_close_connection(c);
-            return;
-        }
-        #endif
-
-        // handshaked validation successful -- or not required in the first place
-        conn->read->handler = &ngx_http_auth_ldap_read_handler;
-        ngx_http_auth_ldap_restore_handlers(conn);
-        ngx_http_auth_ldap_connection_established(c);
+    if (!conn->ssl->handshaked) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: SSL handshake failed");
+        ngx_http_auth_ldap_close_connection(c);
         return;
     }
-    else { // handshake failed
-      ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: SSL handshake failed");
-      ngx_http_auth_ldap_close_connection(c);
+
+    /* The CA certificates were loaded into c->ssl at configuration time. */
+    if (c->server->ssl_check_cert && ngx_http_auth_ldap_check_peer(c, conn) != NGX_OK) {
+        ngx_http_auth_ldap_close_connection(c);
+        return;
     }
+
+    conn->read->handler = &ngx_http_auth_ldap_read_handler;
+    ngx_http_auth_ldap_restore_handlers(conn);
+    ngx_http_auth_ldap_connection_established(c);
 }
 
-#if OPENSSL_VERSION_NUMBER >= 0x10002000
 /*
  * Verify the certificate of the LDAP server: a trusted chain, and the host
  * name of the url or the address connected to in its subjectAltName.
@@ -134,7 +125,7 @@ ngx_http_auth_ldap_check_peer(ngx_http_auth_ldap_connection_t *c,
 
     /* RFC 9525: the subject CN is not a reference identifier. */
     if (X509_check_host(cert, c->server->ludpp->lud_host, 0,
-                        NGX_HTTP_AUTH_LDAP_X509_CHECK_FLAGS, NULL) == 1)
+                        X509_CHECK_FLAG_NEVER_CHECK_SUBJECT, NULL) == 1)
     {
         rc = NGX_OK;
         goto done;
@@ -169,25 +160,16 @@ done:
     X509_free(cert);
     return rc;
 }
-#endif
-
-static void
-ngx_http_auth_ldap_ssl_handshake_validating_handler(ngx_connection_t *conn)
-{ ngx_http_auth_ldap_ssl_handshake_handler(conn, 1); }
-
-static void
-ngx_http_auth_ldap_ssl_handshake_non_validating_handler(ngx_connection_t *conn)
-{ ngx_http_auth_ldap_ssl_handshake_handler(conn, 0); }
-
-typedef void (*ngx_http_auth_ldap_ssl_callback)(ngx_connection_t *conn);
 
 void
 ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
 {
+    ngx_connection_t *conn;
     ngx_int_t rc;
 
-    c->conn.connection->pool = c->pool;
-    rc = ngx_ssl_create_connection(c->ssl, c->conn.connection, NGX_SSL_BUFFER | NGX_SSL_CLIENT);
+    conn = c->conn.connection;
+    conn->pool = c->pool;
+    rc = ngx_ssl_create_connection(c->ssl, conn, NGX_SSL_BUFFER | NGX_SSL_CLIENT);
     if (rc != NGX_OK) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: SSL initialization failed");
         ngx_http_auth_ldap_close_connection(c);
@@ -195,25 +177,13 @@ ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
     }
 
     c->log->action = "SSL handshaking to LDAP server";
-    ngx_connection_t *transport = c->conn.connection;
 
-    ngx_http_auth_ldap_ssl_callback callback;
-    /* The CA certificates were loaded into c->ssl at configuration time. */
-    if (c->server->ssl_check_cert) {
-      // use validating version of next function
-      callback = &ngx_http_auth_ldap_ssl_handshake_validating_handler;
-    } else {
-      // use non-validating version of next function
-      callback = &ngx_http_auth_ldap_ssl_handshake_non_validating_handler;
-    }
-
-    rc = ngx_ssl_handshake(transport);
+    rc = ngx_ssl_handshake(conn);
     if (rc == NGX_AGAIN) {
-        transport->ssl->handler = callback;
+        conn->ssl->handler = ngx_http_auth_ldap_ssl_handshake_handler;
         return;
     }
 
-    (*callback)(transport);
-    return;
+    ngx_http_auth_ldap_ssl_handshake_handler(conn);
 }
 #endif

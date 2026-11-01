@@ -91,9 +91,29 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
         ctx->c = NULL;
         ctx->replied = 1;
         ctx->error_code = LDAP_SERVER_DOWN;
-        ngx_str_null(&ctx->error_msg);
         ngx_http_auth_ldap_wake_request(ctx->r);
     }
+}
+
+/*
+ * Close the connection of a request whose operation may still be in flight
+ * or whose connection is still bound as the user: it is never handed to the
+ * next request, the reconnect binds a fresh one as binddn. The request is
+ * detached first, so that closing the connection does not wake it again.
+ */
+void
+ngx_http_auth_ldap_close_request_connection(ngx_http_auth_ldap_ctx_t *ctx)
+{
+    ngx_http_auth_ldap_connection_t *c;
+
+    c = ctx->c;
+    if (c == NULL) {
+        return;
+    }
+
+    ctx->c = NULL;
+    c->rctx = NULL;
+    ngx_http_auth_ldap_close_connection(c);
 }
 
 static void
@@ -183,7 +203,7 @@ ngx_http_auth_ldap_unqueue_request(ngx_http_auth_ldap_ctx_t *ctx)
 }
 
 static void
-ngx_http_auth_ldap_reply_connection(ngx_http_auth_ldap_connection_t *c, int error_code, char* error_msg)
+ngx_http_auth_ldap_reply_connection(ngx_http_auth_ldap_connection_t *c, int error_code)
 {
     ngx_http_auth_ldap_ctx_t *ctx = c->rctx;
 
@@ -192,14 +212,6 @@ ngx_http_auth_ldap_reply_connection(ngx_http_auth_ldap_connection_t *c, int erro
 
     ctx->replied = 1;
     ctx->error_code = error_code;
-    if (error_msg) {
-        ctx->error_msg.len = ngx_strlen(error_msg);
-        ctx->error_msg.data = ngx_palloc(ctx->r->pool, ctx->error_msg.len);
-        ngx_memcpy(ctx->error_msg.data, error_msg, ctx->error_msg.len);
-    } else {
-        ctx->error_msg.len = 0;
-        ctx->error_msg.data = NULL;
-    }
 
     ngx_http_auth_ldap_wake_request(ctx->r);
 }
@@ -422,7 +434,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 }
                 ngx_log_debug3(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received bind response (%d: %s [%s])",
                     error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
-                ngx_http_auth_ldap_reply_connection(c, error_code, error_msg);
+                ngx_http_auth_ldap_reply_connection(c, error_code);
                 break;
 
             case STATE_SEARCHING:
@@ -442,17 +454,8 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 } else if (ldap_msgtype(result) == LDAP_RES_SEARCH_RESULT) {
                     ngx_log_debug3(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received search result (%d: %s [%s])",
                         error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
-                    ngx_http_auth_ldap_reply_connection(c, error_code, error_msg);
+                    ngx_http_auth_ldap_reply_connection(c, error_code);
                 }
-                break;
-
-            case STATE_COMPARING:
-                if (ldap_msgtype(result) != LDAP_RES_COMPARE) {
-                    break;
-                }
-                ngx_log_debug3(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received comparison result (%d: %s [%s])",
-                    error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
-                ngx_http_auth_ldap_reply_connection(c, error_code, error_msg);
                 break;
 
             default:
@@ -506,9 +509,6 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
 
     conn = pconn->connection;
     conn->data = c;
-#if (NGX_OPENSSL)
-    conn->pool = c->pool;
-#endif
     conn->write->handler = ngx_http_auth_ldap_connect_handler;
     conn->read->handler = ngx_http_auth_ldap_read_handler;
     ngx_add_timer(conn->read, c->server->connect_timeout);
@@ -544,7 +544,7 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
 
     halmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_auth_ldap_module);
     if (halmcf == NULL || halmcf->servers == NULL) {
-	return NGX_OK;
+        return NGX_OK;
     }
 
     option = LDAP_VERSION3;

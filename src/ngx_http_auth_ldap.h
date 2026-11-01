@@ -35,22 +35,6 @@
 #include <ngx_md5.h>
 #include <nginx.h>
 #include <ldap.h>
-#include <openssl/opensslv.h>
-
-// used for manual warnings
-#define XSTR(x) STR(x)
-#define STR(x) #x
-// make sure manual warnings don't get escalated to errors
-#ifdef __clang__
-#pragma clang diagnostic warning "-W#warnings"
-#else
-#ifdef __GNUC__
-#if GNUC > 4
-#pragma GCC diagnostic warning "-Wcpp"
-#endif
-#endif
-#endif
-// TODO: do the same stuff for MSVC and/or other compilers
 
 
 #ifndef LDAP_PROTO_EXT
@@ -95,11 +79,9 @@ typedef struct {
 
     ngx_array_t *require_group;     /* array of ngx_http_complex_value_t */
     ngx_array_t *require_user;      /* array of ngx_http_complex_value_t */
-    ngx_flag_t require_valid_user;
     ngx_http_complex_value_t require_valid_user_dn;
     ngx_uint_t remote_user_index;   /* $remote_user, with the DN template */
     ngx_flag_t satisfy_all;
-    ngx_flag_t referral;
 
     ngx_uint_t connections;
     ngx_uint_t max_down_retries;
@@ -161,11 +143,9 @@ typedef struct {
     ngx_queue_t queue;
     int replied;
     int error_code;
-    ngx_str_t error_msg;
     ngx_str_t dn;
     ngx_uint_t search_entries;
     ngx_str_t user_dn;
-    ngx_str_t group_dn;
 
     ngx_http_auth_ldap_cache_elt_t *cache_bucket;
     u_char cache_big_hash[16];
@@ -178,8 +158,7 @@ typedef enum {
     STATE_CONNECTING,
     STATE_READY,
     STATE_BINDING,
-    STATE_SEARCHING,
-    STATE_COMPARING
+    STATE_SEARCHING
 } ngx_http_auth_ldap_connection_state_t;
 
 typedef struct ngx_http_auth_ldap_connection {
@@ -220,6 +199,7 @@ void ngx_http_auth_ldap_update_cache(ngx_http_auth_ldap_ctx_t *ctx, ngx_http_aut
 
 /* ngx_http_auth_ldap_connection.c */
 void ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c);
+void ngx_http_auth_ldap_close_request_connection(ngx_http_auth_ldap_ctx_t *ctx);
 int ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx);
 void ngx_http_auth_ldap_return_connection(ngx_http_auth_ldap_connection_t *c);
 void ngx_http_auth_ldap_unqueue_request(ngx_http_auth_ldap_ctx_t *ctx);

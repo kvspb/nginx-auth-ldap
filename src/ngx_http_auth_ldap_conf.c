@@ -34,7 +34,7 @@ static char * ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dumm
 static char * ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
-static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
+static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf);
 static char * ngx_http_auth_ldap_parse_flag(ngx_conf_t *cf, ngx_flag_t *flag);
 static ngx_int_t ngx_http_auth_ldap_check_filter(const char *filter);
 #if (NGX_OPENSSL)
@@ -49,6 +49,24 @@ static const char *ngx_http_auth_ldap_single_value_directives[] = {
     "connections", "ssl_check_cert", "ssl_ca_dir", "ssl_ca_file",
     "connect_timeout", "reconnect_timeout", "bind_timeout",
     "request_timeout", "include", NULL
+};
+
+/* Messages for the errors of ldap_url_parse(). */
+static const struct {
+    int          code;
+    const char  *text;
+} ngx_http_auth_ldap_url_errors[] = {
+    { LDAP_URL_ERR_MEM, "Cannot allocate memory space." },
+    { LDAP_URL_ERR_PARAM, "Invalid parameter." },
+    { LDAP_URL_ERR_BADSCHEME, "URL doesnt begin with \"ldap[s]://\"." },
+    { LDAP_URL_ERR_BADENCLOSURE, "URL is missing trailing \">\"." },
+    { LDAP_URL_ERR_BADURL, "Invalid URL." },
+    { LDAP_URL_ERR_BADHOST, "Host port is invalid." },
+    { LDAP_URL_ERR_BADATTRS, "Invalid or missing attributes." },
+    { LDAP_URL_ERR_BADSCOPE, "Invalid or missing scope string." },
+    { LDAP_URL_ERR_BADFILTER, "Invalid or missing filter." },
+    { LDAP_URL_ERR_BADEXTS, "Invalid or missing extensions." },
+    { 0, NULL }
 };
 
 /*** Configuration and initialization ***/
@@ -105,7 +123,6 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     server->bind_timeout = 5000;
     server->request_timeout = 10000;
     server->alias = name;
-    server->referral = 1;
 
     save = *cf;
     cf->handler = ngx_http_auth_ldap_ldap_server;
@@ -183,7 +200,6 @@ if (ngx_strcmp(value[0].data, #x) == 0) { \
 static char *
 ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
 {
-    char                           *rv;
     ngx_str_t                      *value;
     ngx_http_auth_ldap_server_t    *server;
     ngx_http_auth_ldap_main_conf_t *cnf = conf;
@@ -219,7 +235,7 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
     } else if (ngx_strcmp(value[0].data, "satisfy") == 0) {
         return ngx_http_auth_ldap_parse_satisfy(cf, server);
     } else if (ngx_strcmp(value[0].data, "referral") == 0) {
-        return ngx_http_auth_ldap_parse_referral(cf, server);
+        return ngx_http_auth_ldap_parse_referral(cf);
     } else if (ngx_strcmp(value[0].data, "max_down_retries") == 0) {
         i = ngx_atoi(value[1].data, value[1].len);
         if (i == NGX_ERROR) {
@@ -235,20 +251,7 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         }
         server->connections = i;
     } else if (ngx_strcmp(value[0].data, "ssl_check_cert") == 0) {
-      rv = ngx_http_auth_ldap_parse_flag(cf, &server->ssl_check_cert);
-      #if OPENSSL_VERSION_NUMBER < 0x10002000
-      #if GNUC > 4
-      #warning "http_auth_ldap: Compiling with OpenSSL < 1.0.2, certificate verification will be unavailable. OPENSSL_VERSION_NUMBER == " XSTR(OPENSSL_VERSION_NUMBER)
-      #endif
-      if (rv == NGX_CONF_OK && server->ssl_check_cert) {
-        server->ssl_check_cert = 0;
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-          "http_auth_ldap: 'ssl_cert_check': cannot verify remote certificate's domain name because "
-          "your version of OpenSSL is too old. "
-          "Please install OpenSSL >= 1.02 and recompile nginx.");
-      }
-      #endif
-      return rv;
+        return ngx_http_auth_ldap_parse_flag(cf, &server->ssl_check_cert);
     } else if (ngx_strcmp(value[0].data, "ssl_ca_dir") == 0) {
       server->ssl_ca_dir = value[1];
     } else if (ngx_strcmp(value[0].data, "ssl_ca_file") == 0) {
@@ -342,11 +345,11 @@ ngx_http_auth_ldap_servers(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         value = &((ngx_str_t *) cf->args->elts)[i];
         server = NULL;
 
-	if (mconf->servers == NULL) {
+        if (mconf->servers == NULL) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Using \"auth_ldap_servers\" when no \"ldap_server\" has been previously defined"
-	    					     " (make sure that \"auth_ldap_servers\" goes after \"ldap_server\"s in your configuration file)", value);
+                               " (make sure that \"auth_ldap_servers\" goes after \"ldap_server\"s in your configuration file)", value);
             return NGX_CONF_ERROR;
-	}
+        }
 
         for (j = 0; j < mconf->servers->nelts; j++) {
             s = ((ngx_http_auth_ldap_server_t **) mconf->servers->elts)[j];
@@ -390,51 +393,19 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
     ngx_str_t host;
     ngx_flag_t ipv6;
     u_char *p;
+    ngx_uint_t i;
+    int rc;
 
     value = cf->args->elts;
 
-    int rc = ldap_url_parse((const char *) value[1].data, &server->ludpp);
+    rc = ldap_url_parse((const char *) value[1].data, &server->ludpp);
     if (rc != LDAP_SUCCESS) {
-        switch (rc) {
-            case LDAP_URL_ERR_MEM:
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Cannot allocate memory space.");
+        for (i = 0; ngx_http_auth_ldap_url_errors[i].text != NULL; i++) {
+            if (ngx_http_auth_ldap_url_errors[i].code == rc) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: %s",
+                                   ngx_http_auth_ldap_url_errors[i].text);
                 break;
-
-            case LDAP_URL_ERR_PARAM:
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Invalid parameter.");
-                break;
-
-            case LDAP_URL_ERR_BADSCHEME:
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: URL doesnt begin with \"ldap[s]://\".");
-                break;
-
-            case LDAP_URL_ERR_BADENCLOSURE:
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: URL is missing trailing \">\".");
-                break;
-
-            case LDAP_URL_ERR_BADURL:
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Invalid URL.");
-                break;
-
-            case LDAP_URL_ERR_BADHOST:
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Host port is invalid.");
-                break;
-
-            case LDAP_URL_ERR_BADATTRS:
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Invalid or missing attributes.");
-                break;
-
-            case LDAP_URL_ERR_BADSCOPE:
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Invalid or missing scope string.");
-                break;
-
-            case LDAP_URL_ERR_BADFILTER:
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Invalid or missing filter.");
-                break;
-
-            case LDAP_URL_ERR_BADEXTS:
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: Invalid or missing extensions.");
-                break;
+            }
         }
         return NGX_CONF_ERROR;
     }
@@ -596,7 +567,8 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
     }
 
     if (ngx_strcmp(value[1].data, "valid_user") == 0) {
-        server->require_valid_user = 1;
+        /* Without a template it adds no rule: a server without user or
+         * group rules admits every user who can bind. */
         if (cf->args->nelts < 3) {
             return NGX_CONF_OK;
         }
@@ -686,21 +658,18 @@ ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
 }
 
 /**
- * Parse "referral" conf parameter
+ * Check "referral" conf parameter. Referrals are never chased, whatever it
+ * says (see ngx_http_auth_ldap_connection_established()).
  */
 static char *
-ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server)
+ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf)
 {
     ngx_str_t *value;
     value = cf->args->elts;
 
-    if (ngx_strcmp(value[1].data, "on") == 0) {
-        server->referral = 1;
-        return NGX_CONF_OK;
-    }
-
-    if (ngx_strcmp(value[1].data, "off") == 0) {
-        server->referral = 0;
+    if (ngx_strcmp(value[1].data, "on") == 0
+        || ngx_strcmp(value[1].data, "off") == 0)
+    {
         return NGX_CONF_OK;
     }
 
