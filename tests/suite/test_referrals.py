@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from conftest import TIMEOUTS, ldap_server, protected_location
+from fakeldap import SEARCH_DONE, FakeLdapServer, ber, message, result, string
 from ldapdata import PEOPLE_DN, creds
 
 # Packets to this address are dropped: a connect() hangs until it times out.
@@ -29,57 +30,8 @@ location /free {
 """
 
 
-def _ber(tag: int, content: bytes) -> bytes:
-    length = len(content)
-    if length < 0x80:
-        return bytes([tag, length]) + content
-    encoded = length.to_bytes((length.bit_length() + 7) // 8, "big")
-    return bytes([tag, 0x80 | len(encoded)]) + encoded + content
-
-
-def _integer(value: int) -> bytes:
-    return _ber(0x02, value.to_bytes(4, "big", signed=True).lstrip(b"\x00") or b"\x00")
-
-
-def _string(value: str) -> bytes:
-    return _ber(0x04, value.encode())
-
-
-def _result(tag: int, code: int, extra: bytes = b"") -> bytes:
-    return _ber(tag, _ber(0x0A, bytes([code])) + _string("") + _string("") + extra)
-
-
-def _message(msgid: int, op: bytes) -> bytes:
-    return _ber(0x30, _integer(msgid) + op)
-
-
-def _read_element(sock: socket.socket) -> bytes | None:
-    """One BER element, or None when the peer closed the connection."""
-
-    def read(count: int) -> bytes | None:
-        data = b""
-        while len(data) < count:
-            chunk = sock.recv(count - len(data))
-            if not chunk:
-                return None
-            data += chunk
-        return data
-
-    head = read(2)
-    if head is None:
-        return None
-    length = head[1]
-    if length & 0x80:
-        raw = read(length & 0x7F)
-        if raw is None:
-            return None
-        length = int.from_bytes(raw, "big")
-    body = read(length)
-    return None if body is None else head + body
-
-
-class ReferringLdapServer:
-    """A fake LDAP server: binds succeed, every search answers with a referral.
+class ReferringLdapServer(FakeLdapServer):
+    """Binds succeed, every search answers with a referral.
 
     ``kind`` "reference" sends a SearchResultReference and then an empty
     successful SearchResultDone; "result" sends a SearchResultDone with the
@@ -90,52 +42,15 @@ class ReferringLdapServer:
         self.referral_url = referral_url
         self.kind = kind
         self.referred = threading.Event()
-        self._listener = socket.create_server(("127.0.0.1", 0))
-        self.port: int = self._listener.getsockname()[1]
-        self._clients: list[socket.socket] = []
-        threading.Thread(target=self._accept, daemon=True).start()
+        super().__init__()
 
-    def url(self) -> str:
-        return f"ldap://127.0.0.1:{self.port}/{PEOPLE_DN}?uid?sub?(objectClass=inetOrgPerson)"
-
-    def close(self) -> None:
-        self._listener.close()
-        for client in self._clients:
-            client.close()
-
-    def _accept(self) -> None:
-        while True:
-            try:
-                client, _ = self._listener.accept()
-            except OSError:
-                return
-            self._clients.append(client)
-            threading.Thread(target=self._serve, args=(client,), daemon=True).start()
-
-    def _serve(self, client: socket.socket) -> None:
-        try:
-            while (message := _read_element(client)) is not None:
-                # SEQUENCE header, then messageID (short INTEGER), then the op.
-                offset = 2 if message[1] < 0x80 else 2 + (message[1] & 0x7F)
-                id_len = message[offset + 1]
-                msgid = int.from_bytes(message[offset + 2 : offset + 2 + id_len], "big")
-                op = message[offset + 2 + id_len]
-                if op == 0x60:  # BindRequest
-                    client.sendall(_message(msgid, _result(0x61, 0)))
-                elif op == 0x63:  # SearchRequest
-                    client.sendall(self._search_answer(msgid))
-                    self.referred.set()
-                elif op == 0x42:  # UnbindRequest
-                    return
-        except OSError:
-            return
-
-    def _search_answer(self, msgid: int) -> bytes:
+    def answer_search(self, msgid: int) -> bytes:
+        self.referred.set()
         if self.kind == "reference":
-            reference = _message(msgid, _ber(0x73, _string(self.referral_url)))
-            return reference + _message(msgid, _result(0x65, 0))
-        referral = _ber(0xA3, _string(self.referral_url))
-        return _message(msgid, _result(0x65, 10, referral))
+            reference = message(msgid, ber(0x73, string(self.referral_url)))
+            return reference + message(msgid, result(SEARCH_DONE, 0))
+        referral = ber(0xA3, string(self.referral_url))
+        return message(msgid, result(SEARCH_DONE, 10, referral))
 
 
 @pytest.fixture
