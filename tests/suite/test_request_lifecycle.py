@@ -175,8 +175,16 @@ def abort_http1(server, uid: str, after: float) -> None:
 def abort_http2(server, uid: str, after: float) -> None:
     """The same over HTTP/2: curl resets the stream and closes the connection."""
     subprocess.run(
-        ["curl", "-s", "--http2-prior-knowledge", "--max-time", str(after), "-u", f"{uid}:{password(uid)}",
-         server.url()],
+        [
+            "curl",
+            "-s",
+            "--http2-prior-knowledge",
+            "--max-time",
+            str(after),
+            "-u",
+            f"{uid}:{password(uid)}",
+            server.url(),
+        ],
         check=False,
     )
 
@@ -189,7 +197,7 @@ def test_client_that_goes_away_leaves_the_pool_usable(nginx, proxy, abort, where
     # stream), so the request lives on until its LDAP operation or its
     # request_timeout ends. Afterwards the pool must work as before.
     if abort is abort_http2 and nginx_version() < (1, 25, 1):
-        pytest.skip("\"http2 on\" needs nginx 1.25.1")
+        pytest.skip('"http2 on" needs nginx 1.25.1')
     body = f"require valid_user;\nconnections 1;{TIMEOUTS}"
     url = url_for("127.0.0.1", proxy.port)
     extra = "http2 on;\n" if abort is abort_http2 else ""
