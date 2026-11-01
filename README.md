@@ -60,7 +60,7 @@ and [`auth_ldap_servers`](#auth_ldap_servers) with the names of one or more
    decide is left for the next one: it has no connection bound as `binddn`
    (unless it is the last server), it does not finish within its
    [`request_timeout`](#request_timeout), the connection broke, or it
-   answered busy, unavailable or over a limit. When every server denies the
+   answered busy, unavailable or over a limit, or with a referral. When every server denies the
    user, the answer is `401`; when a server could not decide and no later
    server allows, it is `503 Service Unavailable`, as the credentials may be
    right.
@@ -87,10 +87,11 @@ Requirements:
   nginx must be built with OpenSSL (for example with
   `--with-http_ssl_module`); otherwise `ldaps://` URLs are rejected.
 
-Get the source:
+Get the source, from git or as the archive of a release:
 
 ```sh
 git clone https://github.com/kvspb/nginx-auth-ldap.git
+curl -fsSL https://github.com/kvspb/nginx-auth-ldap/archive/refs/tags/v1.0.0.tar.gz | tar -xz
 ```
 
 ### Static module
@@ -134,6 +135,38 @@ http {
 The path is relative to the nginx prefix; use the directory where your
 distribution keeps modules. Without `load_module`, nginx rejects the
 configuration with `unknown directive "ldap_server"`.
+
+### Docker
+
+The official nginx image with the module added as a dynamic module, built
+against the nginx source of the same version. Run it from a directory that
+holds this repository as `nginx-auth-ldap/`:
+
+```dockerfile
+ARG NGINX_VERSION=1.30.6
+
+FROM nginx:${NGINX_VERSION} AS build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl gcc libc6-dev libldap-dev libpcre2-dev libssl-dev make zlib1g-dev
+COPY nginx-auth-ldap /src/nginx-auth-ldap
+RUN curl -fsSL "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" | tar -xz -C /src \
+    && cd "/src/nginx-${NGINX_VERSION}" \
+    && ./configure --with-compat --add-dynamic-module=/src/nginx-auth-ldap \
+    && make modules
+
+FROM nginx:${NGINX_VERSION}
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libldap2 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/nginx-*/objs/ngx_http_auth_ldap_module.so /usr/lib/nginx/modules/
+RUN sed -i '1i load_module modules/ngx_http_auth_ldap_module.so;' /etc/nginx/nginx.conf
+```
+
+Put the `ldap_server` blocks and the protected locations into
+`/etc/nginx/conf.d/*.conf`, which the image includes in its `http` block.
+`NGINX_VERSION` must name a tag of the image and a release on nginx.org;
+`libldap2` is the OpenLDAP library of the Debian release under the image.
 
 ## Quick start
 
@@ -276,6 +309,13 @@ Every directive in the block except `require` takes exactly one value. An
 unknown directive or a value of the wrong form fails the configuration check,
 and so does a second `url`, a second `require valid_user` template, or a
 second `ldap_server` block with the same name.
+
+Older articles show directives such as `auth_ldap_url`, `auth_ldap_binddn`
+or `auth_ldap_require` at the location level. This module never had them:
+their settings are `url`, `binddn` and `require` in an `ldap_server` block,
+and a location chooses the blocks with `auth_ldap_servers`. For different
+requirements per location, define one `ldap_server` block for each.
+The cache directives belong to the `http` level, not to `ldap_server`.
 
 #### url
 
@@ -620,9 +660,61 @@ server {
 }
 ```
 
-The Global Catalog only has complete `member` values for universal groups;
-to check global or domain local groups, use port 389 of a domain controller.
-Nested group membership is not resolved.
+Ports and names:
+
+| Port | Searches | TLS |
+| --- | --- | --- |
+| 389 | one domain | StartTLS (`starttls on`) |
+| 636 | one domain | `ldaps://` |
+| 3268 | the whole forest (Global Catalog) | StartTLS |
+| 3269 | the whole forest (Global Catalog) | `ldaps://` |
+
+- The base DN is the DN of the domain, most specific part first:
+  `dc=corp,dc=example,dc=com` for `corp.example.com`. A base DN in another
+  order names no entry, and the search finds nobody.
+- On 389 and 636 a search of the domain also returns references to other
+  partitions and domains. The module never follows them; a user from another
+  domain is not found, and the log says where the server pointed (see
+  [Troubleshooting](#troubleshooting)). Search the Global Catalog to find
+  users of every domain.
+- Login attribute: `sAMAccountName` for `jdoe`, or `userPrincipalName` for
+  `jdoe@example.com`.
+- `binddn` may be a DN, a user principal name (`nginx@example.com`) or a
+  down-level name (`EXAMPLE\\nginx`).
+- The Global Catalog only has complete `member` values for universal groups;
+  to check global or domain local groups, use port 389 or 636 of a domain
+  controller.
+
+Nested groups: Active Directory resolves them with the matching rule
+`LDAP_MATCHING_RULE_IN_CHAIN` (`1.2.840.113556.1.4.1941`). Either put it into
+the filter of the `url`, so that only members of the group, directly or
+through other groups, are found (the space is percent-encoded, as in any
+`url`):
+
+```nginx
+ldap_server ad_nested {
+    url "ldap://dc1.example.com:389/dc=example,dc=com?sAMAccountName?sub?(memberOf:1.2.840.113556.1.4.1941:=CN=Web%20Admins,OU=Groups,DC=example,DC=com)";
+    binddn "nginx@example.com";
+    binddn_passwd "service-account-password";
+}
+```
+
+or use it as the group attribute, which keeps one `require group` line per
+group:
+
+```nginx
+ldap_server ad_nested_groups {
+    url "ldap://dc1.example.com:389/dc=example,dc=com?sAMAccountName?sub?(objectClass=user)";
+    binddn "nginx@example.com";
+    binddn_passwd "service-account-password";
+    group_attribute "member:1.2.840.113556.1.4.1941:";
+    group_attribute_is_dn on;
+    require group "CN=Web Admins,OU=Groups,DC=example,DC=com";
+}
+```
+
+The rule is specific to Active Directory; the test suite runs against
+OpenLDAP and does not cover it.
 
 ### Groups
 
@@ -678,6 +770,26 @@ server {
     }
 }
 ```
+
+FreeIPA keeps users under `cn=users,cn=accounts` and groups under
+`cn=groups,cn=accounts`, with member DNs in `member`; its CA certificate is
+`/etc/ipa/ca.crt` on an enrolled host:
+
+```nginx
+ldap_server ipa {
+    url "ldaps://ipa.example.com/cn=users,cn=accounts,dc=example,dc=com?uid?sub?(objectClass=person)";
+    binddn "uid=nginx,cn=sysaccounts,cn=etc,dc=example,dc=com";
+    binddn_passwd "service-account-password";
+    ssl_check_cert on;
+    ssl_ca_file /etc/nginx/ldap/ca.pem;
+    group_attribute member;
+    group_attribute_is_dn on;
+    require group "cn=web-admins,cn=groups,cn=accounts,dc=example,dc=com";
+}
+```
+
+The module checks group entries, not a `memberOf` attribute of the user.
+Nested groups are only resolved by Active Directory (see above).
 
 ### ldaps with certificate verification
 
@@ -906,7 +1018,7 @@ server {
 | --- | --- |
 | No `Authorization` header, not Basic, or empty password | `401` with `WWW-Authenticate`, LDAP is not asked |
 | User not found, found twice, rules not met, wrong password, on every server | `401` with `WWW-Authenticate` |
-| A server could not decide: the connection broke, or the server answered busy (51), unavailable (52), time or admin limit exceeded (3, 11) or other (80); and no other server allowed | `503`, not cached |
+| A server could not decide: the connection broke, or the server answered busy (51), unavailable (52), time or admin limit exceeded (3, 11), other (80) or with a referral (10); and no other server allowed | `503`, not cached |
 | A server did not finish within its `request_timeout` (unreachable, every connection busy, slow) | `503` |
 | Internal error, such as a failed memory allocation | `500` |
 
@@ -987,6 +1099,13 @@ and refuses the configuration, for example:
 
 ## Troubleshooting
 
+The module writes to the nginx `error_log`, with the `http_auth_ldap:`
+prefix; it has no log file of its own. Most messages are at the `error`
+level, an idle connection that the server closed at `info`. For every step
+of a request (the login, the filters, the DNs, the LDAP answers), build
+nginx with `--with-debug` and set `error_log /var/log/nginx/error.log
+debug;`.
+
 Reproduce the module's search with `ldapsearch` from the nginx host:
 
 ```sh
@@ -997,6 +1116,8 @@ ldapsearch -H ldap://ldap.example.com -D "cn=nginx,ou=services,dc=example,dc=com
 | Log message | Likely cause |
 | --- | --- |
 | `Could not find user DN` | Wrong base DN, scope, login attribute or filter. The scope defaults to `base`: add `?sub` to the `url`. |
+| `ldap_search_ext() request failed (32: No such object)` | The base DN of the `url` names no entry; with Active Directory, check the order of the `dc=` parts. |
+| `Invalid or missing scope string.` (from `nginx -t`) | The scope of the `url` is not `base`, `one` or `sub`, or a `?` of the `url` is missing or not percent-encoded. |
 | `referred the user search to "..."`, `not found on server "...", which referred to "..."` | The entry is on another server, for example in another Active Directory domain: point the `url` at the Global Catalog (port 3268). |
 | `User search for "..." returned more than one entry` | The login is not unique below the base DN: narrow the base or the filter. |
 | `User bind failed (49: Invalid credentials)` | Wrong password, or a locked or expired account. |
@@ -1007,7 +1128,7 @@ ldapsearch -H ldap://ldap.example.com -D "cn=nginx,ou=services,dc=example,dc=com
 | `Server "..." has no connection, trying the next server` | No connection to that server is bound as `binddn`: it is unreachable or rejects `binddn` (look for `Could not connect` or `Initial bind failed`). |
 | `ldap_result() failed (-1: Can't contact LDAP server)` | A connection broke while a request was using it; the request is answered with 503. See `max_down_retries`. |
 | `SSL handshake failed` | Not a TLS port, no common TLS version or cipher, or TLS on a plain `ldap://` port. |
-| `Remote side presented invalid SSL certificate: error ...` | The chain does not lead to a CA in `ssl_ca_file` / `ssl_ca_dir` or the system store. |
+| `Remote side presented invalid SSL certificate: error ...` | The chain does not lead to a CA in `ssl_ca_file` / `ssl_ca_dir` or the system store, for example `error 20, unable to get local issuer certificate`. The server logs the closed handshake as an unknown CA (TLS alert 48; Schannel event 36887 on Windows). |
 | `... does not match address "..." ...` | The certificate does not name the host of the `url` in its subjectAltName: a host name needs a DNS entry, an address an IP entry. |
 | `Incorrect group DN` | A `require group` value is not a valid DN. |
 | `"auth_ldap" requires one or more "auth_ldap_servers"` | `auth_ldap` without `auth_ldap_servers` at the same or an outer level. |
@@ -1015,6 +1136,17 @@ ldapsearch -H ldap://ldap.example.com -D "cn=nginx,ou=services,dc=example,dc=com
 If every group check fails, check that `group_attribute` is set, that
 `group_attribute_is_dn` fits the attribute, and that `binddn` may read the
 group entries.
+
+The module does TLS through nginx and never follows referrals, so the
+`TLS_*` and `REFERRALS` lines of the OpenLDAP client configuration
+(`/etc/ldap/ldap.conf`, `/etc/openldap/ldap.conf`) do not apply to it.
+
+A browser keeps the login and password it was given and sends them with
+every request to the same site until it is closed; Basic authentication has
+no logout. The module checks them on each request, so a changed password
+or a removed account takes effect at once, or when the cached outcome
+expires with `auth_ldap_cache_enabled on`; but the browser does not ask
+again as long as they are still accepted.
 
 ## Security notes
 
