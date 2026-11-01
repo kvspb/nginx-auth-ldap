@@ -472,6 +472,8 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
     int error_code;
     char *error_msg;
     char *dn;
+    u_char *p;
+    size_t len;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, rev->log, 0, "http_auth_ldap: Read handler");
 
@@ -613,9 +615,14 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                         dn = ldap_get_dn(c->ld, result);
                         if (dn != NULL) {
                             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Found entry with DN \"%s\"", dn);
-                            c->rctx->dn.len = ngx_strlen(dn);
-                            c->rctx->dn.data = (u_char *) ngx_palloc(c->rctx->r->pool, c->rctx->dn.len + 1);
-                            ngx_memcpy(c->rctx->dn.data, dn, c->rctx->dn.len + 1);
+                            /* Left unset on allocation failure: the user is denied. */
+                            len = ngx_strlen(dn);
+                            p = ngx_pnalloc(c->rctx->r->pool, len + 1);
+                            if (p != NULL) {
+                                ngx_memcpy(p, dn, len + 1);
+                                c->rctx->dn.data = p;
+                                c->rctx->dn.len = len;
+                            }
                             ldap_memfree(dn);
                         }
                     }
