@@ -132,12 +132,22 @@ ngx_http_auth_ldap_close_request_connection(ngx_http_auth_ldap_ctx_t *ctx)
     }
 }
 
+/*
+ * Run the phases of a request that waited for LDAP. This runs from an
+ * event of the LDAP connection, not of the client connection, so run the
+ * subrequests it posts (SSI, mirror) here too, as nginx does after its own
+ * event handlers; otherwise they wait for the next client event.
+ */
 static void
 ngx_http_auth_ldap_wake_request(ngx_http_request_t *r)
 {
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Waking authentication request \"%V\"",
+    ngx_connection_t *c;
+
+    c = r->connection;
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Waking authentication request \"%V\"",
         &r->request_line);
     ngx_http_core_run_phases(r);
+    ngx_http_run_posted_requests(c);
 }
 
 int

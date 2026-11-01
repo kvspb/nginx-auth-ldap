@@ -108,6 +108,9 @@ Known before this release:
   same LDAP handle again from inside OpenLDAP. Such a request now gets 503
   instead of 401, and the dead connection is closed instead of being
   handed to the next request.
+- SSI includes and other subrequests of a request that was checked over
+  LDAP were not run until the client sent something more: the response
+  stalled.
 - When connect() completed at once (a loopback connect on Solaris or the
   BSDs) with the select or poll event method, the LDAP connection was never
   set up and the server never became usable (PR #617).
