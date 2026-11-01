@@ -91,7 +91,7 @@ Get the source, from git or as the archive of a release:
 
 ```sh
 git clone https://github.com/kvspb/nginx-auth-ldap.git
-curl -fsSL https://github.com/kvspb/nginx-auth-ldap/archive/refs/tags/v1.0.0.tar.gz | tar -xz
+curl -fsSL https://github.com/kvspb/nginx-auth-ldap/archive/refs/tags/v1.0.1.tar.gz | tar -xz
 ```
 
 ### Static module

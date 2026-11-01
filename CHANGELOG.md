@@ -8,6 +8,15 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-01
+
+### Fixed
+
+- The cache was never used while the host had been up for less than
+  `auth_ldap_cache_expiration_time`, for example during the first hour
+  after a reboot with an expiration of `1h`: the age limit of an entry
+  was computed on a clock that starts at boot and wrapped below zero.
+
 ## [1.0.0] - 2026-11-01
 
 The first release since 0.1 (2011) and after a long pause of upstream
@@ -254,6 +263,7 @@ Known before this release:
 First tagged version by Valery Komarov. Later upstream changes until 2024
 were not released under a version number.
 
-[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v0.1...v1.0.0
 [0.1]: https://github.com/kvspb/nginx-auth-ldap/releases/tag/v0.1
