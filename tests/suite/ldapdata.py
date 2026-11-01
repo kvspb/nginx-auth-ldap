@@ -31,6 +31,10 @@ GROUPS_DN = f"ou=groups,{BASE_DN}"
 BIND_DN = os.environ.get("LDAP_BIND_DN", f"cn=nginx,ou=services,{BASE_DN}")
 BIND_SECRET = os.environ.get("LDAP_BIND_SECRET", "nginx-" + "secret")  # nosec B105
 
+# A second service account; only rotating_service_password() changes it.
+ROTATING_DN = f"cn=rotating,ou=services,{BASE_DN}"
+ROTATING_SECRET = "rotating-" + "secret"  # nosec B105
+
 # Directory manager (rootdn in tests/ldap/slapd.conf), same caveats.
 ADMIN_DN = f"cn=admin,{BASE_DN}"
 ADMIN_SECRET = os.environ.get("LDAP_ADMIN_SECRET", "admin-" + "secret")  # nosec B105
@@ -63,8 +67,8 @@ def user_dn(uid: str) -> str:
     return f"uid={uid},{PEOPLE_DN}"
 
 
-def _set_password(uid: str, new: str) -> None:
-    ldif = f"dn: {user_dn(uid)}\nchangetype: modify\nreplace: userPassword\nuserPassword: {new}\n"
+def _set_password(uid: str, new: str, dn: str | None = None) -> None:
+    ldif = f"dn: {dn or user_dn(uid)}\nchangetype: modify\nreplace: userPassword\nuserPassword: {new}\n"
     subprocess.run(
         ["ldapmodify", "-x", "-H", f"ldap://{LDAP_HOST}", "-D", ADMIN_DN, "-w", ADMIN_SECRET],
         input=ldif,
@@ -87,3 +91,13 @@ def changed_password(uid: str, new: str) -> Iterator[None]:
         yield
     finally:
         _set_password(uid, password(uid))
+
+
+@contextmanager
+def rotating_service_password(new: str) -> Iterator[None]:
+    """Change the password of the ROTATING_DN service account, restoring it afterwards."""
+    _set_password("", new, dn=ROTATING_DN)
+    try:
+        yield
+    finally:
+        _set_password("", ROTATING_SECRET, dn=ROTATING_DN)

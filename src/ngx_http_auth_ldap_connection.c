@@ -460,6 +460,11 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
 
         ldap_memfree(error_msg);
         ldap_msgfree(result);
+
+        if (c->ld == NULL) {
+            /* The woken request closed the connection (a failed rebind). */
+            return;
+        }
     }
 
     if (ngx_handle_read_event(rev, 0) != NGX_OK) {

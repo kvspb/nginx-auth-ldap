@@ -23,7 +23,7 @@ import requests
 
 from conftest import ldap_server, protected_location, url_for
 from harness import nginx_version
-from ldapdata import creds, password
+from ldapdata import ROTATING_DN, ROTATING_SECRET, creds, password, rotating_service_password
 from ldapproxy import LdapProxy
 
 TIMEOUTS = """
@@ -276,3 +276,23 @@ def test_empty_login_is_rejected_without_asking_ldap(nginx, proxy, auth):
 
     assert response.status_code == 401
     assert response.headers["WWW-Authenticate"] == 'Basic realm="Restricted"'
+
+
+def test_connection_is_not_reused_when_the_rebind_fails(nginx):
+    # After a user bind the connection binds as the service account again.
+    # If that fails, the connection is still bound as the user: it must be
+    # closed, not handed to the next request, which would then search with
+    # the rights of that user.
+    body = f"require valid_user;\nconnections 1;{TIMEOUTS}"
+    http = ldap_server("rotating", body, bind_dn=ROTATING_DN, bind_secret=ROTATING_SECRET)
+    server = nginx.start(http=http, server=protected_location("rotating"))
+    wait_until_ready(server)
+
+    with rotating_service_password("changed-" + "secret"):
+        # Search and user bind succeed; the rebind afterwards fails.
+        assert status(server, "bob") == 200
+        assert "binddn bind failed (49: Invalid credentials)" in server.log()
+        # The reconnect cannot bind as the service account either.
+        assert status(server, "carol") == 503
+
+    wait_until_ready(server)

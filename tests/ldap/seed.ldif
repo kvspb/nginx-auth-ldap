@@ -27,6 +27,13 @@ objectClass: simpleSecurityObject
 cn: nginx
 userPassword: nginx-secret
 
+# Second service account whose password tests change (rotating_service_password).
+dn: cn=rotating,ou=services,dc=example,dc=org
+objectClass: organizationalRole
+objectClass: simpleSecurityObject
+cn: rotating
+userPassword: rotating-secret
+
 # Member of "admins" and "devs".
 dn: uid=alice,ou=people,dc=example,dc=org
 objectClass: inetOrgPerson

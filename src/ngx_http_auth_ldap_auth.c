@@ -703,6 +703,7 @@ ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
 {
     struct berval cred;
     ngx_int_t rc;
+    ngx_http_auth_ldap_connection_t *c;
 
     /* On the first call, initiate the bind LDAP operation */
     if (ctx->iteration == 0) {
@@ -733,6 +734,18 @@ ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
     if (ctx->error_code != LDAP_SUCCESS) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: binddn bind failed (%d: %s)",
             ctx->error_code, ldap_err2string(ctx->error_code));
+
+        /*
+         * The connection is still bound as the user: never hand it to the
+         * next request. Detach it first, so that closing it does not wake
+         * this request again; the outcome of the user bind stands.
+         */
+        c = ctx->c;
+        if (c != NULL) {
+            ctx->c = NULL;
+            c->rctx = NULL;
+            ngx_http_auth_ldap_close_connection(c);
+        }
     } else {
         ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: binddn bind successful");
     }
