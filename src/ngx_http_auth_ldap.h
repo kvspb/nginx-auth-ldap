@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2011-2013 Valery Komarov <komarov@valerka.net>
+ * Copyright (C) 2011-2026 Valery Komarov <komarov@valerka.net>
  * Copyright (C) 2013 Jiri Hruska <jirka@fud.cz>
  * Copyright (C) 2015-2016 Victor Hahn Castell <victor.hahn@flexoptix.net>
  * All rights reserved.
