@@ -49,7 +49,12 @@ def ldap_sockets(pid: int, port: int) -> list[socket.socket]:
     try:
         found = []
         for fd in Path(f"/proc/{pid}/fd").iterdir():
-            if os.readlink(fd).removeprefix("socket:[").removesuffix("]") in inodes:
+            try:
+                target = os.readlink(fd)
+            except FileNotFoundError:
+                # Another descriptor (the client connection) just closed.
+                continue
+            if target.removeprefix("socket:[").removesuffix("]") in inodes:
                 copy = libc.syscall(SYS_PIDFD_GETFD, pidfd, int(fd.name), 0)
                 assert copy >= 0, os.strerror(ctypes.get_errno())
                 found.append(socket.socket(fileno=copy))
