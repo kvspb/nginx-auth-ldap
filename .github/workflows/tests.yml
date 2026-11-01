@@ -1,6 +1,7 @@
 # Checks for pull requests and the main branches: lint, the integration
-# suite on every supported nginx version, AddressSanitizer and debug builds,
-# and mutation testing of the lines a pull request changes.
+# suite on every supported nginx version, AddressSanitizer, debug and other
+# builds, and mutation testing of the lines a pull request or a push to dev
+# changes (or of a range given to a manual run).
 #
 # Everything runs through the Makefile and tests/docker-compose.yml, exactly
 # as on a developer machine (see tests/README.md).
@@ -11,13 +12,22 @@ on:
   push:
     branches: [master, dev]
   workflow_dispatch:
+    inputs:
+      base:
+        description: >-
+          Mutation testing of the changes since this git ref (a commit, tag
+          or branch); empty for none
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
+# A new commit of a pull request replaces its runs. Pushes are never
+# cancelled: the mutation testing of a push covers only its own commits.
 concurrency:
-  group: tests-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: tests-${{ github.event.pull_request.number || format('{0}-{1}', github.ref, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   RUFF: ruff==0.17.3
@@ -96,11 +106,15 @@ jobs:
         run: make test-down
 
   mutate:
-    # Mutants of the lines the pull request changes, each run against the
-    # whole suite. There is no score threshold: survivors are reviewed in
-    # the pull request (AGENTS.md, "Quality gates"), so this job only fails
-    # when the run itself fails.
-    if: github.event_name == 'pull_request'
+    # Mutants of the lines a pull request, a push to dev or a manual run
+    # (input "base") changes, each run against the whole suite. Not on
+    # master, which only receives merges of a tested dev. There is no score
+    # threshold: survivors are reviewed by hand (AGENTS.md, "Quality
+    # gates"), so this job only fails when the run itself fails.
+    if: >-
+      github.event_name == 'pull_request'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/dev')
+      || (github.event_name == 'workflow_dispatch' && inputs.base != '')
     needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -108,10 +122,38 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Mutation testing of the diff
+      - name: Base of the diff
+        id: base
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: make mutate BASE="$(git merge-base "${BASE_SHA}" HEAD)"
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          INPUT_BASE: ${{ inputs.base }}
+        run: |
+          case "${EVENT}" in
+            pull_request)
+              base=$(git merge-base "${PR_BASE}" HEAD) ;;
+            workflow_dispatch)
+              base=$(git rev-parse --verify "${INPUT_BASE}^{commit}") ;;
+            push)
+              # A new branch has no "before", a forced push an unrelated one:
+              # then everything since master.
+              if git merge-base --is-ancestor "${BEFORE}" HEAD 2>/dev/null; then
+                base="${BEFORE}"
+              else
+                base=$(git merge-base origin/master HEAD)
+              fi ;;
+          esac
+          echo "base=${base}" >>"${GITHUB_OUTPUT}"
+          if git diff --quiet "${base}" HEAD -- src; then
+            echo "No change in src/ since ${base}: nothing to mutate." | tee -a "${GITHUB_STEP_SUMMARY}"
+            echo "skip=true" >>"${GITHUB_OUTPUT}"
+          fi
+      - name: Mutation testing of the diff
+        if: steps.base.outputs.skip != 'true'
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+        run: make mutate BASE="${BASE}"
       - name: Summary
         if: always() && hashFiles('tests/reports/mutation/mutation.json') != ''
         run: python3 tests/mutation/summary.py >>"${GITHUB_STEP_SUMMARY}"

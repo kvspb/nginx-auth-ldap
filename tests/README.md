@@ -87,11 +87,23 @@ it (equivalent mutant, or a branch that only runs on allocation failure).
 `master` and `dev`:
 
 - lint: whitespace errors in the changes, shellcheck, ruff check and format;
-- the suite on every version in `NGINX_VERSIONS`, plus AddressSanitizer and
-  debug builds of the current stable version;
-- for pull requests, `make mutate` against the merge base. It has no score
-  threshold: the job summary lists the surviving mutants, and each one is
-  killed with a test or explained in the pull request.
+- the suite on every version in `NGINX_VERSIONS`, plus AddressSanitizer,
+  debug, dynamic-module, Alpine and OpenSSL 1.1.1 builds of the current
+  stable version;
+- `make mutate` after the suite passed: for a pull request against its merge
+  base, for a push to `dev` against the commit before the push (against the
+  merge base with `master` for a new branch or a forced push), and for a
+  manual run ("Run workflow") against the ref given in `base`, for example
+  `origin/master`, a tag or a commit. Pushes to `master` are not mutated,
+  and a diff without changes in `src/` is skipped. The job has no score
+  threshold: its summary lists the surviving mutants, and each one is killed
+  with a test or explained in the pull request or the beads issue.
+
+Pushes are never cancelled by later ones, so that each push gets its own
+mutation run; a new commit of a pull request replaces the runs of the old
+one. Push one change at a time to keep the runs short: a mutant takes about
+a minute in CI, and a push of hundreds of changed lines can exceed the
+two-hour limit of the job; mutate it locally or in parts with a manual run.
 
 ## Layout
 
