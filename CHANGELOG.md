@@ -108,6 +108,11 @@ Known before this release:
   same LDAP handle again from inside OpenLDAP. Such a request now gets 503
   instead of 401, and the dead connection is closed instead of being
   handed to the next request.
+- An idle LDAP connection closed by the server or a firewall (Active
+  Directory does after 15 minutes) is opened again at once and logged at
+  the `info` level. Requests no longer get 503 until `reconnect_timeout`
+  has passed, and the error log is no longer filled with
+  `ldap_result() failed` (kvspb#136, kvspb#222, kvspb#51).
 - A worker shutting down gracefully (`nginx -s quit`, the old worker of
   a reload) kept reconnecting to an LDAP server that was down and never
   exited, and one that exited reported its LDAP sockets as left open.

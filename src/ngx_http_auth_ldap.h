@@ -186,6 +186,8 @@ typedef struct ngx_http_auth_ldap_connection {
     int msgid;
     ngx_uint_t down_retries;    /* LDAP_SERVER_DOWN retries since the last
                                    successful initial bind */
+    ngx_msec_t idle_reconnect;  /* when an idle close was last reconnected
+                                   at once; 0 for never */
 } ngx_http_auth_ldap_connection_t;
 
 

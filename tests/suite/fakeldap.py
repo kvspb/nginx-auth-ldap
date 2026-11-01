@@ -135,6 +135,10 @@ class FakeLdapServer:
     def answer_search(self, msgid: int, base: str) -> bytes | None:
         return message(msgid, result(SEARCH_DONE, 0))
 
+    def close_after(self, op: int) -> bool:
+        """Whether to close the connection right after answering op."""
+        return False
+
     def answer_extended(self, msgid: int) -> bytes | None:
         """Refuse every extended operation (protocolError)."""
         return message(msgid, result(EXTENDED_RESPONSE, 2))
@@ -172,5 +176,9 @@ class FakeLdapServer:
                     client.close()
                     return
                 client.sendall(answer)
+                if self.close_after(op):
+                    client.shutdown(socket.SHUT_RDWR)
+                    client.close()
+                    return
         except OSError:
             return

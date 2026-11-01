@@ -33,6 +33,7 @@
 static void ngx_http_auth_ldap_reconnect_handler(ngx_event_t *);
 static void ngx_http_auth_ldap_wake_request(ngx_http_request_t *r);
 static void ngx_http_auth_ldap_initial_bind(ngx_http_auth_ldap_connection_t *c);
+static void ngx_http_auth_ldap_idle_closed(ngx_http_auth_ldap_connection_t *c);
 
 /*** Asynchronous LDAP connection handling ***/
 
@@ -383,6 +384,33 @@ ngx_http_auth_ldap_connect_handler(ngx_event_t *wev)
     ngx_http_auth_ldap_connection_established(c);
 }
 
+/*
+ * The server or a firewall closed a connection that was waiting for work,
+ * as servers do with idle connections (Active Directory after 15 minutes).
+ * That is no outage: say so quietly and connect again at once, at most
+ * once per reconnect_timeout, so that a server that drops every connection
+ * right after the bind is not reconnected in a loop.
+ */
+static void
+ngx_http_auth_ldap_idle_closed(ngx_http_auth_ldap_connection_t *c)
+{
+    ngx_flag_t at_once;
+
+    ngx_log_error(NGX_LOG_INFO, c->log, 0,
+        "http_auth_ldap: Server \"%V\" closed the idle connection",
+        &c->server->alias);
+
+    at_once = c->idle_reconnect == 0
+              || ngx_current_msec - c->idle_reconnect >= c->server->reconnect_timeout;
+
+    ngx_http_auth_ldap_close_connection(c);
+
+    if (at_once) {
+        c->idle_reconnect = ngx_current_msec;
+        ngx_add_timer(&c->reconnect_event, 0);
+    }
+}
+
 void
 ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
 {
@@ -418,6 +446,11 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
     for (;;) {
         rc = ldap_result(c->ld, LDAP_RES_ANY, 0, &timeout, &result);
         if (rc < 0) {
+            if (rc == LDAP_SERVER_DOWN && c->state == STATE_READY) {
+                ngx_http_auth_ldap_idle_closed(c);
+                return;
+            }
+
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_result() failed (%d: %s)",
                 rc, ldap_err2string(rc));
             ngx_http_auth_ldap_close_connection(c);
@@ -581,7 +614,8 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
     pconn->name = &addr->name;
     pconn->get = ngx_event_get_peer;
     pconn->log = c->log;
-    pconn->log_error = NGX_ERROR_ERR;
+    /* A reset is logged by the module, in context: as info when idle. */
+    pconn->log_error = NGX_ERROR_INFO;
 
     rc = ngx_event_connect_peer(pconn);
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: ngx_event_connect_peer() -> %d.", rc);

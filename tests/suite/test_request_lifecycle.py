@@ -24,6 +24,7 @@ import pytest
 import requests
 
 from conftest import ldap_server, protected_location, url_for
+from fakeldap import BIND_REQUEST, FakeLdapServer
 from harness import nginx_version
 from ldapdata import PEOPLE_DN, ROTATING_DN, ROTATING_SECRET, creds, password, rotating_service_password
 from ldapproxy import LdapProxy
@@ -244,6 +245,19 @@ def test_connection_dropped_by_the_server_is_reconnected_once(nginx, proxy, retr
         assert list(pool.map(lambda uid: status(server, uid), ["alice", "bob", "carol", "dave"])) == [200] * 4
 
 
+def drop_under_a_request(server, proxy: LdapProxy) -> None:
+    """Cut the connection while a request is in flight on it: a busy
+    connection, unlike an idle one, is reconnected at once only through
+    max_down_retries."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        proxy.hold()
+        stuck = pool.submit(status, server)
+        time.sleep(0.2)
+        proxy.drop()
+        proxy.release()
+        assert stuck.result() == 503
+
+
 @pytest.mark.parametrize(("retries", "reconnected"), [(0, False), (1, True)])
 def test_max_down_retries_reconnects_without_waiting(nginx, proxy, retries, reconnected):
     body = f"require valid_user;\nconnections 1;\nmax_down_retries {retries};\nreconnect_timeout 5s;"
@@ -251,7 +265,7 @@ def test_max_down_retries_reconnects_without_waiting(nginx, proxy, retries, reco
     server = nginx.start(http=ldap_server("proxied", body, url=url), server=protected_location("proxied"))
     wait_until_ready(server)
 
-    proxy.drop()
+    drop_under_a_request(server, proxy)
     time.sleep(0.5)
 
     assert (proxy.connections == 2) is reconnected
@@ -267,10 +281,10 @@ def test_max_down_retries_does_not_loop_against_a_server_that_closes_at_once(ngi
     url = url_for("127.0.0.1", proxy.port)
     server = nginx.start(http=ldap_server("proxied", body, url=url), server=protected_location("proxied"))
     wait_until_ready(server)
-    proxy.refuse()
     connections = proxy.connections
 
-    proxy.drop()
+    proxy.refuse()
+    drop_under_a_request(server, proxy)
     time.sleep(1)
 
     assert proxy.connections - connections == retries
@@ -371,7 +385,7 @@ def test_request_freed_while_it_waits_is_forgotten(nginx, proxy):
     with LdapProxy() as silent:
         silent.hold()
         http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)) + ldap_server(
-            "silent", f"require valid_user;\nconnections 1;\nbind_timeout 30s;", url=url_for("127.0.0.1", silent.port)
+            "silent", "require valid_user;\nconnections 1;\nbind_timeout 30s;", url=url_for("127.0.0.1", silent.port)
         )
         server = nginx.start(
             http=http, server=protected_location("proxied"), main="worker_shutdown_timeout 300ms;"
@@ -519,3 +533,47 @@ def test_connection_closed_after_a_request_timeout_is_reconnected_at_once(nginx,
 
     assert status(server, "bob") == 200
     assert proxy.connections == 2
+
+
+@pytest.mark.parametrize("cut", ["drop", "reset"])
+def test_idle_connection_closed_by_the_server_is_replaced_at_once(nginx, proxy, cut):
+    # Servers and firewalls close idle connections (Active Directory after
+    # 15 minutes by default). That is not an outage: the connection is
+    # opened again at once and quietly, without waiting for
+    # reconnect_timeout, during which every request failed with 503 and
+    # each drop was logged as an error (kvspb#136 #222 #51).
+    body = "require valid_user;\nconnections 1;\nreconnect_timeout 30s;\nrequest_timeout 2s;"
+    url = url_for("127.0.0.1", proxy.port)
+    server = nginx.start(http=ldap_server("proxied", body, url=url), server=protected_location("proxied"))
+    wait_until_ready(server)
+    since = server.log_size()
+
+    getattr(proxy, cut)()
+    time.sleep(0.3)
+
+    assert status(server, "bob") == 200
+    assert proxy.connections == 2
+    log = server.log(since)
+    assert "[error]" not in log, log
+    assert "closed the idle connection" in log
+
+
+class DropsAfterTheBind(FakeLdapServer):
+    """Accepts the service bind, then closes the connection at once."""
+
+    def close_after(self, op: int) -> bool:
+        return op == BIND_REQUEST
+
+
+def test_server_that_drops_every_connection_is_not_reconnected_in_a_loop(nginx):
+    fake = DropsAfterTheBind()
+    try:
+        body = "require valid_user;\nconnections 1;\nreconnect_timeout 1s;"
+        nginx.start(http=ldap_server("dropping", body, url=fake.url()), server=protected_location("dropping"))
+        time.sleep(1.5)
+
+        # The first connect, one immediate reconnect after the first drop,
+        # then one per reconnect_timeout.
+        assert 2 <= fake.connections <= 4, fake.connections
+    finally:
+        fake.close()

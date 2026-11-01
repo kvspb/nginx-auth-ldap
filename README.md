@@ -397,11 +397,15 @@ Syntax:  max_down_retries number;
 Default: max_down_retries 0;
 ```
 
-When a connection reports that the server is down (`ldap_result() failed
-(-1: Can't contact LDAP server)`), for example because a firewall or the
-server dropped an idle connection, reconnect at once instead of after
+When a connection breaks while a request is using it (`ldap_result() failed
+(-1: Can't contact LDAP server)`), reconnect at once instead of after
 `reconnect_timeout`, up to this many times in a row. The count starts again
 after a successful bind as `binddn`.
+
+An idle connection that the server or a firewall closes (Active Directory
+does after 15 minutes by default) is always opened again at once, at most
+once per `reconnect_timeout`, and only logged at the `info` level:
+`Server "..." closed the idle connection`.
 
 #### connect_timeout
 
@@ -430,7 +434,8 @@ Default: reconnect_timeout 10s;
 ```
 
 How long to wait before a failed or closed connection is opened again. Must
-be greater than 0.
+be greater than 0. A connection closed while idle, or closed together with
+a request that timed out, is opened again at once instead.
 
 #### request_timeout
 
@@ -930,7 +935,7 @@ ldapsearch -H ldap://ldap.example.com -D "cn=nginx,ou=services,dc=example,dc=com
 | `Request timed out (state=...)` | The server accepted the connection but did not answer in time. |
 | `Authentication timed out on server "..."` | The request hit that server's `request_timeout` and goes on to the next server; see the messages before it. |
 | `Server "..." has no connection, trying the next server` | No connection to that server is bound as `binddn`: it is unreachable or rejects `binddn` (look for `Could not connect` or `Initial bind failed`). |
-| `ldap_result() failed (-1: Can't contact LDAP server)` | An idle connection was dropped by the server or a firewall; set `max_down_retries`. |
+| `ldap_result() failed (-1: Can't contact LDAP server)` | A connection broke while a request was using it; the request is answered with 503. See `max_down_retries`. |
 | `SSL handshake failed` | Not a TLS port, no common TLS version or cipher, or TLS on a plain `ldap://` port. |
 | `Remote side presented invalid SSL certificate: error ...` | The chain does not lead to a CA in `ssl_ca_file` / `ssl_ca_dir` or the system store. |
 | `... does not match address ...` | The certificate does not name the host of the `url` (or the address) in its subjectAltName. |
