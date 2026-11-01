@@ -112,7 +112,7 @@ typedef struct {
 } ngx_http_auth_ldap_main_conf_t;
 
 typedef struct {
-    ngx_str_t realm;
+    ngx_http_complex_value_t *realm;  /* NULL when unset; "off" turns it off */
     ngx_array_t *servers;       /* array of ngx_http_auth_ldap_server_t* */
 } ngx_http_auth_ldap_loc_conf_t;
 
@@ -157,6 +157,7 @@ typedef struct {
     ngx_str_t dn;
     ngx_uint_t search_entries;
     ngx_str_t referral;      /* first referral of the user search, if any */
+    ngx_str_t challenge;     /* the WWW-Authenticate value of the request */
     ngx_str_t user_dn;
 
     ngx_http_auth_ldap_cache_elt_t *cache_bucket;

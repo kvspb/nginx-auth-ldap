@@ -8,6 +8,13 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+### Added
+
+- `auth_ldap` takes variables, and a value of `off` turns the check off for
+  the request, as `auth_basic` does: a `geo` or `map` variable can exempt
+  clients or requests without `if` (kvspb#77, kvspb#238, PR #257). Quotes
+  and backslashes in the realm are escaped.
+
 ## [1.0.1] - 2026-11-01
 
 ### Fixed

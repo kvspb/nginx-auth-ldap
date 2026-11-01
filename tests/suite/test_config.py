@@ -226,6 +226,13 @@ def server_case(
             'invalid number of arguments in "auth_ldap_servers"',
             id="auth-ldap-servers-without-servers",
         ),
+        pytest.param(
+            USERS,
+            'location / { auth_ldap "a"; auth_ldap "b"; auth_ldap_servers users; }',
+            1,
+            '"auth_ldap" directive is duplicate',
+            id="auth-ldap-twice",
+        ),
         server_case(
             "timeout-not-a-time",
             "'connect_timeout' value has to be a valid time unit greater than 0",

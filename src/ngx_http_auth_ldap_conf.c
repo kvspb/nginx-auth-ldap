@@ -463,28 +463,26 @@ ngx_http_auth_ldap(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_str_t *value = cf->args->elts;
     ngx_http_auth_ldap_loc_conf_t *cnf = conf;
-    u_char *p;
+    ngx_http_compile_complex_value_t ccv;
 
-    if (ngx_strcmp(value[1].data, "off") == 0) {
-        ngx_str_set(&cnf->realm, "");
-        return NGX_CONF_OK;
+    if (cnf->realm != NULL) {
+        return "is duplicate";
     }
 
-    /*
-     * charset="UTF-8" (RFC 7617, 2.1) asks the browser for UTF-8
-     * credentials, as LDAP stores them; some sent ISO-8859-1 otherwise, and
-     * a non-ASCII password did not match (kvspb#145).
-     */
-    cnf->realm.len = sizeof("Basic realm=\"") - 1 + value[1].len
-                     + sizeof("\", charset=\"UTF-8\"") - 1;
-    cnf->realm.data = ngx_pnalloc(cf->pool, cnf->realm.len);
-    if (cnf->realm.data == NULL) {
+    /* The realm may hold variables; a value of "off" turns the check off,
+     * as with auth_basic (kvspb#77). */
+    cnf->realm = ngx_palloc(cf->pool, sizeof(ngx_http_complex_value_t));
+    if (cnf->realm == NULL) {
         return NGX_CONF_ERROR;
     }
 
-    p = ngx_cpymem(cnf->realm.data, "Basic realm=\"", sizeof("Basic realm=\"") - 1);
-    p = ngx_cpymem(p, value[1].data, value[1].len);
-    ngx_memcpy(p, "\", charset=\"UTF-8\"", sizeof("\", charset=\"UTF-8\"") - 1);
+    ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
+    ccv.cf = cf;
+    ccv.value = &value[1];
+    ccv.complex_value = cnf->realm;
+    if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
 
     return NGX_CONF_OK;
 }

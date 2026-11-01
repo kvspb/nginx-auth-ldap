@@ -282,13 +282,40 @@ Context: http, server, location, limit_except
 ```
 
 Turns LDAP authentication on with the given realm, which is sent in
-`WWW-Authenticate: Basic realm="realm", charset="UTF-8"`, or off. The
-realm is inserted as it is: do not put a double quote in it. The charset
-asks the browser to send the login and password in UTF-8 (RFC 7617), as the
-directory stores them; a client that sends ISO-8859-1 anyway cannot log in
-with a password that is not ASCII. Levels without `auth_ldap` inherit it.
-`auth_ldap` without servers rejects every request with `401` and logs
+`WWW-Authenticate: Basic realm="realm", charset="UTF-8"`, or off. The realm
+may contain variables, and when it expands to `off` the check is off for
+that request, as with `auth_basic`; quotes and backslashes in it are escaped.
+The charset asks the browser to send the login and password in UTF-8
+(RFC 7617), as the directory stores them; a client that sends ISO-8859-1
+anyway cannot log in with a password that is not ASCII. Levels without
+`auth_ldap` inherit it. `auth_ldap` without servers rejects every request
+with `401` and logs
 `"auth_ldap" requires one or more "auth_ldap_servers" in the same location`.
+
+A `geo` or `map` variable turns the check off per client or per request,
+without `if`:
+
+```nginx
+ldap_server corp {
+    url "ldap://ldap.example.com/ou=people,dc=example,dc=com?uid?sub?(objectClass=inetOrgPerson)";
+    include /etc/nginx/ldap/bind.conf;
+}
+
+geo $ldap_realm {
+    default      "Restricted";
+    192.0.2.0/24 off;
+}
+
+server {
+    listen 80;
+
+    location / {
+        auth_ldap $ldap_realm;
+        auth_ldap_servers corp;
+        root /var/www/html;
+    }
+}
+```
 
 #### auth_ldap_servers
 

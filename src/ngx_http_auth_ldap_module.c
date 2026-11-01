@@ -201,7 +201,7 @@ ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_auth_ldap_loc_conf_t *prev = parent;
     ngx_http_auth_ldap_loc_conf_t *conf = child;
 
-    if (conf->realm.data == NULL) {
+    if (conf->realm == NULL) {
         conf->realm = prev->realm;
     }
     ngx_conf_merge_ptr_value(conf->servers, prev->servers, NULL);
