@@ -144,7 +144,9 @@ def test_search_answered_with_a_referral_is_503_and_names_it(nginx, referring_se
     # line that says where the server pointed (kvspb#82 #111 #113 #204).
     target = f"ldap://dc2.example.com/{PEOPLE_DN}"
     ldap = referring_server(target, "result")
-    http = "auth_ldap_cache_enabled on;\n" + ldap_server("users", f"require valid_user;{TIMEOUTS}", url=ldap.url())
+    http = "auth_ldap_cache_enabled on;\n" + ldap_server(
+        "users", f"require valid_user;{TIMEOUTS}", url=ldap.url()
+    )
     server = nginx.start(http=http, server=protected_location("users"))
 
     assert server.get(auth=creds("alice")).status_code == 503
@@ -161,7 +163,8 @@ def test_user_not_found_next_to_a_reference_names_it(nginx, referring_server):
     target = f"ldap://dc2.example.com/{PEOPLE_DN}"
     ldap = referring_server(target, "reference")
     server = nginx.start(
-        http=ldap_server("users", f"require valid_user;{TIMEOUTS}", url=ldap.url()), server=protected_location("users")
+        http=ldap_server("users", f"require valid_user;{TIMEOUTS}", url=ldap.url()),
+        server=protected_location("users"),
     )
 
     assert server.get(auth=creds("alice")).status_code == 401
