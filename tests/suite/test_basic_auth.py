@@ -5,7 +5,18 @@ import base64
 import pytest
 
 from conftest import ldap_server, protected_location, url_for
-from ldapdata import LDAP_IPV4, LDAP_IPV6, TWIN_OTHER_SECRET, TWIN_UID, UNICODE_UID, creds, password
+from ldapdata import (
+    LDAP_IPV4,
+    LDAP_IPV6,
+    PEOPLE_DN,
+    TWIN_OTHER_SECRET,
+    TWIN_UID,
+    UNICODE_UID,
+    USERS_URL,
+    creds,
+    group_dn,
+    password,
+)
 
 
 class TestSingleServer:
@@ -111,3 +122,53 @@ class TestNonAsciiCredentials:
     )
     def test_credentials(self, server, encoding, expected):
         assert server.get(headers=basic(UNICODE_UID, password(UNICODE_UID), encoding)).status_code == expected
+
+
+class TestWithoutServiceAccount:
+    """No binddn: the connections bind anonymously (kvspb#208, kvspb#78).
+
+    The test directory allows anonymous reads, like many directories do.
+    Every request is checked twice, so the second one runs after the rebind,
+    which is anonymous too.
+    """
+
+    @pytest.fixture(scope="class")
+    def server(self, shared_nginx):
+        http = f"""
+ldap_server anonymous {{
+    url "{USERS_URL}";
+    require valid_user;
+}}
+
+ldap_server anonymous_groups {{
+    url "{USERS_URL}";
+    group_attribute member;
+    group_attribute_is_dn on;
+    require group "{group_dn("admins")}";
+}}
+
+ldap_server template {{
+    url "{USERS_URL}";
+    require valid_user "uid=$remote_user,{PEOPLE_DN}";
+}}
+"""
+        locations = (
+            protected_location("anonymous", "/any/")
+            + protected_location("anonymous_groups", "/admins/")
+            + protected_location("template", "/template/")
+        )
+        return shared_nginx.start(http=http, server=locations)
+
+    @pytest.mark.parametrize(
+        ("path", "auth", "expected"),
+        [
+            pytest.param("/any/", creds("alice"), 200, id="search"),
+            pytest.param("/any/", ("alice", "wrong"), 401, id="search-wrong-password"),
+            pytest.param("/admins/", creds("alice"), 200, id="group-member"),
+            pytest.param("/admins/", creds("bob"), 401, id="not-a-group-member"),
+            pytest.param("/template/", creds("alice"), 200, id="dn-template"),
+            pytest.param("/template/", ("alice", "wrong"), 401, id="dn-template-wrong-password"),
+        ],
+    )
+    def test_access(self, server, path, auth, expected):
+        assert [server.get(path, auth=auth).status_code for _ in range(2)] == [expected] * 2
