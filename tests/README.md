@@ -8,6 +8,8 @@ the only host requirements are Docker and `make`.
 make test                                   # nginx 1.30.6 (default)
 make test NGINX_VERSION=1.22.1              # any release from nginx.org
 make test-matrix                            # 1.22.1 (pre-1.23 API), 1.30.6 (stable), 1.31.8 (mainline)
+make test-builds                            # dynamic module, Alpine (musl), OpenSSL 1.1.1
+make test RUNNER=tests-alpine               # the suite on Alpine Linux
 make test PYTEST_ARGS="-k groups -x -vv"    # pytest arguments
 make test PYTEST_ARGS="--runxfail"          # show how known bugs fail today
 make coverage                               # coverage report in tests/reports/coverage/
@@ -24,6 +26,8 @@ cached build directory):
 | `NGINX_DEBUG=1` | `--with-debug`; error logs are written at `debug` level |
 | `SANITIZE=1`    | AddressSanitizer; any report fails the test             |
 | `COVERAGE=1`    | gcov build; writes a report (same as `make coverage`)   |
+| `DYNAMIC=1`     | the module as a dynamic module, loaded by `load_module` |
+| `OPENSSL_VERSION` | nginx built with that OpenSSL release from source     |
 
 `NGINX_DEBUG=1` changes behaviour: in debug builds `ngx_queue_remove()`
 clears the removed node, which hides double-removal bugs. Run the suite

@@ -66,10 +66,24 @@ jobs:
           - nginx: 1.30.6
             flavor: debug
             debug: 1
+          # Other builds (make test-builds): a dynamic module, Alpine Linux
+          # (musl), and the oldest supported OpenSSL built from source.
+          - nginx: 1.30.6
+            flavor: dynamic
+            dynamic: 1
+          - nginx: 1.30.6
+            flavor: alpine
+            runner: tests-alpine
+          - nginx: 1.30.6
+            flavor: openssl-1.1.1
+            openssl: 1.1.1w
     env:
       NGINX_VERSION: ${{ matrix.nginx }}
       SANITIZE: ${{ matrix.sanitize || 0 }}
       NGINX_DEBUG: ${{ matrix.debug || 0 }}
+      DYNAMIC: ${{ matrix.dynamic || 0 }}
+      OPENSSL_VERSION: ${{ matrix.openssl || '' }}
+      RUNNER: ${{ matrix.runner || 'tests' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Integration suite
