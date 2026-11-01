@@ -36,6 +36,7 @@
 static ngx_int_t ngx_http_auth_ldap_restore_handlers(ngx_connection_t *conn);
 static ngx_int_t ngx_http_auth_ldap_check_peer(ngx_http_auth_ldap_connection_t *c,
     ngx_connection_t *conn);
+static ngx_flag_t ngx_http_auth_ldap_is_address(const char *host);
 #endif
 
 #if (NGX_OPENSSL)
@@ -161,6 +162,20 @@ done:
     return rc;
 }
 
+/* Whether the host of the url is an IPv4 or IPv6 address, not a name. */
+static ngx_flag_t
+ngx_http_auth_ldap_is_address(const char *host)
+{
+    u_char buf[sizeof(struct in6_addr)];
+
+    return host == NULL
+           || inet_pton(AF_INET, host, buf) == 1
+#if (NGX_HAVE_INET6)
+           || inet_pton(AF_INET6, host, buf) == 1
+#endif
+           ;
+}
+
 void
 ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
 {
@@ -175,6 +190,20 @@ ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
         ngx_http_auth_ldap_close_connection(c);
         return;
     }
+
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
+    /*
+     * SNI, so that a server with several certificates on one address can
+     * pick the one for this host. Never for an address (RFC 6066, 3).
+     */
+    if (!ngx_http_auth_ldap_is_address(c->server->ludpp->lud_host)
+        && SSL_set_tlsext_host_name(conn->ssl->connection, c->server->ludpp->lud_host) != 1)
+    {
+        ngx_ssl_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: SSL_set_tlsext_host_name() failed");
+        ngx_http_auth_ldap_close_connection(c);
+        return;
+    }
+#endif
 
     c->log->action = "SSL handshaking to LDAP server";
 

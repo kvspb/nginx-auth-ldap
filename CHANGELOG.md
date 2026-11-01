@@ -187,6 +187,9 @@ Known before this release:
 
 ### Added
 
+- SNI: the host name of an `ldaps://` url, or one with `starttls on`, is
+  sent in the TLS handshake, so that a server or proxy with several
+  certificates on one address can present the right one.
 - `so_keepalive` in `ldap_server`: TCP keepalive timings for the LDAP
   connections, by default a first probe after 60 seconds idle, so that a
   connection a firewall or NAT forgot is found and opened again before a

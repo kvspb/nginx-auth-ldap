@@ -33,6 +33,7 @@ from ldapdata import (
     creds,
     ldaps_url,
 )
+from tlsproxy import TlsProxy
 
 CA = TLS_DIR / "ca.crt"
 OTHER_CA = TLS_DIR / "other-ca.crt"
@@ -214,3 +215,22 @@ def test_unusable_ca_location_is_a_configuration_error(nginx, directive, path):
 
     assert result.returncode == 1, result.stderr
     assert f'cannot load CA certificates from "{path}"' in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        pytest.param("localhost", "localhost", id="host-name"),
+        # RFC 6066: an address is never sent as a server name.
+        pytest.param("127.0.0.1", None, id="address"),
+        pytest.param("::1", None, id="ipv6-address"),
+    ],
+)
+def test_server_name_is_sent(nginx, host, expected):
+    # Without SNI a server with several certificates on one address (a load
+    # balancer, a TLS proxy) cannot pick the one for this host (audit F16).
+    with TlsProxy() as proxy:
+        start(nginx, ldaps_url(host, proxy.port), check="off", ca_file=None)
+
+        assert nginx.get(auth=creds("alice"), timeout=5).status_code == 200
+        assert proxy.server_names and set(proxy.server_names) == {expected}
