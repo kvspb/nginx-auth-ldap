@@ -34,6 +34,7 @@ static void ngx_http_auth_ldap_reconnect_handler(ngx_event_t *);
 static void ngx_http_auth_ldap_wake_request(ngx_http_request_t *r);
 static void ngx_http_auth_ldap_initial_bind(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_idle_closed(ngx_http_auth_ldap_connection_t *c);
+static void ngx_http_auth_ldap_set_keepalive(ngx_http_auth_ldap_connection_t *c, ngx_socket_t fd);
 
 /*** Asynchronous LDAP connection handling ***/
 
@@ -351,12 +352,60 @@ ngx_http_auth_ldap_initial_bind(ngx_http_auth_ldap_connection_t *c)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: bind_timeout=%d", c->server->bind_timeout);
 }
 
+/*
+ * TCP keepalive finds a connection that a firewall or NAT forgot while it
+ * was idle: the kernel then fails the socket and the read handler reopens
+ * the connection, instead of the next request waiting for request_timeout.
+ */
+static void
+ngx_http_auth_ldap_set_keepalive(ngx_http_auth_ldap_connection_t *c, ngx_socket_t fd)
+{
+    int value;
+
+    if (!c->server->so_keepalive) {
+        return;
+    }
+
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    value = c->server->keepidle;
+    if (value != 0) {
+#if (NGX_KEEPALIVE_FACTOR)
+        value *= NGX_KEEPALIVE_FACTOR;
+#endif
+        if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (const void *) &value, sizeof(int)) == -1) {
+            ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno, "http_auth_ldap: setsockopt(TCP_KEEPIDLE) failed");
+        }
+    }
+
+    value = c->server->keepintvl;
+    if (value != 0) {
+#if (NGX_KEEPALIVE_FACTOR)
+        value *= NGX_KEEPALIVE_FACTOR;
+#endif
+        if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (const void *) &value, sizeof(int)) == -1) {
+            ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno, "http_auth_ldap: setsockopt(TCP_KEEPINTVL) failed");
+        }
+    }
+
+    value = c->server->keepcnt;
+    if (value != 0) {
+        if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (const void *) &value, sizeof(int)) == -1) {
+            ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno, "http_auth_ldap: setsockopt(TCP_KEEPCNT) failed");
+        }
+    }
+#endif
+
+    value = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (const void *) &value, sizeof(int)) == -1) {
+        ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno, "http_auth_ldap: setsockopt(SO_KEEPALIVE) failed");
+    }
+}
+
 static void
 ngx_http_auth_ldap_connect_handler(ngx_event_t *wev)
 {
     ngx_connection_t *conn;
     ngx_http_auth_ldap_connection_t *c;
-    int keepalive;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, wev->log, 0, "http_auth_ldap: Connect handler");
 
@@ -368,11 +417,7 @@ ngx_http_auth_ldap_connect_handler(ngx_event_t *wev)
         return;
     }
 
-    keepalive = 1;
-    if (setsockopt(conn->fd, SOL_SOCKET, SO_KEEPALIVE, (const void *) &keepalive, sizeof(int)) == -1)
-    {
-        ngx_log_error(NGX_LOG_ALERT, c->log, ngx_socket_errno, "http_auth_ldap: setsockopt(SO_KEEPALIVE) failed");
-    }
+    ngx_http_auth_ldap_set_keepalive(c, conn->fd);
 
 #if (NGX_OPENSSL)
     if (ngx_strcmp(c->server->ludpp->lud_scheme, "ldaps") == 0) {

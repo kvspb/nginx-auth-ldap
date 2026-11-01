@@ -36,6 +36,7 @@ static char * ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_lda
 static char * ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf);
 static char * ngx_http_auth_ldap_parse_flag(ngx_conf_t *cf, ngx_flag_t *flag);
+static char * ngx_http_auth_ldap_parse_keepalive(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static ngx_int_t ngx_http_auth_ldap_check_filter(const char *filter);
 #if (NGX_OPENSSL)
 static char * ngx_http_auth_ldap_create_ssl(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
@@ -47,7 +48,7 @@ static char * ngx_http_auth_ldap_load_ca(ngx_conf_t *cf, ngx_http_auth_ldap_serv
 static const char *ngx_http_auth_ldap_single_value_directives[] = {
     "url", "binddn", "binddn_passwd", "group_attribute",
     "group_attribute_is_dn", "satisfy", "referral", "max_down_retries",
-    "connections", "starttls", "ssl_check_cert", "ssl_ca_dir", "ssl_ca_file",
+    "connections", "so_keepalive", "starttls", "ssl_check_cert", "ssl_ca_dir", "ssl_ca_file",
     "connect_timeout", "reconnect_timeout", "bind_timeout",
     "request_timeout", "include", NULL
 };
@@ -123,6 +124,13 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     server->reconnect_timeout = 10000;
     server->bind_timeout = 5000;
     server->request_timeout = 10000;
+    /* Find connections a firewall forgot long before the kernel would. */
+    server->so_keepalive = 1;
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    server->keepidle = 60;
+    server->keepintvl = 10;
+    server->keepcnt = 3;
+#endif
     server->alias = name;
 
     save = *cf;
@@ -307,6 +315,8 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
             return NGX_CONF_ERROR;
         }
         server->connections = i;
+    } else if (ngx_strcmp(value[0].data, "so_keepalive") == 0) {
+        return ngx_http_auth_ldap_parse_keepalive(cf, server);
     } else if (ngx_strcmp(value[0].data, "starttls") == 0) {
         return ngx_http_auth_ldap_parse_flag(cf, &server->starttls);
     } else if (ngx_strcmp(value[0].data, "ssl_check_cert") == 0) {
@@ -354,6 +364,79 @@ ngx_http_auth_ldap_parse_flag(ngx_conf_t *cf, ngx_flag_t *flag)
     ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
         "http_auth_ldap: invalid value \"%V\" for %V, it must be \"on\" or \"off\"",
         &value[1], &value[0]);
+    return NGX_CONF_ERROR;
+}
+
+/*
+ * so_keepalive on | off | [idle]:[interval]:[count], as the parameter of
+ * the listen directive: "on" keeps the system timings.
+ */
+static char *
+ngx_http_auth_ldap_parse_keepalive(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server)
+{
+    ngx_str_t *value, s;
+    u_char *p, *end;
+    ngx_int_t n[3];
+    ngx_uint_t i;
+
+    value = cf->args->elts;
+
+    if (ngx_strcmp(value[1].data, "on") == 0 || ngx_strcmp(value[1].data, "off") == 0) {
+        server->keepidle = 0;
+        server->keepintvl = 0;
+        server->keepcnt = 0;
+        return ngx_http_auth_ldap_parse_flag(cf, &server->so_keepalive);
+    }
+
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    p = value[1].data;
+    end = value[1].data + value[1].len;
+
+    for (i = 0; i < 3; i++) {
+        s.data = p;
+        while (p < end && *p != ':') {
+            p++;
+        }
+        s.len = p - s.data;
+
+        if (s.len == 0) {
+            n[i] = 0;
+        } else if (i < 2) {
+            n[i] = ngx_parse_time(&s, 1);
+        } else {
+            n[i] = ngx_atoi(s.data, s.len);
+        }
+        if (n[i] == NGX_ERROR || (s.len != 0 && n[i] == 0)) {
+            goto invalid;
+        }
+
+        if (i < 2) {
+            if (p == end) {
+                goto invalid;
+            }
+            p++;
+        }
+    }
+
+    if (p != end || (n[0] == 0 && n[1] == 0 && n[2] == 0)) {
+        goto invalid;
+    }
+
+    server->so_keepalive = 1;
+    server->keepidle = n[0];
+    server->keepintvl = n[1];
+    server->keepcnt = n[2];
+    return NGX_CONF_OK;
+
+invalid:
+#endif
+
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+        "http_auth_ldap: invalid value \"%V\" for so_keepalive, it must be \"on\", \"off\""
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+        " or [idle]:[interval]:[count]"
+#endif
+        , &value[1]);
     return NGX_CONF_ERROR;
 }
 

@@ -395,6 +395,25 @@ its search, bind and rebind (and group searches), so size it to the
 number of uncached requests a worker checks at the same time; with the
 cache on, most requests need no connection.
 
+#### so_keepalive
+
+```text
+Syntax:  so_keepalive on | off | [idle]:[interval]:[count];
+Default: so_keepalive 60s:10s:3;
+```
+
+TCP keepalive on the connections to the server. A firewall or NAT that
+forgets an idle connection drops its packets without a word, and the next
+request on it would wait for `request_timeout`. Keepalive probes find such
+a connection while it is idle, and it is opened again. By default the first
+probe goes out after 60 seconds without traffic, then every 10 seconds; after
+3 unanswered probes the connection is given up. `on` keeps the timings of
+the system (on Linux the first probe after 2 hours), `off` sends no probes.
+As for the `so_keepalive` parameter of `listen`, a part left empty keeps the
+system value, for example `so_keepalive 5m::;`. The timings need a system
+that can set them per socket (Linux, FreeBSD); elsewhere only `on` and `off`
+are accepted.
+
 #### max_down_retries
 
 ```text

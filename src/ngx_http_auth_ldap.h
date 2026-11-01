@@ -86,6 +86,10 @@ typedef struct {
     ngx_flag_t satisfy_all;
 
     ngx_uint_t connections;
+    ngx_flag_t so_keepalive;
+    int keepidle;                   /* seconds; 0 for the system default */
+    int keepintvl;
+    int keepcnt;
     ngx_uint_t max_down_retries;
     ngx_msec_t connect_timeout;
     ngx_msec_t reconnect_timeout;

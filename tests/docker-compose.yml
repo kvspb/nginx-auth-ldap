@@ -29,6 +29,10 @@ services:
       SANITIZE: "${SANITIZE:-0}"
       COVERAGE: "${COVERAGE:-0}"
       LDAP_HOST: ldap
+    cap_add: &trace-children
+      # pidfd_getfd(2), to read socket options of the nginx workers
+      # (suite/test_keepalive.py); Docker's seccomp profile requires it.
+      - SYS_PTRACE
     extra_hosts: &ldap-aliases
       # Names of the ldap service that are not in its certificate, so that
       # verification has to fall back to the IP SAN (suite/test_ldaps.py).
@@ -54,6 +58,7 @@ services:
       MUTATE_TIMEOUT: "${MUTATE_TIMEOUT:-300000}"
       MUTATE_ASAN: "${MUTATE_ASAN:-1}"
       LDAP_HOST: ldap
+    cap_add: *trace-children
     extra_hosts: *ldap-aliases
     volumes:
       - ${MODULE_SRC:-..}:/src:ro

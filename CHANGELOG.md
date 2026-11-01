@@ -184,6 +184,10 @@ Known before this release:
 
 ### Added
 
+- `so_keepalive` in `ldap_server`: TCP keepalive timings for the LDAP
+  connections, by default a first probe after 60 seconds idle, so that a
+  connection a firewall or NAT forgot is found and opened again before a
+  request waits on it (kvspb#51).
 - StartTLS on `ldap://` urls with `starttls on` (kvspb#44, kvspb#175).
   Nothing is sent in clear before the TLS handshake, and a server that
   refuses StartTLS is never sent a bind: there is no fallback to plain LDAP.
