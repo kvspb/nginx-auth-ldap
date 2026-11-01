@@ -351,21 +351,23 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
 
             // if LDAP_SERVER_DOWN (usually timeouts or server disconnects)
             if (rc == LDAP_SERVER_DOWN && \
-                c->server->max_down_retries_count < c->server->max_down_retries) { 
-                /** 
-                    update counter (this is always reset in 
-                    ngx_http_auth_ldap_connect() for a successful ldap 
-                    connection  
+                c->server->max_down_retries_count < c->server->max_down_retries) {
+                /**
+                    update counter (this is always reset in
+                    ngx_http_auth_ldap_connect() for a successful ldap
+                    connection
                 **/
                 c->server->max_down_retries_count++;
                 ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: LDAP_SERVER_DOWN: retry count: %d",
                     c->server->max_down_retries_count);
-                c->state = STATE_DISCONNECTED;
-                // immediate reconnect synchronously, this schedules another
-                // timer call to this read handler again
-                ngx_http_auth_ldap_reconnect_handler(rev);
-                return;
-            } 
+                /*
+                 * Reconnect at once, through the reconnect timer that
+                 * close_connection() above has set: connecting directly
+                 * used the freed event of the closed nginx connection and
+                 * raced that timer.
+                 */
+                ngx_add_timer(&c->reconnect_event, 0);
+            }
 
             return;
         }

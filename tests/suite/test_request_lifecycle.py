@@ -219,3 +219,36 @@ def test_client_that_goes_away_leaves_the_pool_usable(nginx, proxy, abort, where
     time.sleep(1.2)
     with ThreadPoolExecutor(max_workers=4) as pool:
         assert list(pool.map(lambda uid: status(server, uid), ["alice", "bob", "carol", "dave"])) == [200] * 4
+
+
+@pytest.mark.parametrize("retries", [0, 2])
+def test_connection_dropped_by_the_server_is_reconnected_once(nginx, proxy, retries):
+    # With max_down_retries the read handler used to connect again at once
+    # through the freed nginx connection, besides the reconnect timer that
+    # close_connection() had already set.
+    body = f"require valid_user;\nconnections 1;\nmax_down_retries {retries};{TIMEOUTS}"
+    url = url_for("127.0.0.1", proxy.port)
+    server = nginx.start(http=ldap_server("proxied", body, url=url), server=protected_location("proxied"))
+    wait_until_ready(server)
+    assert proxy.connections == 1
+
+    proxy.drop()
+    time.sleep(1)
+
+    assert proxy.connections == 2
+    wait_until_ready(server)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert list(pool.map(lambda uid: status(server, uid), ["alice", "bob", "carol", "dave"])) == [200] * 4
+
+
+@pytest.mark.parametrize(("retries", "reconnected"), [(0, False), (1, True)])
+def test_max_down_retries_reconnects_without_waiting(nginx, proxy, retries, reconnected):
+    body = f"require valid_user;\nconnections 1;\nmax_down_retries {retries};\nreconnect_timeout 5s;"
+    url = url_for("127.0.0.1", proxy.port)
+    server = nginx.start(http=ldap_server("proxied", body, url=url), server=protected_location("proxied"))
+    wait_until_ready(server)
+
+    proxy.drop()
+    time.sleep(0.5)
+
+    assert (proxy.connections == 2) is reconnected
