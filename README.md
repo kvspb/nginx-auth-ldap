@@ -1176,6 +1176,7 @@ make test                                 # nginx 1.30.6
 make test PYTEST_ARGS="-q -k groups"      # pytest arguments
 make test NGINX_VERSION=1.22.1            # another nginx release
 make test-matrix                          # 1.22.1, 1.30.6 and 1.31.8
+make test-builds                          # dynamic module, Alpine (musl), OpenSSL 1.1.1
 SANITIZE=1 make test                      # AddressSanitizer build
 NGINX_DEBUG=1 make test                   # --with-debug build
 make coverage                             # report in tests/reports/coverage/
