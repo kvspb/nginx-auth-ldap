@@ -47,6 +47,9 @@ static ngx_int_t ngx_http_auth_ldap_wait_result(ngx_http_request_t *r, ngx_http_
 static void ngx_http_auth_ldap_cleanup_request(void *data);
 static ngx_flag_t ngx_http_auth_ldap_server_failed(int code);
 
+#define NGX_HTTP_AUTH_LDAP_GC_HINT \
+    "for Active Directory, use the Global Catalog (port 3268)"
+
 /*** Per-request authentication processing ***/
 
 /*
@@ -61,6 +64,7 @@ ngx_http_auth_ldap_server_failed(int code)
     switch (code) {
     case LDAP_NO_RESULTS_RETURNED:   /* set by the read handler, an answer */
         return 0;
+    case LDAP_REFERRAL:              /* the entry is on another server */
     case LDAP_TIMELIMIT_EXCEEDED:
     case LDAP_ADMINLIMIT_EXCEEDED:
     case LDAP_BUSY:
@@ -629,6 +633,7 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
         attrs[0] = LDAP_NO_ATTRS;
         attrs[1] = NULL;
         ctx->search_entries = 0;
+        ngx_str_null(&ctx->referral);
         /* The read handler only records the first entry DN while ctx->dn is
          * empty: an entry left by the search of a previous server (one that
          * found two entries, for example) must not become this one's user. */
@@ -648,12 +653,28 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
         return NGX_ERROR;
     }
 
+    if (ctx->error_code == LDAP_REFERRAL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+            "http_auth_ldap: Server \"%V\" referred the user search to \"%V\": "
+            "the base DN of its url is on another server; "
+            NGX_HTTP_AUTH_LDAP_GC_HINT, &ctx->server->alias, &ctx->referral);
+        ctx->outcome = OUTCOME_UNAVAILABLE;
+        return NGX_ERROR;
+    }
+
     if (ctx->error_code != LDAP_SUCCESS) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_search_ext() request failed (%d: %s)",
             ctx->error_code, ldap_err2string(ctx->error_code));
         if (ngx_http_auth_ldap_server_failed(ctx->error_code)) {
             ctx->outcome = OUTCOME_UNAVAILABLE;
         }
+        return NGX_ERROR;
+    }
+
+    if (ctx->dn.data == NULL && ctx->referral.data != NULL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+            "http_auth_ldap: User \"%V\" not found on server \"%V\", which referred to \"%V\"; "
+            NGX_HTTP_AUTH_LDAP_GC_HINT, &r->headers_in.user, &ctx->server->alias, &ctx->referral);
         return NGX_ERROR;
     }
 

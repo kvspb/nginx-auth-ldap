@@ -156,6 +156,7 @@ typedef struct {
     ngx_flag_t unavailable;  /* a server could not decide: answer 503 */
     ngx_str_t dn;
     ngx_uint_t search_entries;
+    ngx_str_t referral;      /* first referral of the user search, if any */
     ngx_str_t user_dn;
 
     ngx_http_auth_ldap_cache_elt_t *cache_bucket;

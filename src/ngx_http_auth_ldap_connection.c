@@ -34,6 +34,7 @@ static void ngx_http_auth_ldap_reconnect_handler(ngx_event_t *);
 static void ngx_http_auth_ldap_wake_request(ngx_http_request_t *r);
 static void ngx_http_auth_ldap_initial_bind(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_idle_closed(ngx_http_auth_ldap_connection_t *c);
+static void ngx_http_auth_ldap_note_referral(ngx_http_auth_ldap_connection_t *c, char **refs);
 static void ngx_http_auth_ldap_set_keepalive(ngx_http_auth_ldap_connection_t *c, ngx_socket_t fd);
 
 /*** Asynchronous LDAP connection handling ***/
@@ -461,6 +462,30 @@ ngx_http_auth_ldap_idle_closed(ngx_http_auth_ldap_connection_t *c)
     }
 }
 
+/*
+ * Keep the first referral URL of a user search, from a search reference or
+ * a referral result, so that the request can say where the server pointed.
+ * Referrals are never chased.
+ */
+static void
+ngx_http_auth_ldap_note_referral(ngx_http_auth_ldap_connection_t *c, char **refs)
+{
+    ngx_http_auth_ldap_ctx_t *ctx;
+    size_t len;
+
+    ctx = c->rctx;
+    if (ctx == NULL || refs == NULL || refs[0] == NULL || ctx->referral.data != NULL) {
+        return;
+    }
+
+    len = ngx_strlen(refs[0]);
+    ctx->referral.data = ngx_pnalloc(ctx->r->pool, len);
+    if (ctx->referral.data != NULL) {
+        ngx_memcpy(ctx->referral.data, refs[0], len);
+        ctx->referral.len = len;
+    }
+}
+
 void
 ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
 {
@@ -472,6 +497,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
     int error_code;
     char *error_msg;
     char *dn;
+    char **refs;
     u_char *p;
     size_t len;
 
@@ -538,10 +564,12 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
             continue;
         }
 
-        rc = ldap_parse_result(c->ld, result, &error_code, NULL, &error_msg, NULL, NULL, 0);
+        refs = NULL;
+        rc = ldap_parse_result(c->ld, result, &error_code, NULL, &error_msg, &refs, NULL, 0);
         if (rc == LDAP_NO_RESULTS_RETURNED) {
             error_code = LDAP_NO_RESULTS_RETURNED;
             error_msg = NULL;
+            refs = NULL;
         } else if (rc != LDAP_SUCCESS) {
             ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: ldap_parse_result() failed (%d: %s)",
                 rc, ldap_err2string(rc));
@@ -626,9 +654,15 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                             ldap_memfree(dn);
                         }
                     }
+                } else if (ldap_msgtype(result) == LDAP_RES_SEARCH_REFERENCE) {
+                    /* Never chased; kept to explain a user not found. */
+                    if (ldap_parse_reference(c->ld, result, &refs, NULL, 0) == LDAP_SUCCESS) {
+                        ngx_http_auth_ldap_note_referral(c, refs);
+                    }
                 } else if (ldap_msgtype(result) == LDAP_RES_SEARCH_RESULT) {
                     ngx_log_debug3(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received search result (%d: %s [%s])",
                         error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
+                    ngx_http_auth_ldap_note_referral(c, refs);
                     ngx_http_auth_ldap_reply_connection(c, error_code);
                 }
                 break;
@@ -638,6 +672,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
         }
 
         ldap_memfree(error_msg);
+        ldap_memvfree((void **) refs);
         ldap_msgfree(result);
 
         if (c->ld == NULL) {

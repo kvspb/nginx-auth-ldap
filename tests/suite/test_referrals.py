@@ -132,3 +132,39 @@ def test_referral_host_is_never_contacted(nginx, referring_server, kind, setting
 
         assert not contacted, "nginx connected to the referral host"
         assert status in (401, 503)
+
+
+GC_HINT = "for Active Directory, use the Global Catalog (port 3268)"
+
+
+def test_search_answered_with_a_referral_is_503_and_names_it(nginx, referring_server):
+    # A referral result says the base DN of the url is not on this server
+    # (Active Directory outside the domain of the domain controller on 389).
+    # That says nothing about the credentials: 503, not cached, and a log
+    # line that says where the server pointed (kvspb#82 #111 #113 #204).
+    target = f"ldap://dc2.example.com/{PEOPLE_DN}"
+    ldap = referring_server(target, "result")
+    http = "auth_ldap_cache_enabled on;\n" + ldap_server("users", f"require valid_user;{TIMEOUTS}", url=ldap.url())
+    server = nginx.start(http=http, server=protected_location("users"))
+
+    assert server.get(auth=creds("alice")).status_code == 503
+    assert server.get(auth=creds("alice")).status_code == 503
+    log = server.log()
+    assert f'Server "users" referred the user search to "{target}"' in log
+    assert GC_HINT in log
+
+
+def test_user_not_found_next_to_a_reference_names_it(nginx, referring_server):
+    # Search references come with entries that other servers hold: a user
+    # who is only there is not found here. Denied, with a log line that
+    # says where the server pointed.
+    target = f"ldap://dc2.example.com/{PEOPLE_DN}"
+    ldap = referring_server(target, "reference")
+    server = nginx.start(
+        http=ldap_server("users", f"require valid_user;{TIMEOUTS}", url=ldap.url()), server=protected_location("users")
+    )
+
+    assert server.get(auth=creds("alice")).status_code == 401
+    log = server.log()
+    assert f'User "alice" not found on server "users", which referred to "{target}"' in log
+    assert GC_HINT in log

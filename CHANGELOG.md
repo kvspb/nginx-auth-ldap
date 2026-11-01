@@ -171,6 +171,10 @@ Known before this release:
 
 ### Changed
 
+- A user search answered with a referral gets `503` instead of `401`, and
+  the log names the referral and suggests the Global Catalog of Active
+  Directory; so does the log of a user not found next to search
+  references (kvspb#82, kvspb#111, kvspb#113, kvspb#204).
 - The module runs after the other access modules (`allow`/`deny`,
   `auth_basic`, `auth_request`) instead of before them. Under `satisfy any`
   a client they admit costs no LDAP request, and `auth_basic` with a local

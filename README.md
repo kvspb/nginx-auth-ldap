@@ -545,9 +545,13 @@ Default: -
 
 Accepted for compatibility and ignored: referrals are never followed.
 Following one made the LDAP library connect to any host a server named with
-a blocking connect, outside the nginx event loop. Search references in
-answers are skipped, and a search answered with a referral fails like any
-other LDAP error.
+a blocking connect, outside the nginx event loop. A search answered with a
+referral (the base DN is on another server) is answered with `503` and logged
+as `Server "..." referred the user search to "..."`. Search references next
+to the entries are skipped; when the user is not found, the first one is
+logged: `User "..." not found on server "...", which referred to "..."`. With
+Active Directory both usually mean that the `url` should point at the Global
+Catalog (port 3268).
 
 #### include
 
@@ -990,6 +994,7 @@ ldapsearch -H ldap://ldap.example.com -D "cn=nginx,ou=services,dc=example,dc=com
 | Log message | Likely cause |
 | --- | --- |
 | `Could not find user DN` | Wrong base DN, scope, login attribute or filter. The scope defaults to `base`: add `?sub` to the `url`. |
+| `referred the user search to "..."`, `not found on server "...", which referred to "..."` | The entry is on another server, for example in another Active Directory domain: point the `url` at the Global Catalog (port 3268). |
 | `User search for "..." returned more than one entry` | The login is not unique below the base DN: narrow the base or the filter. |
 | `User bind failed (49: Invalid credentials)` | Wrong password, or a locked or expired account. |
 | `Initial bind failed (49: Invalid credentials ...)` | Wrong `binddn` or `binddn_passwd`. The connection never becomes ready, so requests get `503`. |
