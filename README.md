@@ -388,7 +388,12 @@ Default: connections 1;
 
 Number of connections each worker keeps open to the server, at least 1. A
 request waits while every connection is busy, so raise it for busy sites.
-The server sees `worker_processes` times this number of connections.
+The server sees `worker_processes` times this number of connections, for
+each `ldap_server` that names it, and the old workers of a reload keep
+theirs until they exit. A connection carries one LDAP operation at a time,
+and a request takes a search, a bind and a rebind (more with `require
+group`), so one connection serves a few hundred uncached requests a
+second on a fast network; with the cache on, most requests need none.
 
 #### max_down_retries
 

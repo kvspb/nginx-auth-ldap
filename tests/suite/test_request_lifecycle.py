@@ -19,6 +19,7 @@ import subprocess
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 import requests
@@ -577,3 +578,32 @@ def test_server_that_drops_every_connection_is_not_reconnected_in_a_loop(nginx):
         assert 2 <= fake.connections <= 4, fake.connections
     finally:
         fake.close()
+
+
+def open_sockets(pid: int) -> int:
+    return sum(1 for fd in Path(f"/proc/{pid}/fd").iterdir() if fd.resolve().name.startswith("socket:"))
+
+
+def test_connections_do_not_pile_up_under_load_with_drops(nginx, proxy):
+    # kvspb#186: with max_down_retries the number of connections in the
+    # "writing" state grew steadily under load while the server dropped
+    # connections. Neither the LDAP connections nor the client connections
+    # of the worker may outgrow the pool once the load is over.
+    body = "require valid_user;\nconnections 3;\nmax_down_retries 5;\nreconnect_timeout 200ms;\nrequest_timeout 2s;"
+    url = url_for("127.0.0.1", proxy.port)
+    server = nginx.start(http=ldap_server("proxied", body, url=url), server=protected_location("proxied"))
+    wait_until_ready(server)
+    (worker,) = server.worker_pids()
+    before = open_sockets(worker)
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        pending = [pool.submit(status, server, uid, 10) for uid in ["alice", "bob", "carol", "dave"] * 50]
+        for _ in range(5):
+            time.sleep(0.2)
+            proxy.drop()
+        results = [p.result() for p in pending]
+
+    assert set(results) <= {200, 503}
+    wait_until_ready(server)
+    time.sleep(0.5)
+    assert open_sockets(worker) <= before
