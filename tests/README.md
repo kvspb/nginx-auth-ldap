@@ -96,6 +96,7 @@ tests/
   mutation/            clang + Mull image; run-mutation.sh for make mutate,
                        summary.py for the CI job summary
   modules/rerun_phases test-only nginx module, built into every test binary
+  modules/connect_sync test-only nginx module, built into every test binary
   suite/
     harness.py         Nginx: per-test prefix, config, start/stop, crash detection
     conftest.py        `nginx` fixture, ldap_server() / protected_location() helpers
@@ -156,6 +157,11 @@ test classes.
   while it is still in them, as HTTP/3 or other modules may do. Use it to
   check that the access handler copes with runs while an LDAP operation is in
   flight.
+- `test_connect_sync on;` (http level, from `modules/connect_sync`, built
+  only into test binaries) makes every connect() of the process complete
+  before it returns, as a loopback connect may on Solaris or the BSDs. Linux
+  never does that for TCP. Combine it with `events="use poll;"` in
+  `nginx.start()`, where nginx then leaves the connect handler to the caller.
 - To add directory data, edit `ldap/seed.ldif` and `suite/ldapdata.py`
   together, then run `make test-down` so the LDAP image is reseeded.
 

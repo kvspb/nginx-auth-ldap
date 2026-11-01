@@ -108,6 +108,9 @@ Known before this release:
   same LDAP handle again from inside OpenLDAP. Such a request now gets 503
   instead of 401, and the dead connection is closed instead of being
   handed to the next request.
+- When connect() completed at once (a loopback connect on Solaris or the
+  BSDs) with the select or poll event method, the LDAP connection was never
+  set up and the server never became usable (PR #617).
 - A connection closed because its request timed out (or its rebind
   failed) is connected again at once instead of after
   `reconnect_timeout`; the next requests no longer wait for it and time

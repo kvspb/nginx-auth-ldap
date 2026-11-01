@@ -590,6 +590,16 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: connect_timeout=%d.", c->server->connect_timeout);
 
     c->state = STATE_CONNECTING;
+
+    /*
+     * connect() completed at once: with select or poll nginx has not
+     * added the write event, so the connect handler would never run
+     * (PR #617). With epoll a later write event goes to the handler the
+     * connection has set by then.
+     */
+    if (rc == NGX_OK) {
+        ngx_http_auth_ldap_connect_handler(conn->write);
+    }
 }
 
 static void

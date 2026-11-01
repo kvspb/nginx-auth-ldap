@@ -70,7 +70,7 @@ class Nginx:
     def url(self, path: str = "/") -> str:
         return f"http://127.0.0.1:{self.port}{path}"
 
-    def write_config(self, http: str = "", server: str = "", main: str = "") -> Path:
+    def write_config(self, http: str = "", server: str = "", main: str = "", events: str = "") -> Path:
         for sub in ("conf", "html", "logs", "temp"):
             (self.prefix / sub).mkdir(parents=True, exist_ok=True)
         # Served by protected_location() once access is granted.
@@ -94,6 +94,7 @@ class Nginx:
 
             events {{
                 worker_connections 64;
+                {events}
             }}
 
             http {{
@@ -116,6 +117,7 @@ class Nginx:
         ).format(
             passed_env=passed_env,
             main=main,
+            events=events,
             error_log=self.error_log,
             level=level,
             prefix=self.prefix,
@@ -138,11 +140,12 @@ class Nginx:
             check=False,
         )
 
-    def start(self, http: str = "", server: str = "", main: str = "") -> Nginx:
-        """Start nginx; ``main`` goes into the main (top-level) context."""
+    def start(self, http: str = "", server: str = "", main: str = "", events: str = "") -> Nginx:
+        """Start nginx; ``main`` goes into the main (top-level) context and
+        ``events`` into the events block."""
         # Restarting is allowed, e.g. by a parametrized class-scoped fixture.
         self.stop()
-        self.write_config(http, server, main)
+        self.write_config(http, server, main, events)
         self.process = subprocess.Popen(
             [NGINX_BINARY, "-p", str(self.prefix), "-c", str(self.conf_path)],
             env={**os.environ, **self.env},
