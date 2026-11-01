@@ -40,7 +40,6 @@ def test_satisfy_any_still_accepts_ldap_credentials(nginx):
     assert server.get(auth=creds("alice")).status_code == 200
 
 
-
 LOCAL = ("local", "local-secret")
 
 
@@ -56,7 +55,9 @@ def start_with_auth_basic(nginx, satisfy: str, url: str | None = None, body: str
     (nginx.prefix / "conf" / "htpasswd").write_text(f"{LOCAL[0]}:{digest}\n")
     extra = f'satisfy {satisfy};\nauth_basic "Restricted";\nauth_basic_user_file htpasswd;'
     kwargs = {} if url is None else {"url": url}
-    return nginx.start(http=ldap_server("users", body, **kwargs), server=protected_location("users", extra=extra))
+    return nginx.start(
+        http=ldap_server("users", body, **kwargs), server=protected_location("users", extra=extra)
+    )
 
 
 @pytest.mark.parametrize(

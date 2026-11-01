@@ -163,7 +163,9 @@ class TestValidUserDnTemplateWithDerivedVariables:
         ("login", "secret", "expected", "rejected"),
         [
             pytest.param("alice", password("alice"), 200, False, id="plain-login"),
-            pytest.param(f"{NESTED_UID},ou=services", password(NESTED_UID), 401, True, id="comma-adds-an-rdn"),
+            pytest.param(
+                f"{NESTED_UID},ou=services", password(NESTED_UID), 401, True, id="comma-adds-an-rdn"
+            ),
             pytest.param(f"{NESTED_UID}+cn=x", password(NESTED_UID), 401, True, id="plus-adds-an-ava"),
             # An escaped comma is part of the value: the shape is kept.
             pytest.param("no\\,such", "x", 401, False, id="escaped-comma"),

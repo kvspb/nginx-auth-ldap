@@ -245,9 +245,7 @@ def test_server_name_is_sent(nginx, host, expected):
         assert proxy.server_names and set(proxy.server_names) == {expected}
 
 
-@pytest.mark.parametrize(
-    "version", [ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1], ids=["tls1.0", "tls1.1"]
-)
+@pytest.mark.parametrize("version", [ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1], ids=["tls1.0", "tls1.1"])
 @pytest.mark.filterwarnings("ignore:ssl.TLSVersion.TLSv1:DeprecationWarning")
 def test_tls_before_1_2_is_refused(nginx, version):
     # TLS 1.0 and 1.1 are deprecated (RFC 8996). OpenSSL 3 refuses them at
