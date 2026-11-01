@@ -85,6 +85,7 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     ngx_conf_t                     save;
     ngx_http_auth_ldap_server_t    *server, **slot;
     ngx_http_auth_ldap_main_conf_t *cnf = conf;
+    ngx_uint_t                     i;
 
     value = cf->args->elts;
 
@@ -102,6 +103,17 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         cnf->servers = ngx_array_create(cf->pool, cnf->servers_size,
                                         sizeof(ngx_http_auth_ldap_server_t *));
         if (cnf->servers == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    for (i = 0; i < cnf->servers->nelts; i++) {
+        server = ((ngx_http_auth_ldap_server_t **) cnf->servers->elts)[i];
+        if (server->alias.len == name.len
+            && ngx_strncmp(server->alias.data, name.data, name.len) == 0)
+        {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                "http_auth_ldap: duplicate ldap_server \"%V\"", &name);
             return NGX_CONF_ERROR;
         }
     }
@@ -541,6 +553,11 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
 
     value = cf->args->elts;
 
+    if (server->ludpp != NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: \"url\" is duplicate");
+        return NGX_CONF_ERROR;
+    }
+
     rc = ldap_url_parse((const char *) value[1].data, &server->ludpp);
     if (rc != LDAP_SUCCESS) {
         for (i = 0; ngx_http_auth_ldap_url_errors[i].text != NULL; i++) {
@@ -677,7 +694,6 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
     ngx_int_t index;
 
     value = cf->args->elts;
-    ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "http_auth_ldap: parse_require");
 
     if (cf->args->nelts < 2 || cf->args->nelts > 3) {
         goto invalid_args;
@@ -690,7 +706,9 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
             return NGX_CONF_OK;
         }
         if (server->require_valid_user_dn.value.data != NULL) {
-            return "is duplicate";
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                "http_auth_ldap: \"require valid_user\" template is duplicate");
+            return NGX_CONF_ERROR;
         }
         /* The template expands $remote_user as an escaped RDN value. */
         index = ngx_http_get_variable_index(cf, &remote_user);
@@ -711,7 +729,6 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
         }
         target = ngx_array_push(server->require_user);
     } else if (ngx_strcmp(value[1].data, "group") == 0) {
-        ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "http_auth_ldap: Setting group");
         if (cf->args->nelts < 3) {
             goto invalid_args;
         }
@@ -782,7 +799,6 @@ ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
     value = cf->args->elts;
 
     if (ngx_strcmp(value[1].data, "all") == 0) {
-        ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "http_auth_ldap: Setting satisfy all");
         server->satisfy_all = 1;
         return NGX_CONF_OK;
     }

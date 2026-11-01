@@ -89,7 +89,7 @@ static ngx_command_t ngx_http_auth_ldap_commands[] = {
     },
     {
         ngx_string("auth_ldap_servers"),
-        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_HTTP_LMT_CONF | NGX_CONF_ANY,
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_HTTP_LMT_CONF | NGX_CONF_1MORE,
         ngx_http_auth_ldap_servers,
         NGX_HTTP_LOC_CONF_OFFSET,
         0,

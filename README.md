@@ -218,9 +218,8 @@ Context: http
 ```
 
 Number of cache entries per worker, at least 100. Entries are kept in
-buckets of 8, with the number of buckets rounded up to the next prime of an
-internal table; the cache holds at most 8872 entries, larger values are
-capped. When a bucket is full the oldest entry is replaced.
+buckets of 8, so the number is rounded up to a multiple of 8; each takes
+32 bytes. When a bucket is full the oldest entry is replaced.
 
 #### auth_ldap_servers_size
 
@@ -266,7 +265,9 @@ the list it would inherit. Every name must be defined by an earlier
 ### ldap_server block
 
 Every directive in the block except `require` takes exactly one value. An
-unknown directive or a value of the wrong form fails the configuration check.
+unknown directive or a value of the wrong form fails the configuration check,
+and so does a second `url`, a second `require valid_user` template, or a
+second `ldap_server` block with the same name.
 
 #### url
 

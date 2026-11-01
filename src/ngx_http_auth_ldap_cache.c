@@ -43,26 +43,20 @@ ngx_int_t
 ngx_http_auth_ldap_init_cache(ngx_cycle_t *cycle)
 {
     ngx_http_auth_ldap_main_conf_t *conf;
-    ngx_uint_t want, count, i;
+    ngx_uint_t count;
     ngx_http_auth_ldap_cache_t *cache;
-    static const uint16_t primes[] = {
-        13, 53, 101, 151, 199, 263, 317, 383, 443, 503,
-        577, 641, 701, 769, 839, 911, 983, 1049, 1109
-    };
 
     conf = (ngx_http_auth_ldap_main_conf_t *) ngx_http_cycle_get_module_main_conf(cycle, ngx_http_auth_ldap_module);
     if (conf == NULL || !conf->cache_enabled) {
         return NGX_OK;
     }
 
-    want = (conf->cache_size + 7) / 8;
-    count = 0;
-    for (i = 0; i < sizeof(primes)/sizeof(primes[0]); i++) {
-        count = primes[i];
-        if (count >= want) {
-            break;
-        }
-    }
+    /*
+     * Buckets of eight entries, enough for auth_ldap_cache_size entries; a
+     * table of primes used to stop at 8872 entries (audit F30). The bucket
+     * is picked by a murmur hash, which needs no prime count.
+     */
+    count = (conf->cache_size + 7) / 8;
 
     cache = &ngx_http_auth_ldap_cache;
     cache->expiration_time = conf->cache_expiration_time;

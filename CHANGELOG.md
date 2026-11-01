@@ -168,6 +168,12 @@ Known before this release:
 
 ### Changed
 
+- `nginx -t` no longer prints notices for `require` and `satisfy` lines.
+- These fail the configuration check: two `ldap_server` blocks with the
+  same name (the first one was used), a second `url` in a block (it
+  replaced the first), and `auth_ldap_servers` without a name.
+- `auth_ldap_cache_size` is honoured above 8872 entries; larger values were
+  cut to that without a word.
 - Configuration errors are reported by `nginx -t` instead of being ignored
   or crashing it (kvspb#69, kvspb#87, kvspb#187):
   - an unknown directive inside `ldap_server`;

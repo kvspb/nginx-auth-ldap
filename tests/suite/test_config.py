@@ -1,5 +1,8 @@
 """Configuration parsing: invalid input is reported, never crashes nginx."""
 
+import re
+from pathlib import Path
+
 import pytest
 
 from conftest import ldap_server, protected_location
@@ -151,7 +154,7 @@ def server_case(
         ),
         server_case(
             "require-valid-user-template-twice",
-            "is duplicate",
+            'http_auth_ldap: "require valid_user" template is duplicate',
             'require valid_user "uid=$remote_user,ou=a";\nrequire valid_user "uid=$remote_user,ou=b";',
         ),
         server_case(
@@ -187,6 +190,34 @@ def server_case(
             "timeout-zero",
             "'request_timeout' value has to be a valid time unit greater than 0",
             "require valid_user;\nrequest_timeout 0;",
+        ),
+        # Names of the same length, which only the comparison tells apart.
+        pytest.param(ldap_server("first") + USERS, LOCATION, 0, None, id="two-servers"),
+        pytest.param(
+            USERS + ldap_server("first") + ldap_server("users"),
+            LOCATION,
+            1,
+            'duplicate ldap_server "users"',
+            id="duplicate-of-the-first-server",
+        ),
+        pytest.param(
+            ldap_server("first") + USERS + ldap_server("users"),
+            LOCATION,
+            1,
+            'duplicate ldap_server "users"',
+            id="duplicate-of-the-second-server",
+        ),
+        server_case(
+            "second-url",
+            '"url" is duplicate',
+            f'require valid_user;\nurl "ldap://{LDAP_HOST}/{QUERY}";',
+        ),
+        pytest.param(
+            USERS,
+            'location / { auth_ldap "Restricted"; auth_ldap_servers; }',
+            1,
+            'invalid number of arguments in "auth_ldap_servers"',
+            id="auth-ldap-servers-without-servers",
         ),
         server_case(
             "timeout-not-a-time",
@@ -268,3 +299,36 @@ def test_single_value_directive_needs_exactly_one_value(nginx, name, args):
 
     assert result.returncode == 1, result.stderr
     assert f'invalid number of arguments in "{name}"' in result.stderr
+
+
+def test_nginx_t_prints_nothing_for_a_valid_configuration(nginx):
+    # "parse_require", "Setting group" and "Setting satisfy all" were logged
+    # at the notice level for every such line (audit F29).
+    body = (
+        "require valid_user;\nrequire user uid=alice;\ngroup_attribute member;\n"
+        "require group cn=admins;\nsatisfy all;"
+    )
+    result = nginx.check_config(http=ldap_server("users", body), server=LOCATION)
+
+    assert result.returncode == 0, result.stderr
+    # nginx -t writes to the error_log of the configuration once it is read.
+    assert "http_auth_ldap" not in result.stderr + nginx.log()
+
+
+def worker_memory(nginx, size: int) -> int:
+    """VmSize of the worker, in kB, with a cache of ``size`` entries."""
+    http = f"auth_ldap_cache_enabled on;\nauth_ldap_cache_size {size};\n" + USERS
+    server = nginx.start(http=http, server=LOCATION)
+    (worker,) = server.worker_pids()
+    status = Path(f"/proc/{worker}/status").read_text()
+    server.stop()
+    return int(re.search(r"^VmSize:\s+(\d+) kB", status, re.MULTILINE).group(1))
+
+
+def test_large_cache_size_is_honoured(nginx):
+    # The bucket table ended at 1109 buckets: any auth_ldap_cache_size above
+    # 8872 entries was cut to that without a word (audit F30). 200000
+    # entries of 32 bytes take about 6 MB; the cut cache took 0.3 MB.
+    grown = worker_memory(nginx, 200000) - worker_memory(nginx, 100)
+
+    assert 5000 < grown < 12000, f"the worker grew by {grown} kB"
