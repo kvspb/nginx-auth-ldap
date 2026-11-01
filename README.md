@@ -864,6 +864,32 @@ server {
 }
 ```
 
+The module runs after the other access modules of nginx (`allow`/`deny`,
+`auth_basic`, `auth_request`): a client they admit under `satisfy any` costs
+no LDAP request. With `auth_basic` and a password file next to `auth_ldap`,
+users from either source get in, and the local users still do while the
+directory cannot be reached:
+
+```nginx
+ldap_server corp {
+    url "ldap://ldap.example.com/ou=people,dc=example,dc=com?uid?sub?(objectClass=inetOrgPerson)";
+    include /etc/nginx/ldap/bind.conf;
+}
+
+server {
+    listen 8080;
+    root /var/www/html;
+
+    location /admin/ {
+        satisfy any;
+        auth_ldap "Corp";
+        auth_ldap_servers corp;
+        auth_basic "Corp";
+        auth_basic_user_file /etc/nginx/ldap/htpasswd;
+    }
+}
+```
+
 ## Behaviour notes
 
 ### Responses

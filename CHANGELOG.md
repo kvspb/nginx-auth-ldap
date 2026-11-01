@@ -171,6 +171,11 @@ Known before this release:
 
 ### Changed
 
+- The module runs after the other access modules (`allow`/`deny`,
+  `auth_basic`, `auth_request`) instead of before them. Under `satisfy any`
+  a client they admit costs no LDAP request, and `auth_basic` with a local
+  password file admits its users while the directory is down, where the
+  module answered 503 first (kvspb#108, kvspb#256, kvspb#7).
 - `nginx -t` no longer prints notices for `require` and `satisfy` lines.
 - These fail the configuration check: two `ldap_server` blocks with the
   same name (the first one was used), a second `url` in a block (it
