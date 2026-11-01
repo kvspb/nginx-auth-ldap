@@ -1,0 +1,91 @@
+# Changelog
+
+All notable changes to this module are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Entries refer to issues of the original repository as kvspb#N
+(<https://github.com/kvspb/nginx-auth-ldap/issues/N>).
+
+## [Unreleased]
+
+The first release after a long pause of upstream development (last upstream
+change: 2024-04, pull request #255). It fixes the known crashes and security
+defects, makes configuration errors visible and adds an integration test
+suite.
+
+### Security
+
+- Escape the login name and the user DN in every LDAP search filter
+  (RFC 4515). A client could inject filter syntax through the login, and
+  legitimate names with `*`, `(`, `)` or `\` failed (CVE-2020-14013,
+  kvspb#618, kvspb#180, kvspb#224).
+- With `satisfy all`, the DN found for one required group no longer counts
+  as a match for the following groups: a member of the first group passed
+  all of them (kvspb#194, kvspb#225, kvspb#240).
+- With several servers in `auth_ldap_servers`, cached outcomes are looked up
+  and stored per server. A cached DENY no longer leaks to the next server,
+  and outcomes are no longer stored under the wrong server (kvspb#245,
+  kvspb#228, kvspb#201).
+- ldaps certificate verification (`ssl_check_cert on`):
+  - a host name mismatch no longer crashes the worker; the IP SAN fallback
+    uses the peer address and the right address family (kvspb#236);
+  - the subject CN is no longer used as a host name (RFC 9525, kvspb#254);
+  - every `ldap_server` has its own SSL context, so the `ssl_ca_file` or
+    `ssl_ca_dir` of one server is not trusted by the others (kvspb#258);
+  - only a result of 1 from `X509_check_host()` and `X509_check_ip()` is a
+    match; a missing peer certificate is rejected.
+- When the rebind as `binddn` after a user bind fails, the LDAP connection
+  is closed instead of serving the next requests with that user's rights.
+
+### Fixed
+
+- nginx >= 1.23: terminate the `WWW-Authenticate` header list; the worker
+  crashed when sending 401 (kvspb#249).
+- `require valid_user "<dn template>"`: the built DN is NUL-terminated; the
+  bind used whatever followed in memory.
+- Worker crashes in the connection pool (kvspb#62, kvspb#99, kvspb#104,
+  kvspb#118, kvspb#132):
+  - a request whose LDAP connection is closed under it is released at once
+    and fails over or answers 401, instead of returning the connection to
+    the pool a second time after `request_timeout`;
+  - a waiting request is never removed from the queue twice.
+- With `max_down_retries`, a dropped LDAP connection is reconnected once,
+  through the reconnect timer; the old code used a freed event.
+- A timed-out authentication is answered with `503 Service Unavailable`
+  instead of closing the client connection without a response; keep-alive
+  connections stay usable (kvspb#115).
+- `require user` compares DNs as DNs: case and spacing after commas no
+  longer matter (kvspb#3).
+- `ldap_server` urls with an IPv6 address (`ldap://[fd00::1]:389/...`) work.
+- `ldaps://` offers TLS 1.3 and no longer offers SSL 2.0 or 3.0.
+
+### Changed
+
+- Configuration errors are reported by `nginx -t` instead of being ignored
+  or crashing it (kvspb#69, kvspb#87, kvspb#187):
+  - an unknown directive inside `ldap_server`;
+  - a value other than `on` or `off` for `group_attribute_is_dn` and
+    `ssl_check_cert`;
+  - a `max_down_retries` value that is not a number;
+  - `require` with an unknown kind or a wrong number of arguments;
+  - a missing or extra value of any single-value directive;
+  - an url without host, with a port outside 1-65535, or with a filter that
+    is not one parenthesized filter;
+  - an `ssl_ca_file` or `ssl_ca_dir` that cannot be loaded (checked at
+    startup instead of at the first handshake).
+- The source is split into files by subsystem under `src/`.
+
+### Added
+
+- Integration test suite (Docker Compose, OpenLDAP, pytest) with ldaps,
+  AddressSanitizer and debug builds, coverage report and diff-based mutation
+  testing: `make test`, `make test-matrix`, `make coverage`, `make mutate`.
+  See `tests/README.md`.
+
+## [0.1] - 2011-11-16
+
+First tagged version by Valery Komarov. Later upstream changes until 2024
+were not released under a version number.
+
+[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v0.1...HEAD
+[0.1]: https://github.com/kvspb/nginx-auth-ldap/releases/tag/v0.1
