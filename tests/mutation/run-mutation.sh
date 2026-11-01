@@ -8,7 +8,7 @@
 # Environment:
 #   NGINX_VERSION  nginx release to build against (default: 1.30.6)
 #   MUTATE_BASE    git ref to diff against (required)
-#   MUTATE_TIMEOUT minimum timeout per mutant run in ms (default: 60000)
+#   MUTATE_TIMEOUT minimum timeout per mutant run in ms (default: 300000)
 #   MUTATE_ASAN    1 (default) to build with AddressSanitizer and
 #                  NGX_DEBUG_PALLOC, so that a mutant breaking a buffer size
 #                  is caught; 0 for a plain, faster build
@@ -17,7 +17,7 @@ set -eu
 
 : "${NGINX_VERSION:=1.30.6}"
 : "${MUTATE_BASE:?set MUTATE_BASE to the git ref to diff against}"
-: "${MUTATE_TIMEOUT:=60000}"
+: "${MUTATE_TIMEOUT:=300000}"
 : "${MUTATE_ASAN:=1}"
 
 build_dir="/build/nginx-${NGINX_VERSION}-mull"

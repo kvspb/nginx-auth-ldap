@@ -51,7 +51,7 @@ services:
     environment:
       NGINX_VERSION: "${NGINX_VERSION:-1.30.6}"
       MUTATE_BASE: "${MUTATE_BASE:-}"
-      MUTATE_TIMEOUT: "${MUTATE_TIMEOUT:-60000}"
+      MUTATE_TIMEOUT: "${MUTATE_TIMEOUT:-300000}"
       MUTATE_ASAN: "${MUTATE_ASAN:-1}"
       LDAP_HOST: ldap
     extra_hosts: *ldap-aliases

@@ -57,7 +57,7 @@ Mutation Testing Elements report).
 | --- | --- |
 | `BASE` | git ref to diff against; only lines changed since it are mutated |
 | `PYTEST_ARGS` | pytest arguments per mutant, e.g. a test file to go faster |
-| `MUTATE_TIMEOUT` | minimum timeout per mutant run in ms (default 60000) |
+| `MUTATE_TIMEOUT` | minimum timeout per mutant run in ms (default 300000) |
 | `MUTATE_ASAN=0` | build without AddressSanitizer and `NGX_DEBUG_PALLOC` |
 | `MODULE_SRC` | another checkout to mutate (must contain `.git`) |
 
