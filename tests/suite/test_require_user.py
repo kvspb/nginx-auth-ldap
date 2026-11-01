@@ -134,3 +134,52 @@ class TestValidUserDnTemplateLoginIsAnRdnValue:
 
         assert server.get(headers=basic("\x00alice", password("alice"))).status_code == 401
         assert "http_auth_ldap: Login with a NUL byte rejected" in server.log(since)
+
+
+class TestValidUserDnTemplateWithDerivedVariables:
+    """A variable copied from $remote_user is not escaped like it.
+
+    "set" copies the raw login in the rewrite phase, before the module
+    escapes $remote_user, and "map" may have been evaluated before too. So
+    the module checks the shape of the DN it built: it must have the RDNs
+    and attribute-value pairs of the template, whatever the variables hold
+    (audit V-03).
+    """
+
+    @pytest.fixture(scope="class", params=["set", "map"])
+    def server(self, request, shared_nginx):
+        body = f'require valid_user "uid=$login,{PEOPLE_DN}";'
+        http = ldap_server("derived", body)
+        extra = ""
+        if request.param == "set":
+            extra = "set $login $remote_user;"
+        else:
+            http += "map $remote_user $login { default $remote_user; }\n"
+            # Evaluated before the access phase, as by a rewrite rule.
+            extra = 'if ($login = "-") { return 403; }'
+        return shared_nginx.start(http=http, server=protected_location("derived", extra=extra))
+
+    @pytest.mark.parametrize(
+        ("login", "secret", "expected", "rejected"),
+        [
+            pytest.param("alice", password("alice"), 200, False, id="plain-login"),
+            pytest.param(f"{NESTED_UID},ou=services", password(NESTED_UID), 401, True, id="comma-adds-an-rdn"),
+            pytest.param(f"{NESTED_UID}+cn=x", password(NESTED_UID), 401, True, id="plus-adds-an-ava"),
+            # An escaped comma is part of the value: the shape is kept.
+            pytest.param("no\\,such", "x", 401, False, id="escaped-comma"),
+            pytest.param(f"alice,{PEOPLE_DN}\x00x", password("alice"), 401, False, id="nul-cuts-the-suffix"),
+        ],
+    )
+    def test_access(self, server, login, secret, expected, rejected):
+        since = server.log_size()
+
+        assert server.get(headers=basic(login, secret)).status_code == expected
+        assert ("does not have the RDNs of the template" in server.log(since)) is rejected
+
+    def test_template_that_is_a_whole_variable_is_not_checked(self, nginx):
+        # A DN taken whole from a variable has no shape to keep.
+        http = ldap_server("whole", 'require valid_user "$dn";')
+        http += f"map $remote_user $dn {{ default uid=$remote_user,{PEOPLE_DN}; }}\n"
+        server = nginx.start(http=http, server=protected_location("whole"))
+
+        assert server.get(auth=creds("alice")).status_code == 200

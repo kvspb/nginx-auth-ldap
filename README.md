@@ -334,7 +334,10 @@ Syntax:  require valid_user;
   instead of searching, for example
   `require valid_user "uid=$remote_user,ou=people,dc=example,dc=com";`.
   `$remote_user` expands to the login escaped as an RDN value (RFC 4514), so
-  a login cannot add RDNs or leave the template. Allowed once per block. The
+  a login cannot add RDNs or leave the template. A variable copied from the
+  login by `set` or `map` is not escaped; the DN built from the template must
+  still have the RDNs of the template, or the user is denied. Allowed once
+  per block. The
   `url` is still required, with a login attribute, but no search is made
   with it.
 - `require user dn` admits the user whose DN equals `dn`. May be repeated.
@@ -880,7 +883,9 @@ or use `proxy_pass`, `try_files` and the like.
   filter, and so are the user DN or login placed into a group filter: `*`,
   `(`, `)`, `\` and NUL cannot change a filter.
 - In a `require valid_user` template, `$remote_user` is escaped as an RDN
-  value (RFC 4514). A login with a NUL byte is rejected.
+  value (RFC 4514). A login with a NUL byte is rejected. A DN built from the
+  template must have as many RDNs, each with as many attribute-value pairs,
+  as the template itself, so that no other variable can add one either.
 - `require user` DNs are compared with the user DN as DNs: both are
   normalized by OpenLDAP (spacing, escaping) and compared without regard to
   case, so `UID=alice, OU=People,DC=example,DC=com` matches

@@ -35,6 +35,7 @@ static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http
 static int ngx_http_auth_ldap_cached_outcome(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
         ngx_http_auth_ldap_loc_conf_t *conf);
 static ngx_int_t ngx_http_auth_ldap_expand_user_dn(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
+static ngx_flag_t ngx_http_auth_ldap_same_shape(ngx_http_request_t *r, ngx_array_t *expected, ngx_str_t *dn);
 static ngx_int_t ngx_http_auth_ldap_dn_equal(ngx_http_request_t *r, ngx_str_t *a, ngx_str_t *b);
 static ngx_int_t ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_check_user(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
@@ -517,7 +518,30 @@ ngx_http_auth_ldap_expand_user_dn(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_
     *ngx_cpymem(p, ctx->user_dn.data, ctx->user_dn.len) = '\0';
     ctx->user_dn.data = p;
 
+    if (ctx->server->user_dn_shape != NULL
+        && !ngx_http_auth_ldap_same_shape(r, ctx->server->user_dn_shape, &ctx->user_dn))
+    {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+            "http_auth_ldap: DN built from the template for \"%V\" "
+            "does not have the RDNs of the template", &r->headers_in.user);
+        return NGX_DECLINED;
+    }
+
     return NGX_OK;
+}
+
+/* Whether dn has the RDNs and attribute-value pairs of the template. */
+static ngx_flag_t
+ngx_http_auth_ldap_same_shape(ngx_http_request_t *r, ngx_array_t *expected, ngx_str_t *dn)
+{
+    ngx_array_t *shape;
+
+    shape = ngx_http_auth_ldap_dn_shape(r->pool, dn);
+    if (shape == NULL || shape->nelts != expected->nelts) {
+        return 0;
+    }
+
+    return ngx_memcmp(shape->elts, expected->elts, shape->nelts * sizeof(ngx_uint_t)) == 0;
 }
 
 /*

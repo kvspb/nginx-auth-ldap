@@ -58,6 +58,9 @@ Found by the security audit and code review of this release:
   escaped as an RFC 4514 value; a login with a NUL is denied.
 - A login whose search matched several entries was bound against the first
   one, and its DN could leak into the search of the next server.
+- A variable copied from the login by `set` or `map` and used in a
+  `require valid_user` template was not escaped: a login with a comma bound
+  another entry. The built DN must now have the RDNs of the template.
 - `require group` put part of the group DN into the filter unescaped; with a
   request variable in the group DN a member of any group could pass.
 - The cache key ignored what the `require` templates expand to and hashed

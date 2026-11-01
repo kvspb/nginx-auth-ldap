@@ -82,6 +82,8 @@ typedef struct {
     ngx_array_t *require_group;     /* array of ngx_http_complex_value_t */
     ngx_array_t *require_user;      /* array of ngx_http_complex_value_t */
     ngx_http_complex_value_t require_valid_user_dn;
+    ngx_array_t *user_dn_shape;     /* ngx_uint_t AVAs per RDN of the template,
+                                       NULL when it is not a DN as written */
     ngx_uint_t remote_user_index;   /* $remote_user, with the DN template */
     ngx_flag_t satisfy_all;
 
@@ -232,5 +234,6 @@ ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r);
 /* ngx_http_auth_ldap_filter.c */
 ngx_int_t ngx_http_auth_ldap_escape_filter_value(ngx_pool_t *pool, ngx_str_t *src, ngx_str_t *dst);
 ngx_int_t ngx_http_auth_ldap_escape_dn_value(ngx_pool_t *pool, ngx_str_t *src, ngx_str_t *dst);
+ngx_array_t *ngx_http_auth_ldap_dn_shape(ngx_pool_t *pool, ngx_str_t *dn);
 
 #endif /* _NGX_HTTP_AUTH_LDAP_H_INCLUDED_ */

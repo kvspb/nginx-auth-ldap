@@ -149,3 +149,48 @@ ngx_http_auth_ldap_dn_special(ngx_str_t *value, size_t i)
         return 0;
     }
 }
+
+/*
+ * The number of attribute-value pairs of each RDN of a DN, in order: the
+ * shape that a DN built from a template must keep whatever its variables
+ * hold. NULL when the DN holds a NUL or does not parse, or when allocation
+ * fails.
+ */
+ngx_array_t *
+ngx_http_auth_ldap_dn_shape(ngx_pool_t *pool, ngx_str_t *dn)
+{
+    struct berval bv;
+    LDAPDN parsed;
+    ngx_array_t *shape;
+    ngx_uint_t *n, i, j;
+
+    if (ngx_strlchr(dn->data, dn->data + dn->len, '\0') != NULL) {
+        return NULL;
+    }
+
+    bv.bv_val = (char *) dn->data;
+    bv.bv_len = dn->len;
+    parsed = NULL;
+    if (ldap_bv2dn(&bv, &parsed, LDAP_DN_FORMAT_LDAPV3) != LDAP_SUCCESS) {
+        return NULL;
+    }
+
+    shape = ngx_array_create(pool, 4, sizeof(ngx_uint_t));
+    if (shape == NULL) {
+        ldap_dnfree(parsed);
+        return NULL;
+    }
+
+    for (i = 0; parsed != NULL && parsed[i] != NULL; i++) {
+        n = ngx_array_push(shape);
+        if (n == NULL) {
+            ldap_dnfree(parsed);
+            return NULL;
+        }
+        for (j = 0; parsed[i][j] != NULL; j++) { /* count */ }
+        *n = j;
+    }
+
+    ldap_dnfree(parsed);
+    return shape;
+}
