@@ -30,6 +30,9 @@ GROUPS_DN = f"ou=groups,{BASE_DN}"
 NESTED_PEOPLE_DN = f"ou=services,{PEOPLE_DN}"
 NESTED_UID = "svc"
 
+# A user whose login and password are not ASCII (kvspb#145).
+UNICODE_UID = "jürgen§"
+
 # A uid with two entries: uid=twin,PEOPLE_DN (password "twin-secret") and
 # uid=twin,ou=contractors,PEOPLE_DN (password TWIN_OTHER_SECRET).
 TWIN_UID = "twin"

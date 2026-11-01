@@ -314,7 +314,7 @@ def test_empty_login_is_rejected_without_asking_ldap(nginx, proxy, auth):
         response = server.get(auth=auth, timeout=5)
 
     assert response.status_code == 401
-    assert response.headers["WWW-Authenticate"] == 'Basic realm="Restricted"'
+    assert response.headers["WWW-Authenticate"] == 'Basic realm="Restricted", charset="UTF-8"'
 
 
 def test_connection_is_not_reused_when_the_rebind_fails(nginx):

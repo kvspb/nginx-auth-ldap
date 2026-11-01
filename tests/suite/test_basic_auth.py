@@ -1,9 +1,11 @@
 """Baseline behaviour: HTTP Basic credentials checked against the directory."""
 
+import base64
+
 import pytest
 
 from conftest import ldap_server, protected_location, url_for
-from ldapdata import LDAP_IPV4, LDAP_IPV6, TWIN_OTHER_SECRET, TWIN_UID, creds, password
+from ldapdata import LDAP_IPV4, LDAP_IPV6, TWIN_OTHER_SECRET, TWIN_UID, UNICODE_UID, creds, password
 
 
 class TestSingleServer:
@@ -36,7 +38,7 @@ class TestSingleServer:
         response = server.get()
 
         assert response.status_code == 401
-        assert response.headers["WWW-Authenticate"] == 'Basic realm="Restricted"'
+        assert response.headers["WWW-Authenticate"] == 'Basic realm="Restricted", charset="UTF-8"'
 
     def test_repeated_requests_reuse_the_connection_pool(self, server):
         statuses = [server.get(auth=creds(uid)).status_code for uid in ("alice", "bob", "alice", "carol")]
@@ -84,3 +86,28 @@ def test_server_given_by_address(nginx, host):
 
     assert server.get(auth=creds("alice")).status_code == 200
     assert server.get(auth=("alice", "wrong")).status_code == 401
+
+
+def basic(login: str, secret: str, encoding: str) -> dict[str, str]:
+    token = base64.b64encode(f"{login}:{secret}".encode(encoding)).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+class TestNonAsciiCredentials:
+    """A login and password that are not ASCII (kvspb#145).
+
+    LDAP strings are UTF-8, and the challenge asks the browser for UTF-8
+    (RFC 7617, charset="UTF-8"). Credentials sent in ISO-8859-1, as old
+    browsers did without that parameter, do not match.
+    """
+
+    @pytest.fixture(scope="class")
+    def server(self, shared_nginx):
+        return shared_nginx.start(http=ldap_server("users"), server=protected_location("users"))
+
+    @pytest.mark.parametrize(
+        ("encoding", "expected"),
+        [pytest.param("utf-8", 200, id="utf-8"), pytest.param("iso-8859-1", 401, id="iso-8859-1")],
+    )
+    def test_credentials(self, server, encoding, expected):
+        assert server.get(headers=basic(UNICODE_UID, password(UNICODE_UID), encoding)).status_code == expected

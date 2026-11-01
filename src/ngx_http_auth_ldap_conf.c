@@ -469,15 +469,21 @@ ngx_http_auth_ldap(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_OK;
     }
 
-    cnf->realm.len = sizeof("Basic realm=\"") - 1 + value[1].len + 1;
-    cnf->realm.data = ngx_pcalloc(cf->pool, cnf->realm.len);
+    /*
+     * charset="UTF-8" (RFC 7617, 2.1) asks the browser for UTF-8
+     * credentials, as LDAP stores them; some sent ISO-8859-1 otherwise, and
+     * a non-ASCII password did not match (kvspb#145).
+     */
+    cnf->realm.len = sizeof("Basic realm=\"") - 1 + value[1].len
+                     + sizeof("\", charset=\"UTF-8\"") - 1;
+    cnf->realm.data = ngx_pnalloc(cf->pool, cnf->realm.len);
     if (cnf->realm.data == NULL) {
         return NGX_CONF_ERROR;
     }
 
     p = ngx_cpymem(cnf->realm.data, "Basic realm=\"", sizeof("Basic realm=\"") - 1);
     p = ngx_cpymem(p, value[1].data, value[1].len);
-    *p = '"';
+    ngx_memcpy(p, "\", charset=\"UTF-8\"", sizeof("\", charset=\"UTF-8\"") - 1);
 
     return NGX_CONF_OK;
 }

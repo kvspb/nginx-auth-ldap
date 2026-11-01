@@ -200,6 +200,9 @@ Known before this release:
 
 ### Added
 
+- The Basic challenge carries `charset="UTF-8"` (RFC 7617), so that
+  browsers send a login or password that is not ASCII in UTF-8, as the
+  directory stores it (kvspb#145).
 - SNI: the host name of an `ldaps://` url, or one with `starttls on`, is
   sent in the TLS handshake, so that a server or proxy with several
   certificates on one address can present the right one.

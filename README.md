@@ -27,7 +27,8 @@ and [`auth_ldap_servers`](#auth_ldap_servers) with the names of one or more
 
 1. Reads the `Authorization: Basic` header. Without one, or with an empty
    password, it answers `401 Unauthorized` with
-   `WWW-Authenticate: Basic realm="..."` and does not contact LDAP.
+   `WWW-Authenticate: Basic realm="...", charset="UTF-8"` and does not
+   contact LDAP.
 2. Tries the servers of the location in the order they are listed. For each
    server:
    1. **Cache.** With [`auth_ldap_cache_enabled on`](#auth_ldap_cache_enabled),
@@ -244,8 +245,11 @@ Context: http, server, location, limit_except
 ```
 
 Turns LDAP authentication on with the given realm, which is sent in
-`WWW-Authenticate: Basic realm="realm"`, or off. The realm is inserted as it
-is: do not put a double quote in it. Levels without `auth_ldap` inherit it.
+`WWW-Authenticate: Basic realm="realm", charset="UTF-8"`, or off. The
+realm is inserted as it is: do not put a double quote in it. The charset
+asks the browser to send the login and password in UTF-8 (RFC 7617), as the
+directory stores them; a client that sends ISO-8859-1 anyway cannot log in
+with a password that is not ASCII. Levels without `auth_ldap` inherit it.
 `auth_ldap` without servers rejects every request with `401` and logs
 `"auth_ldap" requires one or more "auth_ldap_servers" in the same location`.
 

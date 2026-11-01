@@ -42,6 +42,14 @@ cn: Alice Liddell
 sn: Liddell
 userPassword: alice-secret
 
+# Non-ASCII login and password (kvspb#145): base64 in LDIF.
+dn:: dWlkPWrDvHJnZW7CpyxvdT1wZW9wbGUsZGM9ZXhhbXBsZSxkYz1vcmc=
+objectClass: inetOrgPerson
+uid:: asO8cmdlbsKn
+cn: Jurgen
+sn: Jurgen
+userPassword:: asO8cmdlbsKnLXNlY3JldA==
+
 # Member of "devs" and "ops".
 dn: uid=bob,ou=people,dc=example,dc=org
 objectClass: inetOrgPerson

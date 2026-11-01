@@ -44,5 +44,5 @@ location / {
     response = server.get(auth=creds("alice"))
 
     assert response.status_code == 401
-    assert response.headers["WWW-Authenticate"] == 'Basic realm="Restricted"'
+    assert response.headers["WWW-Authenticate"] == 'Basic realm="Restricted", charset="UTF-8"'
     assert '"auth_ldap" requires one or more "auth_ldap_servers"' in server.log()
