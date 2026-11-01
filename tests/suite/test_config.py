@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ldap_server, protected_location
+from harness import Nginx
 from ldapdata import LDAP_HOST, PEOPLE_DN
 
 USERS = ldap_server("users")
@@ -322,7 +323,9 @@ def worker_memory(nginx, size: int) -> int:
     (worker,) = server.worker_pids()
     status = Path(f"/proc/{worker}/status").read_text()
     server.stop()
-    return int(re.search(r"^VmSize:\s+(\d+) kB", status, re.MULTILINE).group(1))
+    match = re.search(r"^VmSize:\s+(\d+) kB", status, re.MULTILINE)
+    assert match is not None, status
+    return int(match.group(1))
 
 
 def test_large_cache_size_is_honoured(nginx):
@@ -332,3 +335,20 @@ def test_large_cache_size_is_honoured(nginx):
     grown = worker_memory(nginx, 200000) - worker_memory(nginx, 100)
 
     assert 5000 < grown < 12000, f"the worker grew by {grown} kB"
+
+
+@pytest.mark.skipif(
+    "-fsanitize=address" not in Nginx._configure_args(), reason="needs an AddressSanitizer build (SANITIZE=1)"
+)
+def test_reload_frees_the_parsed_url(nginx):
+    # ldap_url_parse() allocates the LDAPURLDesc with malloc(); it was never
+    # freed, so every reload leaked one per ldap_server (audit F27). The
+    # master destroys the old configuration at once on a reload, after which
+    # LeakSanitizer sees the descriptor as lost when the master exits.
+    nginx.env["ASAN_OPTIONS"] = f"detect_leaks=1:fast_unwind_on_malloc=0:log_path={nginx.prefix}/lsan"
+    nginx.start(http=USERS, server=LOCATION)
+    nginx.reload()
+    assert nginx.quit(timeout=10)
+
+    reports = "".join(path.read_text() for path in nginx.prefix.glob("lsan*"))
+    assert "ldap_url_parse" not in reports, reports

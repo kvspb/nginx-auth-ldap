@@ -32,6 +32,7 @@
 
 static char * ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf);
 static char * ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
+static void ngx_http_auth_ldap_free_urldesc(void *data);
 static char * ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf);
@@ -541,9 +542,16 @@ ngx_http_auth_ldap_servers(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 /**
  * Parse URL conf parameter
  */
+static void
+ngx_http_auth_ldap_free_urldesc(void *data)
+{
+    ldap_free_urldesc((LDAPURLDesc *) data);
+}
+
 static char *
 ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server)
 {
+    ngx_pool_cleanup_t *cln;
     ngx_str_t *value;
     ngx_str_t host;
     ngx_flag_t ipv6;
@@ -559,6 +567,17 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
     }
 
     rc = ldap_url_parse((const char *) value[1].data, &server->ludpp);
+    if (rc == LDAP_SUCCESS) {
+        /* libldap allocates it with malloc(): free it with the configuration. */
+        cln = ngx_pool_cleanup_add(cf->pool, 0);
+        if (cln == NULL) {
+            ldap_free_urldesc(server->ludpp);
+            server->ludpp = NULL;
+            return NGX_CONF_ERROR;
+        }
+        cln->handler = ngx_http_auth_ldap_free_urldesc;
+        cln->data = server->ludpp;
+    }
     if (rc != LDAP_SUCCESS) {
         for (i = 0; ngx_http_auth_ldap_url_errors[i].text != NULL; i++) {
             if (ngx_http_auth_ldap_url_errors[i].code == rc) {
