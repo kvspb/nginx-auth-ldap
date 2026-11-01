@@ -265,3 +265,14 @@ def test_keepalive_connection_works_after_a_timed_out_request(nginx, proxy):
 
     assert first.status_code == 503
     assert second.status_code == 200
+
+
+@pytest.mark.parametrize("auth", [("", "some-secret"), ("", "")], ids=["empty-login", "empty-login-and-password"])
+def test_empty_login_is_rejected_without_asking_ldap(nginx, proxy, auth):
+    server = start(nginx, proxy)
+
+    with proxy.holding():
+        response = server.get(auth=auth, timeout=5)
+
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == 'Basic realm="Restricted"'
