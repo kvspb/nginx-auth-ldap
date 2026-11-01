@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Entries refer to issues of the original repository as kvspb#N
 (<https://github.com/kvspb/nginx-auth-ldap/issues/N>).
 
-## [1.0.0] - Unreleased
+## [Unreleased]
+
+## [1.0.0] - 2026-11-01
 
 The first release since 0.1 (2011) and after a long pause of upstream
 development (last upstream change: 2024-04, pull request #255). It fixes the
@@ -252,5 +254,6 @@ Known before this release:
 First tagged version by Valery Komarov. Later upstream changes until 2024
 were not released under a version number.
 
+[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v0.1...v1.0.0
 [0.1]: https://github.com/kvspb/nginx-auth-ldap/releases/tag/v0.1
