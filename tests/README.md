@@ -69,8 +69,10 @@ Mutation Testing Elements report).
 | `MUTATE_ASAN=0` | build without AddressSanitizer and `NGX_DEBUG_PALLOC` |
 | `MODULE_SRC` | another checkout to mutate (must contain `.git`) |
 
-Each mutant runs the suite (`pytest -x`), about 8 s, so a diff with 60
-mutants takes about 8 minutes. AddressSanitizer with `NGX_DEBUG_PALLOC` is
+Each mutant runs the suite (`pytest -x`): a killed one stops at the first
+failing test, a survivor runs it all (about 80 s). On the whole suite a
+mutant takes about a minute on average, so pass a test file in
+`PYTEST_ARGS` while you iterate. AddressSanitizer with `NGX_DEBUG_PALLOC` is
 on by default: without it a mutant that shrinks a buffer by one byte writes
 into pool slack and survives.
 
