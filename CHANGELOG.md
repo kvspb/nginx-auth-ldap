@@ -6,21 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Entries refer to issues of the original repository as kvspb#N
 (<https://github.com/kvspb/nginx-auth-ldap/issues/N>).
 
-## [Unreleased]
-
-### Fixed
-
-- An LDAP error that says nothing about the credentials no longer denies
-  the user. A connection that breaks during the user bind or a
-  search, or a server that answers busy, unavailable, time or admin limit
-  exceeded, or other, made the module answer `401` and, with the cache on,
-  cache that DENY for `auth_ldap_cache_expiration_time`: a user with the
-  right password was locked out. Such a result is now not cached, the next
-  server is tried, and when no server allows, the answer is
-  `503 Service Unavailable`. Invalid credentials, a missing entry and the
-  other answers about the credentials still deny with `401`.
-
-## [1.0.0] - 2026-11-01
+## [1.0.0] - Unreleased
 
 The first release since 0.1 (2011) and after a long pause of upstream
 development (last upstream change: 2024-04, pull request #255). It fixes the
@@ -44,8 +30,10 @@ check these changes in behaviour:
   not used.
 - A login whose user search finds more than one entry is denied. Make the
   base DN and filter of the `url` select one entry per login.
-- When the LDAP servers do not answer in time (`request_timeout`), the
-  client gets `503 Service Unavailable` instead of a closed connection.
+- When the LDAP servers cannot decide (they do not answer in time, the
+  connection breaks, or they answer busy, unavailable, over a limit or
+  other), the client gets `503 Service Unavailable` instead of `401` or a
+  closed connection, and nothing is cached.
 - `require group` searches the group entry itself (scope base) instead of
   one level below its parent, so the group DN in the configuration must be
   the exact DN of the group entry.
@@ -123,6 +111,13 @@ Known before this release:
   when more `ldap_server` blocks followed: crash on the first request.
 - `max_down_retries` never limited anything: a server that closed new
   connections at once caused a busy reconnect loop.
+- An LDAP error that says nothing about the credentials no longer denies
+  the user. A connection that broke during the user bind or a search, or a
+  server that answered busy, unavailable, time or admin limit exceeded, or
+  other, gave `401` and, with the cache on, cached that DENY: a user with the
+  right password was locked out for `auth_ldap_cache_expiration_time`. Such
+  a result is not cached, the next server is tried, and when no server
+  allows, the answer is `503 Service Unavailable`.
 - A timed-out authentication is answered with `503 Service Unavailable`
   instead of closing the client connection without a response; keep-alive
   connections stay usable (kvspb#115).
@@ -169,6 +164,5 @@ Known before this release:
 First tagged version by Valery Komarov. Later upstream changes until 2024
 were not released under a version number.
 
-[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v0.1...v1.0.0
 [0.1]: https://github.com/kvspb/nginx-auth-ldap/releases/tag/v0.1
