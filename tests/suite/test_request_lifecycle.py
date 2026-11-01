@@ -12,6 +12,8 @@ and cut the connections. connections 1 keeps the pool easy to reason about.
 from __future__ import annotations
 
 import base64
+import os
+import signal
 import socket
 import subprocess
 import time
@@ -436,3 +438,46 @@ def test_bind_is_not_judged_before_its_answer_arrives(nginx, proxy, auth, skip, 
     assert not answered_early, f"answered {result} before the BindResponse arrived"
     assert result == expected
     assert "running the phases again" in server.log()
+
+
+def session_status(session: requests.Session, url: str) -> int | None:
+    """The status code, or None when no answer came within 5 s."""
+    try:
+        return session.get(url, auth=creds("bob"), timeout=5).status_code
+    except (requests.ConnectionError, requests.Timeout):
+        return None
+
+
+def keepalive_request_while_the_connection_is_reset(server, proxy: LdapProxy) -> int | None:
+    """Send a request on a kept-alive client connection and reset the LDAP
+    connection, both while the worker is stopped: the worker then sees the
+    request before it reads the reset, and sends the search on a connection
+    the kernel has already reset."""
+    session = requests.Session()
+    assert session.get(server.url(), auth=creds("alice"), timeout=5).status_code == 200
+    (worker,) = server.worker_pids()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        os.kill(worker, signal.SIGSTOP)
+        try:
+            future = pool.submit(session_status, session, server.url())
+            time.sleep(0.3)
+            proxy.reset()
+            time.sleep(0.3)
+        finally:
+            os.kill(worker, signal.SIGCONT)
+        return future.result()
+
+
+def test_search_on_a_reset_connection_does_not_hang_the_worker(nginx, proxy):
+    # The failed send made OpenLDAP close its sockbuf inside
+    # ldap_search_ext(); shutdown() of the reset socket failed, and the
+    # sockbuf close called close_connection(), which unbound the same LDAP
+    # handle again from inside the library: the worker hung for good
+    # (PR #250 a02deb2, PR #251 3bdf4bc).
+    server = start(nginx, proxy)
+
+    result = keepalive_request_while_the_connection_is_reset(server, proxy)
+
+    assert result is not None, "the request was never answered"
+    wait_until_ready(server)

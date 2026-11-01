@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import select
 import socket
+import struct
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -95,6 +96,16 @@ class LdapProxy:
         for sock in sockets:
             try:
                 sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            sock.close()
+
+    def reset(self) -> None:
+        """Reset every proxied connection: nginx gets a TCP RST, not a FIN."""
+        sockets, self._sockets = self._sockets, []
+        for sock in sockets:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
             except OSError:
                 pass
             sock.close()
