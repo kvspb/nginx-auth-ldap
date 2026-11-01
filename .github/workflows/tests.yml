@@ -1,0 +1,113 @@
+# Checks for pull requests and the main branches: lint, the integration
+# suite on every supported nginx version, AddressSanitizer and debug builds,
+# and mutation testing of the lines a pull request changes.
+#
+# Everything runs through the Makefile and tests/docker-compose.yml, exactly
+# as on a developer machine (see tests/README.md).
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [master, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUFF: ruff==0.17.3
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Whitespace errors in the changes
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: git diff --check "${BASE}...HEAD"
+      - name: Shell scripts
+        run: |
+          shellcheck tests/runner/run-tests.sh \
+            tests/mutation/run-mutation.sh \
+            tests/ldap/entrypoint.sh \
+            tests/ldap/tls/generate.sh
+      - name: Python (ruff)
+        working-directory: tests
+        run: |
+          pipx run "${RUFF}" check .
+          pipx run "${RUFF}" format --check suite mutation
+
+  test:
+    name: nginx ${{ matrix.nginx }} ${{ matrix.flavor }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in line with NGINX_VERSIONS in the Makefile: the pre-1.23
+        # header API, current stable, current mainline.
+        nginx: [1.22.1, 1.30.6, 1.31.8]
+        flavor: [plain]
+        include:
+          - nginx: 1.30.6
+            flavor: asan
+            sanitize: 1
+          # Debug builds hide double queue removals: run both kinds.
+          - nginx: 1.30.6
+            flavor: debug
+            debug: 1
+    env:
+      NGINX_VERSION: ${{ matrix.nginx }}
+      SANITIZE: ${{ matrix.sanitize || 0 }}
+      NGINX_DEBUG: ${{ matrix.debug || 0 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Integration suite
+        run: make test PYTEST_ARGS="-q -ra"
+      - name: LDAP server log
+        if: failure()
+        run: docker compose -f tests/docker-compose.yml logs ldap | tail -n 300
+      - name: Stop the LDAP server
+        if: always()
+        run: make test-down
+
+  mutate:
+    # Mutants of the lines the pull request changes, each run against the
+    # whole suite. There is no score threshold: survivors are reviewed in
+    # the pull request (AGENTS.md, "Quality gates"), so this job only fails
+    # when the run itself fails.
+    if: github.event_name == 'pull_request'
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Mutation testing of the diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: make mutate BASE="$(git merge-base "${BASE_SHA}" HEAD)"
+      - name: Summary
+        if: always() && hashFiles('tests/reports/mutation/mutation.json') != ''
+        run: python3 tests/mutation/summary.py >>"${GITHUB_STEP_SUMMARY}"
+      # actions/upload-artifact v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: mutation-report
+          path: tests/reports/mutation/
+          if-no-files-found: ignore
+      - name: Stop the LDAP server
+        if: always()
+        run: make test-down

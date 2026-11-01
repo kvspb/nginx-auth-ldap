@@ -73,6 +73,18 @@ directives; mutants in worker code are therefore active.
 A surviving mutant needs either a new test or a reason why no test can kill
 it (equivalent mutant, or a branch that only runs on allocation failure).
 
+## Continuous integration
+
+`.github/workflows/tests.yml` runs on every pull request and on pushes to
+`master` and `dev`:
+
+- lint: whitespace errors in the changes, shellcheck, ruff check and format;
+- the suite on every version in `NGINX_VERSIONS`, plus AddressSanitizer and
+  debug builds of the current stable version;
+- for pull requests, `make mutate` against the merge base. It has no score
+  threshold: the job summary lists the surviving mutants, and each one is
+  killed with a test or explained in the pull request.
+
 ## Layout
 
 ```text
@@ -81,7 +93,8 @@ tests/
   ldap/                OpenLDAP image; seed.ldif holds the directory fixtures
     tls/               test CA and certificates (generate.sh), test-only keys
   runner/              toolchain image; run-tests.sh builds nginx and runs pytest
-  mutation/            clang + Mull image; run-mutation.sh for make mutate
+  mutation/            clang + Mull image; run-mutation.sh for make mutate,
+                       summary.py for the CI job summary
   suite/
     harness.py         Nginx: per-test prefix, config, start/stop, crash detection
     conftest.py        `nginx` fixture, ldap_server() / protected_location() helpers
