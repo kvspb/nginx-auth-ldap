@@ -75,6 +75,7 @@ echo "run-mutation: configuring nginx ${NGINX_VERSION} with the Mull plugin"
         --prefix=/tmp/nginx \
         --with-cc="clang-${LLVM}" \
         --with-http_ssl_module \
+        --with-http_v2_module \
         --with-cc-opt="${cc_opt}" \
         --with-ld-opt="${ld_opt}" \
         --add-module=/src >"${build_dir}/configure.log" 2>&1 \
