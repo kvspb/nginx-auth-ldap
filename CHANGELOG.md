@@ -29,6 +29,8 @@ check these changes in behaviour:
   certificate must name the host in its subjectAltName; the subject CN is
   not used. A url with a host name needs that name as a DNS subjectAltName:
   an IP subjectAltName of the address it resolves to no longer matches.
+- TLS 1.0 and 1.1 are no longer offered: an LDAP server that speaks
+  nothing newer cannot be reached over `ldaps://` or StartTLS.
 - A login whose user search finds more than one entry is denied. Make the
   base DN and filter of the `url` select one entry per login.
 - When the LDAP servers cannot decide (they do not answer in time, the
@@ -167,7 +169,8 @@ Known before this release:
 - `require user` compares DNs as DNs: case and spacing after commas no
   longer matter (kvspb#3).
 - `ldap_server` urls with an IPv6 address (`ldap://[fd00::1]:389/...`) work.
-- `ldaps://` offers TLS 1.3 and no longer offers SSL 2.0 or 3.0.
+- `ldaps://` and StartTLS offer TLS 1.2 and 1.3 only: no longer SSL 2.0,
+  SSL 3.0, TLS 1.0 or TLS 1.1 (RFC 8996).
 
 ### Changed
 

@@ -7,7 +7,8 @@ replaced before the check:
   it reads the configuration, so they become the host of the test directory;
 - files under /etc/nginx/ldap/ (CA certificates, included files) live in the
   prefix of the test instance;
-- "load_module" lines are dropped: the module is built into the test binary;
+- "load_module" lines are dropped: the module is built into the test binary,
+  or loaded from where a dynamic build put it;
 - "include mime.types" finds a stub file.
 
 Credentials are not replaced: nginx -t does not connect to the server.
@@ -20,6 +21,7 @@ written there and checked through the examples that include it.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -94,6 +96,10 @@ def nginx_t(nginx: Nginx, config: str) -> subprocess.CompletedProcess:
     (nginx.prefix / "conf" / "mime.types").write_text("types {\n    text/html html;\n}\n")
     config = localize(config, files_dir)
     if EVENTS_RE.search(config):
+        # A dynamic build of the module (DYNAMIC=1) has to be loaded.
+        module = os.environ.get("NGINX_LDAP_MODULE")
+        if module:
+            config = f"load_module {module};\n" + config
         nginx.conf_path.write_text(config)
     else:
         nginx.write_config(http=config)

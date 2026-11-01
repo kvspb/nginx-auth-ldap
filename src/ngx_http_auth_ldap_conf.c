@@ -197,8 +197,9 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
 static char *
 ngx_http_auth_ldap_create_ssl(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server)
 {
-    /* SSL 2.0 and 3.0 are broken (RFC 6176, RFC 7568). */
-    ngx_uint_t protos = NGX_SSL_TLSv1 | NGX_SSL_TLSv1_1 | NGX_SSL_TLSv1_2
+    /* SSL 2.0 and 3.0 are broken (RFC 6176, RFC 7568), TLS 1.0 and 1.1
+     * deprecated (RFC 8996). */
+    ngx_uint_t protos = NGX_SSL_TLSv1_2
 #ifdef NGX_SSL_TLSv1_3
         | NGX_SSL_TLSv1_3
 #endif

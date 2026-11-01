@@ -18,7 +18,7 @@ services:
         ipv4_address: 10.213.57.10
         ipv6_address: fd5b:a1d4:0:1::10
 
-  tests:
+  tests: &tests
     build: ./runner
     depends_on:
       ldap:
@@ -28,6 +28,8 @@ services:
       NGINX_DEBUG: "${NGINX_DEBUG:-0}"
       SANITIZE: "${SANITIZE:-0}"
       COVERAGE: "${COVERAGE:-0}"
+      DYNAMIC: "${DYNAMIC:-0}"
+      OPENSSL_VERSION: "${OPENSSL_VERSION:-}"
       LDAP_HOST: ldap
     cap_add: &trace-children
       # pidfd_getfd(2), to read socket options of the nginx workers
@@ -45,6 +47,14 @@ services:
       - build-cache:/build
       # Writable output for reports such as make coverage.
       - ./reports:/reports
+
+  # The same suite on Alpine Linux: musl libc, its OpenLDAP and OpenSSL
+  # (make test RUNNER=tests-alpine).
+  tests-alpine:
+    <<: *tests
+    build:
+      context: ./runner
+      dockerfile: Dockerfile.alpine
 
   # Diff-based mutation testing (make mutate BASE=<ref>).
   mutation:

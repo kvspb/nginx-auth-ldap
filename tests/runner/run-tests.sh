@@ -7,6 +7,10 @@
 #   SANITIZE       1 to build with AddressSanitizer
 #   COVERAGE       1 to build with gcov instrumentation and write a coverage
 #                  report of the module sources to /reports/coverage
+#   DYNAMIC        1 to build the module as a dynamic module, loaded with
+#                  load_module (the test modules stay static)
+#   OPENSSL_VERSION  build nginx with this OpenSSL release from source
+#                  (for example 1.1.1w) instead of the system library
 # Any arguments are passed to pytest unchanged.
 set -eu
 
@@ -14,8 +18,12 @@ set -eu
 : "${NGINX_DEBUG:=0}"
 : "${SANITIZE:=0}"
 : "${COVERAGE:=0}"
+: "${DYNAMIC:=0}"
+: "${OPENSSL_VERSION:=}"
 
-flavor="${NGINX_VERSION}-debug${NGINX_DEBUG}-asan${SANITIZE}-cov${COVERAGE}"
+# Debian and Alpine runners share the build volume.
+if [ -f /etc/alpine-release ]; then distro=alpine; else distro=debian; fi
+flavor="${NGINX_VERSION}-${distro}-debug${NGINX_DEBUG}-asan${SANITIZE}-cov${COVERAGE}-dyn${DYNAMIC}-ssl${OPENSSL_VERSION:-system}"
 build_dir="/build/nginx-${flavor}"
 tarball="/build/nginx-${NGINX_VERSION}.tar.gz"
 
@@ -55,11 +63,31 @@ if [ ! -f "${build_dir}/objs/Makefile" ]; then
     if [ "${NGINX_DEBUG}" = "1" ]; then
         extra="--with-debug"
     fi
+    module="--add-module=/src"
+    if [ "${DYNAMIC}" = "1" ]; then
+        module="--add-dynamic-module=/src"
+    fi
+    if [ -n "${OPENSSL_VERSION}" ]; then
+        openssl_dir="/build/openssl-${OPENSSL_VERSION}"
+        if [ ! -d "${openssl_dir}" ]; then
+            echo "run-tests: downloading OpenSSL ${OPENSSL_VERSION}"
+            tag="openssl-${OPENSSL_VERSION}"
+            case "${OPENSSL_VERSION}" in
+                1.*) tag="OpenSSL_$(echo "${OPENSSL_VERSION}" | tr . _)" ;;
+            esac
+            curl -fsSL "https://github.com/openssl/openssl/releases/download/${tag}/openssl-${OPENSSL_VERSION}.tar.gz" \
+                -o "${openssl_dir}.tar.gz.part"
+            mkdir -p "${openssl_dir}"
+            tar -xzf "${openssl_dir}.tar.gz.part" -C "${openssl_dir}" --strip-components=1
+            rm -f "${openssl_dir}.tar.gz.part"
+        fi
+        extra="${extra} --with-openssl=${openssl_dir}"
+    fi
 
     echo "run-tests: configuring nginx ${flavor}"
     (
         cd "${build_dir}"
-        # shellcheck disable=SC2086 # $extra is intentionally word-split
+        # shellcheck disable=SC2086 # $extra and $module are word-split
         ./configure \
             --prefix=/tmp/nginx \
             --with-http_ssl_module \
@@ -67,7 +95,7 @@ if [ ! -f "${build_dir}/objs/Makefile" ]; then
             --with-poll_module \
             --with-cc-opt="${cc_opt}" \
             --with-ld-opt="${ld_opt}" \
-            --add-module=/src \
+            ${module} \
             --add-module=/src/tests/modules/rerun_phases \
             --add-module=/src/tests/modules/connect_sync \
             ${extra} >"${build_dir}/configure.log" 2>&1 \
@@ -82,6 +110,10 @@ make -C "${build_dir}" -j"$(nproc)" >"${build_dir}/make.log" 2>&1 \
     || { grep -E "error|warning" "${build_dir}/make.log" || tail -n 50 "${build_dir}/make.log"; exit 1; }
 
 export NGINX_BINARY="${build_dir}/objs/nginx"
+if [ "${DYNAMIC}" = "1" ]; then
+    # The harness adds load_module for it to every configuration.
+    export NGINX_LDAP_MODULE="${build_dir}/objs/ngx_http_auth_ldap_module.so"
+fi
 export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:abort_on_error=1}"
 
 "${NGINX_BINARY}" -V 2>&1 | head -n 1

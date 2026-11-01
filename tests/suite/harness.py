@@ -80,9 +80,12 @@ class Nginx:
         passed_env = "".join(
             f'env "{name}";\n' for name in {**os.environ, **self.env} if MULL_MUTANT_RE.match(name)
         )
+        # A dynamic build of the module (DYNAMIC=1 in run-tests.sh).
+        module = os.environ.get("NGINX_LDAP_MODULE")
+        load_module = f"load_module {module};\n" if module else ""
         conf = textwrap.dedent(
             """\
-            {passed_env}daemon off;
+            {load_module}{passed_env}daemon off;
             master_process on;
             # The runner container is disposable; running workers as root
             # keeps the private (0700) prefix directory accessible to them.
@@ -115,6 +118,7 @@ class Nginx:
             }}
             """
         ).format(
+            load_module=load_module,
             passed_env=passed_env,
             main=main,
             events=events,

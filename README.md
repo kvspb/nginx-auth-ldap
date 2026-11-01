@@ -282,8 +282,8 @@ Default: -
 
 Where and how to search for users (an RFC 4516 LDAP URL). Required.
 
-- `ldap://` or `ldaps://` (LDAP over TLS). For StartTLS on `ldap://`, see
-  `starttls`.
+- `ldap://` or `ldaps://` (LDAP over TLS 1.2 or 1.3). For StartTLS on
+  `ldap://`, see `starttls`.
 - `host`: a host name, an IPv4 address, or an IPv6 address in brackets, for
   example `ldaps://[2001:db8::10]/...`. A host name is resolved once, when
   nginx reads the configuration; with several addresses each connection

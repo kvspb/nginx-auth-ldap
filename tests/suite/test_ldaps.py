@@ -15,6 +15,7 @@ fix may answer 5xx instead. Either way it must not be let through.
 from __future__ import annotations
 
 import shutil
+import ssl
 import subprocess
 
 import pytest
@@ -242,3 +243,18 @@ def test_server_name_is_sent(nginx, host, expected):
 
         assert nginx.get(auth=creds("alice"), timeout=5).status_code == 200
         assert proxy.server_names and set(proxy.server_names) == {expected}
+
+
+@pytest.mark.parametrize(
+    "version", [ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1], ids=["tls1.0", "tls1.1"]
+)
+@pytest.mark.filterwarnings("ignore:ssl.TLSVersion.TLSv1:DeprecationWarning")
+def test_tls_before_1_2_is_refused(nginx, version):
+    # TLS 1.0 and 1.1 are deprecated (RFC 8996). OpenSSL 3 refuses them at
+    # its default security level anyway; a build with OpenSSL 1.1.1
+    # (OPENSSL_VERSION=1.1.1w) offered them (audit F16).
+    with TlsProxy(maximum_version=version) as proxy:
+        server = start(nginx, ldaps_url("localhost", proxy.port), check="off", ca_file=None)
+
+        assert_denied(server)
+        assert proxy.versions == []
