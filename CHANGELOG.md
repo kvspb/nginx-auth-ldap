@@ -187,7 +187,9 @@ Known before this release:
   a client they admit costs no LDAP request, and `auth_basic` with a local
   password file admits its users while the directory is down, where the
   module answered 503 first (kvspb#108, kvspb#256, kvspb#7).
-- `nginx -t` no longer prints notices for `require` and `satisfy` lines.
+- `nginx -t` no longer prints notices for `require` and `satisfy` lines,
+  and its messages about the `url` name the `ldap_server` instead of an
+  `auth_ldap_url` directive that does not exist (kvspb#215, kvspb#32).
 - These fail the configuration check: two `ldap_server` blocks with the
   same name (the first one was used), a second `url` in a block (it
   replaced the first), and `auth_ldap_servers` without a name.

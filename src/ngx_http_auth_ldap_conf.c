@@ -597,19 +597,21 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
     }
 
     if (server->ludpp->lud_attrs == NULL) {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: No user attribute specified in auth_ldap_url.");
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: No user attribute specified in url of ldap_server \"%V\"", &server->alias);
         return NGX_CONF_ERROR;
     }
 
     if (server->ludpp->lud_host == NULL || server->ludpp->lud_host[0] == '\0') {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-            "http_auth_ldap: No host specified in auth_ldap_url.");
+            "http_auth_ldap: No host specified in url of ldap_server \"%V\"", &server->alias);
         return NGX_CONF_ERROR;
     }
 
     if (server->ludpp->lud_port < 1 || server->ludpp->lud_port > 65535) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-            "http_auth_ldap: Invalid port %d in auth_ldap_url.", server->ludpp->lud_port);
+            "http_auth_ldap: Invalid port %d in url of ldap_server \"%V\"", server->ludpp->lud_port,
+            &server->alias);
         return NGX_CONF_ERROR;
     }
 
@@ -617,7 +619,8 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
         && ngx_http_auth_ldap_check_filter(server->ludpp->lud_filter) != NGX_OK)
     {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-            "http_auth_ldap: Invalid filter \"%s\" in auth_ldap_url.", server->ludpp->lud_filter);
+            "http_auth_ldap: Invalid filter \"%s\" in url of ldap_server \"%V\"", server->ludpp->lud_filter,
+            &server->alias);
         return NGX_CONF_ERROR;
     }
 

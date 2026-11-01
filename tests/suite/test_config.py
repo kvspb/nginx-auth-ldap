@@ -44,19 +44,19 @@ def server_case(
             ldap_server("users", url=f"ldap://{LDAP_HOST}/{PEOPLE_DN}"),
             LOCATION,
             1,
-            "No user attribute specified",
+            'No user attribute specified in url of ldap_server "users"',
             id="url-without-login-attribute",
         ),
         pytest.param(
             ldap_server("users", url=f"ldap:///{PEOPLE_DN}?uid"),
             LOCATION,
             1,
-            "No host specified",
+            'No host specified in url of ldap_server "users"',
             id="url-without-host",
         ),
         pytest.param(WITHOUT_URL, LOCATION, 1, NO_URL_TEXT, id="ldap-server-without-url"),
         pytest.param(WITHOUT_URL, "", 1, NO_URL_TEXT, id="unused-ldap-server-without-url"),
-        server_case("url-with-port-without-host", "No host specified", url=f"ldap://:389/{QUERY}"),
+        server_case("url-with-port-without-host", 'No host specified in url of ldap_server "users"', url=f"ldap://:389/{QUERY}"),
         server_case(
             "unknown-directive-in-ldap-server",
             'unknown directive "no_such_directive" in ldap_server',
@@ -92,7 +92,7 @@ def server_case(
         *[
             server_case(
                 case_id,
-                f'Invalid filter "{bad_filter}" in auth_ldap_url',
+                f'Invalid filter "{bad_filter}" in url of ldap_server "users"',
                 url=f"ldap://{LDAP_HOST}/{PEOPLE_DN}?uid?sub?{bad_filter}",
             )
             for case_id, bad_filter in [
@@ -114,12 +114,12 @@ def server_case(
         ),
         server_case(
             "url-with-port-out-of-range",
-            "Invalid port 99999 in auth_ldap_url",
+            "Invalid port 99999 in url of ldap_server \"users\"",
             url=f"ldap://{LDAP_HOST}:99999/{QUERY}",
         ),
         server_case(
             "url-with-port-above-65535",
-            "Invalid port 65536 in auth_ldap_url",
+            "Invalid port 65536 in url of ldap_server \"users\"",
             url=f"ldap://{LDAP_HOST}:65536/{QUERY}",
         ),
         pytest.param(
@@ -133,7 +133,7 @@ def server_case(
             ldap_server("users", url=f"ldap://{LDAP_HOST}:1/{QUERY}"), LOCATION, 0, None, id="url-with-port-1"
         ),
         server_case(
-            "url-with-negative-port", "Invalid port -1 in auth_ldap_url", url=f"ldap://{LDAP_HOST}:-1/{QUERY}"
+            "url-with-negative-port", "Invalid port -1 in url of ldap_server \"users\"", url=f"ldap://{LDAP_HOST}:-1/{QUERY}"
         ),
         # require / satisfy
         server_case(

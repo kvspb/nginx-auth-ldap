@@ -972,9 +972,11 @@ and refuses the configuration, for example:
 - `no "url" in ldap_server "<name>"`;
 - `unknown directive "<name>" in ldap_server`;
 - `invalid number of arguments in "<directive>"`;
-- `No user attribute specified in auth_ldap_url.`,
-  `No host specified in auth_ldap_url.`, `Invalid port ...`,
-  `Invalid filter "..." in auth_ldap_url.`;
+- `No user attribute specified in url of ldap_server "<name>"`,
+  `No host specified in ...`, `Invalid port ... in ...`,
+  `Invalid filter "..." in ...`;
+- `"url" is duplicate`, `"require valid_user" template is duplicate`,
+  `duplicate ldap_server "<name>"`;
 - `host not found in LDAP hostname "<host>"`;
 - `invalid value "..." for require, it must be "valid_user", "user" or "group"`;
 - `Server "<name>" has not been defined`, and `Using "auth_ldap_servers" when
@@ -982,9 +984,6 @@ and refuses the configuration, for example:
 - `cannot load CA certificates from "<path>"`;
 - `auth_ldap_cache_size cannot be smaller than 100 entries.`,
   `auth_ldap_cache_expiration_time cannot be smaller than 1000 ms.`
-
-`nginx -t` also prints notices such as `http_auth_ldap: parse_require`; they
-are harmless.
 
 ## Troubleshooting
 
