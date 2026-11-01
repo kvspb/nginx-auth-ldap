@@ -27,7 +27,8 @@ check these changes in behaviour:
 - With `ssl_ca_file` or `ssl_ca_dir`, only those CAs are trusted; the system
   store is used only when neither is set. With `ssl_check_cert on`, the
   certificate must name the host in its subjectAltName; the subject CN is
-  not used.
+  not used. A url with a host name needs that name as a DNS subjectAltName:
+  an IP subjectAltName of the address it resolves to no longer matches.
 - A login whose user search finds more than one entry is denied. Make the
   base DN and filter of the `url` select one entry per login.
 - When the LDAP servers cannot decide (they do not answer in time, the
@@ -84,8 +85,9 @@ Known before this release:
   and outcomes are no longer stored under the wrong server (kvspb#245,
   kvspb#228, kvspb#201).
 - ldaps certificate verification (`ssl_check_cert on`):
-  - a host name mismatch no longer crashes the worker; the IP SAN fallback
-    uses the peer address and the right address family (kvspb#236);
+  - a host name mismatch no longer crashes the worker (kvspb#236); a host
+    name is matched against DNS subjectAltNames only and an address against
+    IP subjectAltNames only;
   - the subject CN is no longer used as a host name (RFC 9525, kvspb#254);
   - every `ldap_server` has its own SSL context, so the `ssl_ca_file` or
     `ssl_ca_dir` of one server is not trusted by the others (kvspb#258);

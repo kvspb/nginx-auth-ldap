@@ -499,11 +499,13 @@ Syntax:  ssl_check_cert on | off;
 Default: ssl_check_cert off;
 ```
 
-For `ldaps://` and `starttls on`: verify the server certificate. The chain must lead to a
-trusted CA, and the certificate must name the host of the `url` in a DNS
-subjectAltName, or the address connected to in an IP subjectAltName. The
-subject CN is not used. With `off` any certificate is accepted, which
-exposes passwords to a man in the middle.
+For `ldaps://` and `starttls on`: verify the server certificate. The chain
+must lead to a trusted CA, and the certificate must name the host of the
+`url`: a host name in a DNS subjectAltName, an address in an IP
+subjectAltName. An IP subjectAltName does not match a host name, even one
+that resolves to that address, and the subject CN is not used. With `off`
+any certificate is accepted, which exposes passwords to a man in the
+middle.
 
 #### ssl_ca_file
 
@@ -967,7 +969,7 @@ ldapsearch -H ldap://ldap.example.com -D "cn=nginx,ou=services,dc=example,dc=com
 | `ldap_result() failed (-1: Can't contact LDAP server)` | A connection broke while a request was using it; the request is answered with 503. See `max_down_retries`. |
 | `SSL handshake failed` | Not a TLS port, no common TLS version or cipher, or TLS on a plain `ldap://` port. |
 | `Remote side presented invalid SSL certificate: error ...` | The chain does not lead to a CA in `ssl_ca_file` / `ssl_ca_dir` or the system store. |
-| `... does not match address ...` | The certificate does not name the host of the `url` (or the address) in its subjectAltName. |
+| `... does not match address "..." ...` | The certificate does not name the host of the `url` in its subjectAltName: a host name needs a DNS entry, an address an IP entry. |
 | `Incorrect group DN` | A `require group` value is not a valid DN. |
 | `"auth_ldap" requires one or more "auth_ldap_servers"` | `auth_ldap` without `auth_ldap_servers` at the same or an outer level. |
 

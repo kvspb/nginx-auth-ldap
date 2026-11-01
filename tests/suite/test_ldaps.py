@@ -63,9 +63,6 @@ def assert_denied(server) -> None:
     [
         pytest.param("ldap", id="host-name"),
         pytest.param(LDAP_IPV4, id="ipv4-address"),
-        # Aliases that resolve to one address only and match no DNS SAN.
-        pytest.param("ldap4", id="ipv4-san-of-host-name"),
-        pytest.param("ldap6", id="ipv6-san-of-host-name"),
         pytest.param(LDAP_IPV6, id="ipv6-address"),
     ],
 )
@@ -74,6 +71,17 @@ def test_valid_certificate_is_accepted(nginx, host):
 
     assert server.get(auth=creds("alice")).status_code == 200
     assert server.get(auth=("alice", "wrong")).status_code == 401
+
+
+@pytest.mark.parametrize("host", ["ldap4", "ldap6"])
+def test_host_name_does_not_match_an_ip_san(nginx, host):
+    # The aliases resolve to addresses that the certificate holds as IP
+    # SANs, but not to a name it holds: the url names a host, and only a DNS
+    # SAN can match a host name (RFC 9525, audit F16).
+    server = start(nginx, ldaps_url(host))
+
+    assert_denied(server)
+    assert "does not match" in server.log()
 
 
 def test_host_name_matches_without_ip_sans(nginx):

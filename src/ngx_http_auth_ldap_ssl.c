@@ -94,7 +94,7 @@ ngx_http_auth_ldap_ssl_handshake_handler(ngx_connection_t *conn)
 
 /*
  * Verify the certificate of the LDAP server: a trusted chain, and the host
- * name of the url or the address connected to in its subjectAltName.
+ * of the url in its subjectAltName.
  */
 static ngx_int_t
 ngx_http_auth_ldap_check_peer(ngx_http_auth_ldap_connection_t *c,
@@ -103,9 +103,7 @@ ngx_http_auth_ldap_check_peer(ngx_http_auth_ldap_connection_t *c,
     X509                 *cert;
     long                  chain_verified;
     ngx_int_t             rc;
-    struct sockaddr      *sa;
-    const unsigned char  *ip;
-    size_t                iplen;
+    const char           *host;
 
     cert = SSL_get_peer_certificate(conn->ssl->connection);
     if (cert == NULL) {
@@ -124,37 +122,25 @@ ngx_http_auth_ldap_check_peer(ngx_http_auth_ldap_connection_t *c,
         goto done;
     }
 
-    /* RFC 9525: the subject CN is not a reference identifier. */
-    if (X509_check_host(cert, c->server->ludpp->lud_host, 0,
-                        X509_CHECK_FLAG_NEVER_CHECK_SUBJECT, NULL) == 1)
+    /*
+     * The reference identity is the host of the url (RFC 9525): a name
+     * matches a DNS subjectAltName only, never the subject CN, and an
+     * address an IP subjectAltName only. An IP SAN of the address a name
+     * resolved to does not vouch for the name.
+     */
+    host = c->server->ludpp->lud_host;
+    if (host != NULL
+        && (ngx_http_auth_ldap_is_address(host)
+            ? X509_check_ip_asc(cert, host, 0)
+            : X509_check_host(cert, host, 0, X509_CHECK_FLAG_NEVER_CHECK_SUBJECT, NULL)) == 1)
     {
-        rc = NGX_OK;
-        goto done;
-    }
-
-    /* Not the host name: try the address connected to. */
-    sa = c->conn.sockaddr;
-    ip = NULL;
-    iplen = 0;
-
-    if (sa != NULL && sa->sa_family == AF_INET) {
-        ip = (const unsigned char *) &((struct sockaddr_in *) sa)->sin_addr;
-        iplen = 4;
-#if (NGX_HAVE_INET6)
-    } else if (sa != NULL && sa->sa_family == AF_INET6) {
-        ip = (const unsigned char *) &((struct sockaddr_in6 *) sa)->sin6_addr;
-        iplen = 16;
-#endif
-    }
-
-    if (ip != NULL && X509_check_ip(cert, ip, iplen, 0) == 1) {
         rc = NGX_OK;
         goto done;
     }
 
     ngx_log_error(NGX_LOG_ERR, c->log, 0,
         "http_auth_ldap: Remote side presented invalid SSL certificate: "
-        "does not match address (neither server's domain nor IP in certificate's SAN)");
+        "does not match address \"%s\" (not in its subjectAltName)", host != NULL ? host : "");
 
 done:
 
