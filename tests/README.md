@@ -29,6 +29,10 @@ cached build directory):
 clears the removed node, which hides double-removal bugs. Run the suite
 without it as well.
 
+Run one suite at a time: all runs share the LDAP container, and some tests
+change passwords in it for a while (`changed_password()`,
+`rotating_service_password()`), which fails the tests of a run next to them.
+
 ## Coverage
 
 `make coverage` builds an instrumented nginx (`-O0 --coverage`), runs the
