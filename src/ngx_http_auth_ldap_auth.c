@@ -366,6 +366,11 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                     /* LDAP operation in progress, wait for the result */
                     return NGX_AGAIN;
                 }
+                if (rc != NGX_OK) {
+                    /* The bind was never sent: nothing to rebind. */
+                    ctx->phase = PHASE_NEXT;
+                    break;
+                }
 
                 /* All steps done, finish the processing */
                 ctx->phase = PHASE_REBIND;
@@ -869,9 +874,12 @@ ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
 }
 
 /*
- * Finish sending an LDAP operation on ctx->c. If "call" failed, give the
- * connection back: the request fails on this server. Otherwise wait for
- * the answer in the given connection state.
+ * Finish sending an LDAP operation on ctx->c. If "call" failed, the
+ * request fails on this server. A failed send (LDAP_SERVER_DOWN) left the
+ * connection without its socket inside OpenLDAP: close it, and since the
+ * server was not asked, decide nothing about the credentials. Any other
+ * error (a bad filter from the configuration) gives the connection back.
+ * Otherwise wait for the answer in the given connection state.
  */
 static ngx_int_t
 ngx_http_auth_ldap_wait_result(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
@@ -880,8 +888,13 @@ ngx_http_auth_ldap_wait_result(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
     if (rc != LDAP_SUCCESS) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: %s() failed (%d: %s)",
             call, rc, ldap_err2string(rc));
-        ctx->outcome = OUTCOME_ERROR;
-        ngx_http_auth_ldap_return_connection(ctx->c);
+        if (rc == LDAP_SERVER_DOWN) {
+            ctx->outcome = OUTCOME_UNAVAILABLE;
+            ngx_http_auth_ldap_close_request_connection(ctx);
+        } else {
+            ctx->outcome = OUTCOME_ERROR;
+            ngx_http_auth_ldap_return_connection(ctx->c);
+        }
         return NGX_ERROR;
     }
 

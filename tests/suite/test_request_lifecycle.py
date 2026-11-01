@@ -448,36 +448,53 @@ def session_status(session: requests.Session, url: str) -> int | None:
         return None
 
 
-def keepalive_request_while_the_connection_is_reset(server, proxy: LdapProxy) -> int | None:
-    """Send a request on a kept-alive client connection and reset the LDAP
-    connection, both while the worker is stopped: the worker then sees the
-    request before it reads the reset, and sends the search on a connection
-    the kernel has already reset."""
-    session = requests.Session()
-    assert session.get(server.url(), auth=creds("alice"), timeout=5).status_code == 200
+def keepalive_requests_while_the_connection_is_reset(server, proxy: LdapProxy, count: int) -> list[int | None]:
+    """Send requests on kept-alive client connections and reset the LDAP
+    connection, all while the worker is stopped: the worker then sees the
+    requests before it reads the reset, and sends the first operation on a
+    connection the kernel has already reset."""
+    sessions = [requests.Session() for _ in range(count)]
+    for session in sessions:
+        assert session.get(server.url(), auth=creds("alice"), timeout=5).status_code == 200
     (worker,) = server.worker_pids()
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    with ThreadPoolExecutor(max_workers=count) as pool:
         os.kill(worker, signal.SIGSTOP)
         try:
-            future = pool.submit(session_status, session, server.url())
+            futures = [pool.submit(session_status, session, server.url()) for session in sessions]
             time.sleep(0.3)
             proxy.reset()
             time.sleep(0.3)
         finally:
             os.kill(worker, signal.SIGCONT)
-        return future.result()
+        return [future.result() for future in futures]
 
 
-def test_search_on_a_reset_connection_does_not_hang_the_worker(nginx, proxy):
+@pytest.mark.parametrize("starter", [start, start_with_user_bind], ids=["search", "user-bind"])
+def test_operation_sent_on_a_reset_connection_is_503(nginx, proxy, starter):
     # The failed send made OpenLDAP close its sockbuf inside
     # ldap_search_ext(); shutdown() of the reset socket failed, and the
     # sockbuf close called close_connection(), which unbound the same LDAP
     # handle again from inside the library: the worker hung for good
-    # (PR #250 a02deb2, PR #251 3bdf4bc).
-    server = start(nginx, proxy)
+    # (PR #250 a02deb2, PR #251 3bdf4bc). Then the failed call was taken
+    # for an answer about the credentials (401), and the dead connection
+    # went back to the pool.
+    server = starter(nginx, proxy)
 
-    result = keepalive_request_while_the_connection_is_reset(server, proxy)
+    (result,) = keepalive_requests_while_the_connection_is_reset(server, proxy, 1)
 
     assert result is not None, "the request was never answered"
+    assert result == 503
+    assert "failed (-1: Can't contact LDAP server)" in server.log()
     wait_until_ready(server)
+
+
+def test_connection_reset_under_a_send_is_not_handed_to_the_next_request(nginx, proxy):
+    # The connection whose send failed has lost its socket inside OpenLDAP.
+    # Given back to the pool, it went to the next request, which failed on
+    # it too instead of waiting for the reconnect.
+    server = start(nginx, proxy)
+
+    results = keepalive_requests_while_the_connection_is_reset(server, proxy, 2)
+
+    assert sorted(results, key=str) == [200, 503]
