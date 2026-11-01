@@ -113,6 +113,9 @@ Known before this release:
   same LDAP handle again from inside OpenLDAP. Such a request now gets 503
   instead of 401, and the dead connection is closed instead of being
   handed to the next request.
+- Memory: the parsed `url` of every `ldap_server` leaked on each reload,
+  and every ldaps or StartTLS reconnect kept a little memory until the
+  worker exited.
 - The cache used only seven of the eight entries of a bucket: the eighth
   was never chosen for a new outcome.
 - An idle LDAP connection closed by the server or a firewall (Active
