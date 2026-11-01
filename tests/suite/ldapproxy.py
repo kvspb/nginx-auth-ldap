@@ -11,6 +11,8 @@ import socket
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from types import TracebackType
+from typing import Self
 
 from ldapdata import LDAP_HOST
 
@@ -98,6 +100,17 @@ class LdapProxy:
     def refuse(self) -> None:
         """Close every new connection right after accepting it."""
         self._refusing.set()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
 
     def close(self) -> None:
         self._stopping.set()

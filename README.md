@@ -55,12 +55,14 @@ and [`auth_ldap_servers`](#auth_ldap_servers) with the names of one or more
       the rules matched, a wrong password denies the user.
    7. **Rebind.** The connection binds as `binddn` again before it serves the
       next request.
-3. Allows the request as soon as one server allows it. When every server
-   denies the user, the answer is `401`. When a server could not decide
-   (the connection broke, the server is busy, unavailable or over a limit)
-   and no later server allows, or a server does not finish within its
-   [`request_timeout`](#request_timeout), the answer is
-   `503 Service Unavailable`: the credentials may be right.
+3. Allows the request as soon as one server allows it. A server that cannot
+   decide is left for the next one: it has no connection bound as `binddn`
+   (unless it is the last server), it does not finish within its
+   [`request_timeout`](#request_timeout), the connection broke, or it
+   answered busy, unavailable or over a limit. When every server denies the
+   user, the answer is `401`; when a server could not decide and no later
+   server allows, it is `503 Service Unavailable`, as the credentials may be
+   right.
 
 Each nginx worker opens [`connections`](#connections) connections to every
 `ldap_server` when it starts, keeps them open, and reconnects them after
@@ -437,9 +439,10 @@ Default: request_timeout 10s;
 ```
 
 Time a request may spend on this server, including the wait for a free
-connection, the searches and the binds. When it expires the request is
-answered with `503 Service Unavailable` and the next server is not tried.
-Must be greater than 0.
+connection, the searches and the binds. When it expires the request goes on
+to the next server in `auth_ldap_servers`, with that server's
+`request_timeout`; after the last server it is answered with
+`503 Service Unavailable`. Must be greater than 0.
 
 #### ssl_check_cert
 
@@ -663,8 +666,8 @@ subjectAltName.
 
 The servers are tried in order. A user who is not found, does not match the
 rules or gives a wrong password on the first server is checked on the
-second. This combines directories, or replicas of one directory when a
-server fails while it handles a request:
+second. This combines directories, and gives failover between replicas of
+one directory:
 
 ```nginx
 ldap_server primary {
@@ -694,9 +697,13 @@ server {
 }
 ```
 
-This is not full failover: while the first server is unreachable, requests
-wait for one of its connections until its `request_timeout` and get `503`;
-the second server is not tried. Keep `request_timeout` short. For a
+When the first server is unreachable or rejects `binddn`, a worker has no
+connection to it and sends requests to the second server at once. When it
+accepts connections but does not answer, each request waits for its
+`request_timeout` before the second server is tried: keep it short. While a
+server cannot decide and no later server allows, the answer is `503`, not
+`401`, even when a later server denies the user: the unavailable server may
+know them. As an alternative for a
 replicated directory, a single `url` whose host name resolves to every
 replica may suit better: each connection picks one of the addresses at
 random whenever it connects, and a request uses any connection that is up.
@@ -880,7 +887,8 @@ ldapsearch -H ldap://ldap.example.com -D "cn=nginx,ou=services,dc=example,dc=com
 | `Initial bind failed (49: Invalid credentials ...)` | Wrong `binddn` or `binddn_passwd`. The connection never becomes ready, so requests get `503`. |
 | `Could not connect`, `Unable to connect to LDAP server` | Host or port unreachable; the connection is retried every `reconnect_timeout`. |
 | `Request timed out (state=...)` | The server accepted the connection but did not answer in time. |
-| `Authentication timed out` | The request hit `request_timeout`; see the messages before it. |
+| `Authentication timed out on server "..."` | The request hit that server's `request_timeout` and goes on to the next server; see the messages before it. |
+| `Server "..." has no connection, trying the next server` | No connection to that server is bound as `binddn`: it is unreachable or rejects `binddn` (look for `Could not connect` or `Initial bind failed`). |
 | `ldap_result() failed (-1: Can't contact LDAP server)` | An idle connection was dropped by the server or a firewall; set `max_down_retries`. |
 | `SSL handshake failed` | Not a TLS port, no common TLS version or cipher, or TLS on a plain `ldap://` port. |
 | `Remote side presented invalid SSL certificate: error ...` | The chain does not lead to a CA in `ssl_ca_file` / `ssl_ca_dir` or the system store. |

@@ -184,7 +184,8 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
     ngx_int_t rc;
 
     if (r->connection->write->timedout) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: Authentication timed out");
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+            "http_auth_ldap: Authentication timed out on server \"%V\"", &ctx->server->alias);
         /*
          * The operation of this request is still in flight: a pending user
          * bind may yet bind the connection as the user, and a hung server
@@ -199,7 +200,11 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
          * instead of closing the connection without a word (kvspb#115).
          */
         r->connection->write->timedout = 0;
-        return NGX_HTTP_SERVICE_UNAVAILABLE;
+
+        /* The server could not decide: try the next one (kvspb#115). */
+        ctx->outcome = OUTCOME_UNAVAILABLE;
+        ctx->phase = PHASE_NEXT;
+        ctx->iteration = 0;
     }
 
     /*
@@ -234,6 +239,23 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                         ctx->phase = PHASE_NEXT;
                         break;
                     }
+                }
+
+                /*
+                 * A server without a single connection bound as binddn
+                 * (unreachable, or rejecting binddn) cannot answer soon:
+                 * go on to the next one instead of waiting for its
+                 * request_timeout. The last server is waited for.
+                 */
+                if (ctx->server->established == 0
+                    && ctx->server_index + 1 < conf->servers->nelts)
+                {
+                    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                        "http_auth_ldap: Server \"%V\" has no connection, trying the next server",
+                        &ctx->server->alias);
+                    ctx->outcome = OUTCOME_UNAVAILABLE;
+                    ctx->phase = PHASE_NEXT;
+                    break;
                 }
 
                 if (ctx->server->require_valid_user_dn.value.data != NULL) {

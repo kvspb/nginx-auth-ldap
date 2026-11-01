@@ -76,6 +76,11 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
     ctx = c->rctx;
     c->rctx = NULL;
     if (c->state != STATE_DISCONNECTED) {
+        if (c->state == STATE_READY || c->state == STATE_BINDING
+            || c->state == STATE_SEARCHING)
+        {
+            c->server->established--;
+        }
         c->state = STATE_DISCONNECTED;
         ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connection scheduled for reconnection in %d ms", c->server->reconnect_timeout);
@@ -416,6 +421,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 if (error_code == LDAP_SUCCESS) {
                     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Initial bind successful");
                     c->state = STATE_READY;
+                    c->server->established++;
                     c->down_retries = 0;
                     ngx_http_auth_ldap_return_connection(c);
                 } else {

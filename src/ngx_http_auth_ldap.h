@@ -92,6 +92,7 @@ typedef struct {
     ngx_msec_t request_timeout;
     ngx_queue_t free_connections;
     ngx_queue_t waiting_requests;
+    ngx_uint_t established;         /* connections bound as binddn, per worker */
 } ngx_http_auth_ldap_server_t;
 
 typedef struct {

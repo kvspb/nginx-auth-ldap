@@ -2,7 +2,7 @@
 
 The request waits for a usable connection until request_timeout expires and
 is then answered with 503 Service Unavailable (nal-toj.18, kvspb#115).
-Failover to another server is nal-toj.1.
+Failover to another server is tested in test_multiple_servers.py.
 """
 
 from __future__ import annotations

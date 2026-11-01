@@ -37,6 +37,9 @@ check these changes in behaviour:
 - `require group` searches the group entry itself (scope base) instead of
   one level below its parent, so the group DN in the configuration must be
   the exact DN of the group entry.
+- `request_timeout` applies to each server in turn: when it expires the
+  request goes on to the next server, so the longest wait is the sum of the
+  timeouts of all servers in `auth_ldap_servers`.
 - `max_down_retries` now limits immediate reconnects per connection; after
   that a connection waits for `reconnect_timeout`.
 
@@ -111,6 +114,13 @@ Known before this release:
   when more `ldap_server` blocks followed: crash on the first request.
 - `max_down_retries` never limited anything: a server that closed new
   connections at once caused a busy reconnect loop.
+- Failover between servers (kvspb#115, kvspb#198, kvspb#33, kvspb#34): a
+  request goes on to the next server in `auth_ldap_servers` when its
+  `request_timeout` expires, and skips at once a server that has no
+  connection bound as `binddn` (unreachable, or rejecting `binddn`), unless
+  it is the last one. Before, an unreachable first server made every request
+  wait for its `request_timeout` and fail, and the other servers were never
+  tried.
 - An LDAP error that says nothing about the credentials no longer denies
   the user. A connection that broke during the user bind or a search, or a
   server that answered busy, unavailable, time or admin limit exceeded, or
