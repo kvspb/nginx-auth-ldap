@@ -32,6 +32,7 @@
 
 static ngx_int_t ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx,
         ngx_http_auth_ldap_loc_conf_t *conf);
+static ngx_int_t ngx_http_auth_ldap_dn_equal(ngx_http_request_t *r, ngx_str_t *a, ngx_str_t *b);
 static ngx_int_t ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_check_user(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
@@ -366,6 +367,53 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
     }
 }
 
+/*
+ * Compare two DNs as DNs: normalised by OpenLDAP (spacing, escaping) and
+ * then case-insensitively, as the attribute types and the values of the
+ * naming attributes in use (uid, cn, ou, dc) are (RFC 4514, RFC 4517).
+ * NGX_OK when equal, NGX_DECLINED when not or when a DN is invalid.
+ */
+static ngx_int_t
+ngx_http_auth_ldap_dn_equal(ngx_http_request_t *r, ngx_str_t *a, ngx_str_t *b)
+{
+    char       *in[2], *out[2];
+    ngx_str_t  *dn[2];
+    ngx_int_t   i, rc;
+
+    dn[0] = a;
+    dn[1] = b;
+    out[0] = NULL;
+    out[1] = NULL;
+    rc = NGX_DECLINED;
+
+    for (i = 0; i < 2; i++) {
+        in[i] = (char *) ngx_pnalloc(r->pool, dn[i]->len + 1);
+        if (in[i] == NULL) {
+            rc = NGX_ERROR;
+            goto done;
+        }
+        *ngx_cpymem(in[i], dn[i]->data, dn[i]->len) = '\0';
+
+        if (ldap_dn_normalize(in[i], LDAP_DN_FORMAT_LDAP, &out[i], LDAP_DN_FORMAT_LDAPV3)
+            != LDAP_SUCCESS)
+        {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                "http_auth_ldap: Invalid DN \"%s\"", in[i]);
+            goto done;
+        }
+    }
+
+    if (ngx_strcasecmp((u_char *) out[0], (u_char *) out[1]) == 0) {
+        rc = NGX_OK;
+    }
+
+done:
+
+    ldap_memfree(out[0]);
+    ldap_memfree(out[1]);
+    return rc;
+}
+
 static ngx_int_t
 ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
 {
@@ -445,6 +493,7 @@ ngx_http_auth_ldap_check_user(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *c
 {
     ngx_http_complex_value_t *values;
     ngx_uint_t i;
+    ngx_int_t rc;
 
     values = ctx->server->require_user->elts;
     for (i = 0; i < ctx->server->require_user->nelts; i++) {
@@ -455,7 +504,12 @@ ngx_http_auth_ldap_check_user(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *c
         }
 
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Comparing user DN with \"%V\"", &val);
-        if (val.len == ctx->user_dn.len && ngx_memcmp(val.data, ctx->user_dn.data, val.len) == 0) {
+        rc = ngx_http_auth_ldap_dn_equal(r, &val, &ctx->user_dn);
+        if (rc == NGX_ERROR) {
+            ctx->outcome = OUTCOME_ERROR;
+            return NGX_ERROR;
+        }
+        if (rc == NGX_OK) {
             if (ctx->server->satisfy_all == 0) {
                 ctx->outcome = OUTCOME_ALLOW;
                 return NGX_OK;

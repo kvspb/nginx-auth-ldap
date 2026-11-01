@@ -47,13 +47,22 @@ class TestSatisfyAllOfOneUser:
         assert server.get(auth=creds(uid)).status_code == expected
 
 
-@pytest.mark.xfail(
-    reason="require user compares DNs byte by byte, but DNs are case-insensitive (kvspb#3, nal-toj.8)"
+@pytest.mark.parametrize(
+    ("dn", "alice"),
+    [
+        pytest.param(f"UID=alice,{PEOPLE_DN.upper()}", 200, id="other-case"),
+        pytest.param("uid=alice, ou=people, dc=example, dc=org", 200, id="spaces-after-commas"),
+        pytest.param("uid=alice+cn=nobody,ou=people,dc=example,dc=org", 401, id="multi-valued-rdn"),
+        pytest.param("uid=alicex,ou=people,dc=example,dc=org", 401, id="longer-value"),
+    ],
 )
-def test_require_user_dn_is_compared_case_insensitively(nginx):
-    server = users_server(nginx, "any", dns=(f"UID=alice,{PEOPLE_DN.upper()}",))
+def test_require_user_dn_is_compared_as_a_dn(nginx, dn, alice):
+    # DNs are equal when they name the same entry, not when their text is
+    # equal (RFC 4514; kvspb#3, nal-toj.8).
+    server = users_server(nginx, "all", dns=(dn,))
 
-    assert server.get(auth=creds("alice")).status_code == 200
+    assert server.get(auth=creds("alice")).status_code == alice
+    assert server.get(auth=creds("bob")).status_code == 401
 
 
 class TestValidUserDnTemplate:
