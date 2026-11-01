@@ -1,0 +1,19 @@
+# Tooling for the integration suite. The suite itself runs inside the
+# runner container (see docker-compose.yml); requirements.txt only exists so
+# editors and linters can resolve imports on the host.
+
+[tool.pytest.ini_options]
+testpaths = ["suite"]
+# The source tree is mounted read-only inside the runner container.
+addopts = "-ra -p no:cacheprovider"
+# A known-bug test that starts passing must fail the run, so that its xfail
+# marker gets removed together with the fix.
+xfail_strict = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+src = ["suite"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["conftest", "harness", "ldapdata"]

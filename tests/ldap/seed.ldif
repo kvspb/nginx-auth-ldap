@@ -1,0 +1,202 @@
+# Directory fixtures for the test suite. Keep tests/suite/ldapdata.py in sync.
+#
+# Passwords follow the "<uid>-secret" pattern.
+
+dn: dc=example,dc=org
+objectClass: dcObject
+objectClass: organization
+dc: example
+o: Example
+
+dn: ou=people,dc=example,dc=org
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=example,dc=org
+objectClass: organizationalUnit
+ou: groups
+
+dn: ou=services,dc=example,dc=org
+objectClass: organizationalUnit
+ou: services
+
+# Service account used by nginx for the initial bind and user searches.
+dn: cn=nginx,ou=services,dc=example,dc=org
+objectClass: organizationalRole
+objectClass: simpleSecurityObject
+cn: nginx
+userPassword: nginx-secret
+
+# Second service account whose password tests change (rotating_service_password).
+dn: cn=rotating,ou=services,dc=example,dc=org
+objectClass: organizationalRole
+objectClass: simpleSecurityObject
+cn: rotating
+userPassword: rotating-secret
+
+# Member of "admins" and "devs".
+dn: uid=alice,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: alice
+cn: Alice Liddell
+sn: Liddell
+userPassword: alice-secret
+
+# Non-ASCII login and password (kvspb#145): base64 in LDIF.
+dn:: dWlkPWrDvHJnZW7CpyxvdT1wZW9wbGUsZGM9ZXhhbXBsZSxkYz1vcmc=
+objectClass: inetOrgPerson
+uid:: asO8cmdlbsKn
+cn: Jurgen
+sn: Jurgen
+userPassword:: asO8cmdlbsKnLXNlY3JldA==
+
+# Member of "devs" and "ops".
+dn: uid=bob,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: bob
+cn: Bob Builder
+sn: Builder
+userPassword: bob-secret
+
+# Member of no group.
+dn: uid=carol,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: carol
+cn: Carol Danvers
+sn: Danvers
+userPassword: carol-secret
+
+# Member of both "admins" and "ops".
+dn: uid=dave,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: dave
+cn: Dave Grohl
+sn: Grohl
+userPassword: dave-secret
+
+# Member of no group. Reserved for cache tests, which change its password
+# temporarily to tell cached answers from fresh ones.
+dn: uid=erin,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: erin
+cn: Erin Brockovich
+sn: Brockovich
+userPassword: erin-secret
+
+# Login name with characters that are special in LDAP filters (RFC 4515).
+dn: uid=john(x),ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: john(x)
+cn: John X
+sn: X
+userPassword: john(x)-secret
+
+# Login name with a backslash, which must become \5c inside a filter.
+dn: uid=back\\slash,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: back\slash
+cn: Back Slash
+sn: Slash
+userPassword: back\slash-secret
+
+# Login name with a leading '#', which must be escaped in a DN (RFC 4514).
+dn: uid=\#hash,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: #hash
+cn: Hash
+sn: Hash
+userPassword: #hash-secret
+
+# DN with an escaped comma, as is common in Active Directory ("Doe, John").
+dn: cn=Doe\, John,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: jdoe
+cn: Doe, John
+sn: Doe
+userPassword: jdoe-secret
+
+# A subtree below ou=people: its DN must not be reachable from the
+# "uid=$remote_user,ou=people,..." template by a login with commas.
+dn: ou=services,ou=people,dc=example,dc=org
+objectClass: organizationalUnit
+ou: services
+
+dn: uid=svc,ou=services,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: svc
+cn: Service User
+sn: User
+userPassword: svc-secret
+
+# Two entries with the same uid in different subtrees below ou=people: a
+# search for "twin" matches both and must not pick one (ldapdata.TWIN_UID).
+dn: uid=twin,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: twin
+cn: Twin One
+sn: One
+userPassword: twin-secret
+
+dn: ou=contractors,ou=people,dc=example,dc=org
+objectClass: organizationalUnit
+ou: contractors
+
+dn: uid=twin,ou=contractors,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: twin
+cn: Twin Two
+sn: Two
+userPassword: twin-other-secret
+
+dn: cn=admins,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: admins
+member: uid=alice,ou=people,dc=example,dc=org
+member: uid=dave,ou=people,dc=example,dc=org
+
+dn: cn=devs,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: devs
+member: uid=alice,ou=people,dc=example,dc=org
+member: uid=bob,ou=people,dc=example,dc=org
+
+dn: cn=ops,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: ops
+member: uid=bob,ou=people,dc=example,dc=org
+member: uid=dave,ou=people,dc=example,dc=org
+
+dn: cn=staff,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: staff
+member: cn=Doe\, John,ou=people,dc=example,dc=org
+
+# Group DNs with characters that are special in a filter or a DN
+# (ldapdata.SPECIAL_GROUP_DNS). cn=a-b also matches the filter (cn=a*b).
+dn: cn=R&D (EU),ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: R&D (EU)
+member: uid=alice,ou=people,dc=example,dc=org
+
+dn: cn=Doe\, Jane,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: Doe, Jane
+member: uid=alice,ou=people,dc=example,dc=org
+
+dn: cn=a*b,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: a*b
+member: uid=alice,ou=people,dc=example,dc=org
+
+dn: cn=a-b,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: a-b
+member: uid=bob,ou=people,dc=example,dc=org
+
+# Membership by login name (group_attribute memberUid, group_attribute_is_dn off).
+dn: cn=posix-staff,ou=groups,dc=example,dc=org
+objectClass: posixGroup
+cn: posix-staff
+gidNumber: 5000
+memberUid: alice
+memberUid: john(x)

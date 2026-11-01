@@ -1,0 +1,87 @@
+# Integration test environment: an OpenLDAP server and a runner that builds
+# nginx with this module and executes the pytest suite against it.
+#
+#   docker compose -f tests/docker-compose.yml run --rm --build tests
+#
+# See tests/README.md for options.
+name: nginx-auth-ldap-tests
+
+services:
+  ldap:
+    build: ./ldap
+    environment:
+      SLAPD_LOG_LEVEL: "${SLAPD_LOG_LEVEL:-256}"
+    networks:
+      default:
+        # Fixed so that the test certificates can carry them as IP SANs
+        # (tests/ldap/tls/generate.sh, LDAP_IPV4/LDAP_IPV6 in ldapdata.py).
+        ipv4_address: 10.213.57.10
+        ipv6_address: fd5b:a1d4:0:1::10
+
+  tests: &tests
+    build: ./runner
+    depends_on:
+      ldap:
+        condition: service_healthy
+    environment:
+      NGINX_VERSION: "${NGINX_VERSION:-1.30.6}"
+      NGINX_DEBUG: "${NGINX_DEBUG:-0}"
+      SANITIZE: "${SANITIZE:-0}"
+      COVERAGE: "${COVERAGE:-0}"
+      DYNAMIC: "${DYNAMIC:-0}"
+      OPENSSL_VERSION: "${OPENSSL_VERSION:-}"
+      LDAP_HOST: ldap
+    cap_add: &trace-children
+      # pidfd_getfd(2), to read socket options of the nginx workers
+      # (suite/test_keepalive.py); Docker's seccomp profile requires it.
+      - SYS_PTRACE
+    extra_hosts: &ldap-aliases
+      # Names of the ldap service that are not in its certificate, so that
+      # verification must not fall back to the IP SAN (suite/test_ldaps.py).
+      - "ldap4=10.213.57.10"
+      - "ldap6=fd5b:a1d4:0:1::10"
+    volumes:
+      # The module source is mounted read-only; build artifacts live in the
+      # build-cache volume.
+      - ..:/src:ro
+      - build-cache:/build
+      # Writable output for reports such as make coverage.
+      - ./reports:/reports
+
+  # The same suite on Alpine Linux: musl libc, its OpenLDAP and OpenSSL
+  # (make test RUNNER=tests-alpine).
+  tests-alpine:
+    <<: *tests
+    build:
+      context: ./runner
+      dockerfile: Dockerfile.alpine
+
+  # Diff-based mutation testing (make mutate BASE=<ref>).
+  mutation:
+    build: ./mutation
+    depends_on:
+      ldap:
+        condition: service_healthy
+    environment:
+      NGINX_VERSION: "${NGINX_VERSION:-1.30.6}"
+      MUTATE_BASE: "${MUTATE_BASE:-}"
+      MUTATE_TIMEOUT: "${MUTATE_TIMEOUT:-300000}"
+      MUTATE_ASAN: "${MUTATE_ASAN:-1}"
+      LDAP_HOST: ldap
+    cap_add: *trace-children
+    extra_hosts: *ldap-aliases
+    volumes:
+      - ${MODULE_SRC:-..}:/src:ro
+      - build-cache:/build
+      - ./reports:/reports
+
+networks:
+  default:
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 10.213.57.0/24
+        - subnet: fd5b:a1d4:0:1::/64
+
+volumes:
+  build-cache:

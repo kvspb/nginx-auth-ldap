@@ -1,0 +1,15 @@
+# Test-only module, built by tests/runner/run-tests.sh and
+# tests/mutation/run-mutation.sh; never part of a release build.
+ngx_addon_name=ngx_http_test_connect_sync_module
+
+if test -n "$ngx_module_link"; then
+    ngx_module_type=HTTP
+    ngx_module_name=ngx_http_test_connect_sync_module
+    ngx_module_srcs="$ngx_addon_dir/ngx_http_test_connect_sync_module.c"
+    ngx_module_libs=-ldl
+    . auto/module
+else
+    HTTP_MODULES="$HTTP_MODULES ngx_http_test_connect_sync_module"
+    NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_test_connect_sync_module.c"
+    CORE_LIBS="$CORE_LIBS -ldl"
+fi
