@@ -103,6 +103,15 @@ Known before this release:
     and fails over or answers 401, instead of returning the connection to
     the pool a second time after `request_timeout`;
   - a waiting request is never removed from the queue twice.
+- A worker hung for good when an LDAP connection reset by the server was
+  used before its reset was read: the sockbuf close callback unbound the
+  same LDAP handle again from inside OpenLDAP. Such a request now gets 503
+  instead of 401, and the dead connection is closed instead of being
+  handed to the next request.
+- A connection closed because its request timed out (or its rebind
+  failed) is connected again at once instead of after
+  `reconnect_timeout`; the next requests no longer wait for it and time
+  out as well.
 - With `max_down_retries`, a dropped LDAP connection is reconnected once,
   through the reconnect timer; the old code used a freed event.
 - A request freed while it waited for LDAP (worker_shutdown_timeout,

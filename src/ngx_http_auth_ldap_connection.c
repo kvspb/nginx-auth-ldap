@@ -120,6 +120,16 @@ ngx_http_auth_ldap_close_request_connection(ngx_http_auth_ldap_ctx_t *ctx)
     ctx->c = NULL;
     c->rctx = NULL;
     ngx_http_auth_ldap_close_connection(c);
+
+    /*
+     * The operation of the request is given up, not the server: connect
+     * again at once instead of after reconnect_timeout, or the next
+     * requests wait for it. If the server is down, that connect fails
+     * and the next one waits for reconnect_timeout as usual.
+     */
+    if (c->reconnect_event.timer_set) {
+        ngx_add_timer(&c->reconnect_event, 0);
+    }
 }
 
 static void

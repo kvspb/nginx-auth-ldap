@@ -498,3 +498,19 @@ def test_connection_reset_under_a_send_is_not_handed_to_the_next_request(nginx, 
     results = keepalive_requests_while_the_connection_is_reset(server, proxy, 2)
 
     assert sorted(results, key=str) == [200, 503]
+
+
+def test_connection_closed_after_a_request_timeout_is_reconnected_at_once(nginx, proxy):
+    # The request that timed out took its connection down with it; nothing
+    # says the server is down. With a long reconnect_timeout the next
+    # requests waited for it and timed out too (audit V-04, PR #251 90708be).
+    body = "require valid_user;\nconnections 1;\nreconnect_timeout 30s;\nrequest_timeout 1s;"
+    url = url_for("127.0.0.1", proxy.port)
+    server = nginx.start(http=ldap_server("proxied", body, url=url), server=protected_location("proxied"))
+    wait_until_ready(server)
+
+    with proxy.holding():
+        assert status(server, "alice") == 503
+
+    assert status(server, "bob") == 200
+    assert proxy.connections == 2
