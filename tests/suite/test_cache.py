@@ -107,3 +107,20 @@ def test_cache_entry_survives_a_reconnect(nginx, proxy):
 
     with changed_password("erin", "rotated-secret"):
         assert server.get(auth=creds("erin")).status_code == 200
+
+
+def test_every_slot_of_a_bucket_is_used(nginx, proxy):
+    # One login with different passwords always lands in the same bucket of
+    # eight entries. The eviction loop never looked at the eighth slot, so
+    # the eighth outcome pushed out the first one although a slot was free
+    # (nal-toj.17). A ninth outcome replaces the oldest entry of the bucket.
+    body = "require valid_user;\nconnections 1;\nrequest_timeout 1s;"
+    server = start(nginx, body, url=url_for("127.0.0.1", proxy.port))
+    wrong = [f"wrong-{i}" for i in range(9)]
+    for secret in wrong:
+        assert server.get(auth=("alice", secret)).status_code == 401
+        time.sleep(0.01)
+
+    # Answered from the cache (401), or held until request_timeout (503).
+    with proxy.holding():
+        assert [server.get(auth=("alice", secret)).status_code for secret in wrong] == [503] + [401] * 8

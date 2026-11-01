@@ -149,11 +149,12 @@ ngx_http_auth_ldap_update_cache(ngx_http_auth_ldap_ctx_t *ctx,
         return;
     }
 
+    /* The entry used least recently, an unused one first (time 0). */
     elt = ctx->cache_bucket;
     oldest_elt = elt;
-    for (i = 1; i < cache->elts_per_bucket; i++, elt++) {
-        if (elt->time < oldest_elt->time) {
-            oldest_elt = elt;
+    for (i = 1; i < cache->elts_per_bucket; i++) {
+        if (elt[i].time < oldest_elt->time) {
+            oldest_elt = &elt[i];
         }
     }
 

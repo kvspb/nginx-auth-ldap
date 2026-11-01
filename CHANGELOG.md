@@ -113,6 +113,8 @@ Known before this release:
   same LDAP handle again from inside OpenLDAP. Such a request now gets 503
   instead of 401, and the dead connection is closed instead of being
   handed to the next request.
+- The cache used only seven of the eight entries of a bucket: the eighth
+  was never chosen for a new outcome.
 - An idle LDAP connection closed by the server or a firewall (Active
   Directory does after 15 minutes) is opened again at once and logged at
   the `info` level. Requests no longer get 503 until `reconnect_timeout`
