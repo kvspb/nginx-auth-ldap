@@ -448,7 +448,9 @@ def session_status(session: requests.Session, url: str) -> int | None:
         return None
 
 
-def keepalive_requests_while_the_connection_is_reset(server, proxy: LdapProxy, count: int) -> list[int | None]:
+def keepalive_requests_while_the_connection_is_reset(
+    server, proxy: LdapProxy, count: int
+) -> list[int | None]:
     """Send requests on kept-alive client connections and reset the LDAP
     connection, all while the worker is stopped: the worker then sees the
     requests before it reads the reset, and sends the first operation on a
