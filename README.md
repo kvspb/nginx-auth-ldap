@@ -311,9 +311,10 @@ and so does a second `url`, a second `require valid_user` template, or a
 second `ldap_server` block with the same name.
 
 Older articles show directives such as `auth_ldap_url`, `auth_ldap_binddn`
-or `auth_ldap_require` at the location level. This module never had them:
-their settings are `url`, `binddn` and `require` in an `ldap_server` block,
-and a location chooses the blocks with `auth_ldap_servers`. For different
+or `auth_ldap_require`. They belong to version 0.1 (2011) and were replaced
+in 2013 by the `ldap_server` blocks: their settings are now `url`, `binddn`
+and `require` in an `ldap_server` block, and a location chooses the blocks
+with `auth_ldap_servers`. For different
 requirements per location, define one `ldap_server` block for each.
 The cache directives belong to the `http` level, not to `ldap_server`.
 
