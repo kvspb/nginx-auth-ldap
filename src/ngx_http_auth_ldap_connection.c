@@ -43,6 +43,7 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
 {
     ngx_queue_t *q;
     ngx_http_auth_ldap_ctx_t *ctx;
+    ngx_pool_t *pool;
 
     if (c->ld) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Unbinding from the server \"%V\")",
@@ -63,8 +64,12 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
         }
 #endif
 
+        pool = c->conn.connection->pool;
         ngx_close_connection(c->conn.connection);
         c->conn.connection = NULL;
+        if (pool != NULL) {
+            ngx_destroy_pool(pool);
+        }
     }
 
     q = ngx_queue_head(&c->server->free_connections);
@@ -769,7 +774,6 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
             c->reconnect_event.cancelable = 1;
 
 #if (NGX_OPENSSL)
-            c->pool = cycle->pool;
             c->ssl = &server->ssl;
 #endif
 

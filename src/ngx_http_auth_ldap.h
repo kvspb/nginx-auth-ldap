@@ -180,7 +180,6 @@ typedef struct ngx_http_auth_ldap_connection {
     ngx_event_t reconnect_event;
 
 #if (NGX_OPENSSL)
-    ngx_pool_t *pool;
     ngx_ssl_t *ssl;
 #endif
 

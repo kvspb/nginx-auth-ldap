@@ -169,7 +169,16 @@ ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c)
     ngx_int_t rc;
 
     conn = c->conn.connection;
-    conn->pool = c->pool;
+    /*
+     * The TLS state of this connection lives in a pool of its own, which
+     * close_connection() destroys: from the cycle pool, every reconnect
+     * left one behind for the life of the worker (audit F17).
+     */
+    conn->pool = ngx_create_pool(512, c->log);
+    if (conn->pool == NULL) {
+        ngx_http_auth_ldap_close_connection(c);
+        return;
+    }
     rc = ngx_ssl_create_connection(c->ssl, conn, NGX_SSL_BUFFER | NGX_SSL_CLIENT);
     if (rc != NGX_OK) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: SSL initialization failed");
