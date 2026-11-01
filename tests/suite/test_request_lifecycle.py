@@ -120,7 +120,7 @@ def test_waiting_requests_are_served_after_one_timed_out(nginx, proxy):
         time.sleep(0.2)
         proxy.release()
 
-        assert first.result() in (200, None)
+        assert first.result() in (200, 503)
         assert [w.result() for w in waiting] == [200, 200, 200]
 
     assert status(server) == 200
@@ -142,7 +142,7 @@ def test_requests_taken_from_the_queue_time_out_cleanly(nginx, proxy):
             time.sleep(delay)
         results = [p.result() for p in pending]
 
-    assert results == [None] * 4
+    assert results == [503] * 4
     assert server.log().count("Authentication timed out") == 4
     wait_until_ready(server)
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -158,7 +158,7 @@ def test_request_that_timed_out_in_the_queue_is_forgotten(nginx, proxy):
     proxy.hold()
     server = nginx.start(http=ldap_server("proxied", body, url=url), server=protected_location("proxied"))
 
-    assert status(server, "bob") is None
+    assert status(server, "bob") == 503
     proxy.release()
     wait_until_ready(server)
 
@@ -252,3 +252,16 @@ def test_max_down_retries_reconnects_without_waiting(nginx, proxy, retries, reco
     time.sleep(0.5)
 
     assert (proxy.connections == 2) is reconnected
+
+
+def test_keepalive_connection_works_after_a_timed_out_request(nginx, proxy):
+    server = start(nginx, proxy)
+
+    with requests.Session() as session:
+        with proxy.holding():
+            first = session.get(server.url(), auth=creds("alice"), timeout=5)
+        wait_until_ready(server)
+        second = session.get(server.url(), auth=creds("alice"), timeout=5)
+
+    assert first.status_code == 503
+    assert second.status_code == 200

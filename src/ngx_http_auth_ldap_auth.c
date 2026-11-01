@@ -136,7 +136,13 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
 
         ngx_http_auth_ldap_unqueue_request(ctx);
 
-        return NGX_ERROR;
+        /*
+         * The timer is the write event of the client connection: clear its
+         * flag, or the response would be dropped as a send timeout. Answer
+         * instead of closing the connection without a word (kvspb#115).
+         */
+        r->connection->write->timedout = 0;
+        return NGX_HTTP_SERVICE_UNAVAILABLE;
     }
 
     /*

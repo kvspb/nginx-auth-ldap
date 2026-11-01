@@ -1,9 +1,8 @@
 """Behaviour when the LDAP server is unreachable, silent or rejects the service bind.
 
-These tests document the current behaviour: the request waits for a usable
-connection until request_timeout expires, then the module returns NGX_ERROR
-and nginx closes the client connection without any HTTP response
-(nal-toj.18, kvspb#115). Failover to another server is nal-toj.1.
+The request waits for a usable connection until request_timeout expires and
+is then answered with 503 Service Unavailable (nal-toj.18, kvspb#115).
+Failover to another server is nal-toj.1.
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ import time
 from collections.abc import Iterator
 
 import pytest
-import requests
 
 from conftest import TIMEOUTS, ldap_server, protected_location, url_for
 from ldapdata import creds
@@ -30,9 +28,10 @@ def silent_port() -> Iterator[int]:
 
 def assert_times_out(server, log_text: str) -> None:
     started = time.monotonic()
-    with pytest.raises(requests.ConnectionError):
-        server.get(auth=creds("alice"))
+    response = server.get(auth=creds("alice"))
     elapsed = time.monotonic() - started
+
+    assert response.status_code == 503
 
     # request_timeout is 1 s.
     assert 0.5 < elapsed < 5
@@ -54,11 +53,14 @@ def test_refused_connection(nginx, closed_port):
     assert_times_out(server, "http_auth_ldap: Could not connect")
 
 
-@pytest.mark.xfail(reason="a timed-out authentication closes the connection without a response (nal-toj.18)")
-def test_timeout_is_answered_with_an_http_error(nginx, closed_port):
+def test_timeout_is_answered_with_503(nginx, closed_port):
     server = down_server(nginx, closed_port)
 
-    assert server.get(auth=creds("alice")).status_code >= 500
+    response = server.get(auth=creds("alice"))
+
+    assert response.status_code == 503
+    # The connection stays usable for the next request.
+    assert server.get(auth=creds("alice")).status_code == 503
 
 
 def test_server_that_never_answers_the_service_bind(nginx, silent_port):
