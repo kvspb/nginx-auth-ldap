@@ -623,6 +623,12 @@ ngx_http_auth_ldap_reconnect_handler(ngx_event_t *ev)
 {
     ngx_connection_t *conn = ev->data;
     ngx_http_auth_ldap_connection_t *c = conn->data;
+
+    /* A worker that shuts down only finishes the requests it has. */
+    if (ngx_exiting) {
+        return;
+    }
+
     ngx_http_auth_ldap_connect(c);
 }
 
@@ -652,6 +658,10 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
         if (server->connections <= 1) {
             server->connections = 1;
         }
+        server->conns = ngx_pcalloc(cycle->pool, server->connections * sizeof(ngx_http_auth_ldap_connection_t *));
+        if (server->conns == NULL) {
+            return NGX_ERROR;
+        }
 
         for (j = 0; j < server->connections; j++) {
             c = ngx_pcalloc(cycle->pool, sizeof(ngx_http_auth_ldap_connection_t));
@@ -663,6 +673,7 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
 
             cleanup->handler = &ngx_http_auth_ldap_connection_cleanup;
             cleanup->data = c;
+            server->conns[j] = c;
 
             c->log = cycle->log;
             c->server = server;
@@ -675,6 +686,8 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
             c->reconnect_event.log = c->log;
             c->reconnect_event.data = dummy_conn;
             c->reconnect_event.handler = ngx_http_auth_ldap_reconnect_handler;
+            /* A worker shutting down gracefully does not wait for it. */
+            c->reconnect_event.cancelable = 1;
 
 #if (NGX_OPENSSL)
             c->pool = cycle->pool;
@@ -686,4 +699,42 @@ ngx_http_auth_ldap_init_connections(ngx_cycle_t *cycle)
     }
 
     return NGX_OK;
+}
+
+/*
+ * Close every LDAP connection of the worker when it exits. nginx reports
+ * any socket still open at a graceful exit as left open, and the cycle pool
+ * cleanup that would close them runs only after that check. A request still
+ * on a connection (on SIGTERM) is let go first: it is never run again.
+ */
+void
+ngx_http_auth_ldap_close_connections(ngx_cycle_t *cycle)
+{
+    ngx_http_auth_ldap_main_conf_t *halmcf;
+    ngx_http_auth_ldap_server_t *server;
+    ngx_http_auth_ldap_connection_t *c;
+    ngx_uint_t i, j;
+
+    halmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_auth_ldap_module);
+    if (halmcf == NULL || halmcf->servers == NULL) {
+        return;
+    }
+
+    for (i = 0; i < halmcf->servers->nelts; i++) {
+        server = ((ngx_http_auth_ldap_server_t **) halmcf->servers->elts)[i];
+        if (server->conns == NULL) {
+            continue;
+        }
+        for (j = 0; j < server->connections; j++) {
+            c = server->conns[j];
+            if (c == NULL) {
+                continue;
+            }
+            if (c->rctx != NULL) {
+                c->rctx->c = NULL;
+                c->rctx = NULL;
+            }
+            ngx_http_auth_ldap_close_connection(c);
+        }
+    }
 }

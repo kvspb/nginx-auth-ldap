@@ -108,6 +108,9 @@ Known before this release:
   same LDAP handle again from inside OpenLDAP. Such a request now gets 503
   instead of 401, and the dead connection is closed instead of being
   handed to the next request.
+- A worker shutting down gracefully (`nginx -s quit`, the old worker of
+  a reload) kept reconnecting to an LDAP server that was down and never
+  exited, and one that exited reported its LDAP sockets as left open.
 - SSI includes and other subrequests of a request that was checked over
   LDAP were not run until the client sent something more: the response
   stalled.

@@ -359,37 +359,40 @@ def test_dead_connection_is_not_handed_out_after_a_timeout(nginx, proxy):
     wait_until_ready(server)
 
 
-def test_request_freed_while_it_waits_is_forgotten(nginx, proxy, closed_port):
+def test_request_freed_while_it_waits_is_forgotten(nginx, proxy):
     # A reload makes the old worker shut down; worker_shutdown_timeout then
     # terminates the requests still in the access phase and frees them
     # without going through the module. A in flight on the only connection
     # and B in the waiting queue must not be left behind: the answer that
     # arrives later on A's connection must not wake a freed request. The
-    # second server never connects, so its reconnect timer keeps the old
-    # worker alive until that answer comes.
+    # second server never answers the service bind, so the bind_timeout of
+    # its connection keeps the old worker alive until that answer comes.
     body = f"require valid_user;\nconnections 1;{TIMEOUTS}"
-    url = url_for("127.0.0.1", proxy.port)
-    http = ldap_server("proxied", body, url=url) + ldap_server(
-        "refused", body, url=url_for("127.0.0.1", closed_port)
-    )
-    server = nginx.start(
-        http=http, server=protected_location("proxied"), main="worker_shutdown_timeout 300ms;"
-    )
-    wait_until_ready(server)
+    with LdapProxy() as silent:
+        silent.hold()
+        http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)) + ldap_server(
+            "silent", f"require valid_user;\nconnections 1;\nbind_timeout 30s;", url=url_for("127.0.0.1", silent.port)
+        )
+        server = nginx.start(
+            http=http, server=protected_location("proxied"), main="worker_shutdown_timeout 300ms;"
+        )
+        wait_until_ready(server)
+        (old_worker,) = server.worker_pids()
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        proxy.hold()
-        pending = [pool.submit(status, server, uid) for uid in ["alice", "bob"]]
-        time.sleep(0.3)
-        server.reload()
-        time.sleep(0.6)
-        proxy.release()
-        time.sleep(0.5)
-        results = [p.result() for p in pending]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            proxy.hold()
+            pending = [pool.submit(status, server, uid) for uid in ["alice", "bob"]]
+            time.sleep(0.3)
+            server.reload()
+            time.sleep(0.6)
+            proxy.release()
+            time.sleep(0.5)
+            results = [p.result() for p in pending]
 
-    # Terminated by the shutdown: closed without an answer.
-    assert results == [None, None]
-    wait_until_ready(server)
+        assert old_worker in server.worker_pids(), "the old worker exited before the answer came"
+        # Terminated by the shutdown: closed without an answer.
+        assert results == [None, None]
+        wait_until_ready(server)
 
 
 def start_with_reruns(nginx, proxy: LdapProxy):

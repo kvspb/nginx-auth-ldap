@@ -35,6 +35,7 @@ static char * ngx_http_auth_ldap_init_main_conf(ngx_conf_t *cf, void *parent);
 static void * ngx_http_auth_ldap_create_loc_conf(ngx_conf_t *);
 static char * ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *, void *, void *);
 static ngx_int_t ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle);
+static void ngx_http_auth_ldap_exit_worker(ngx_cycle_t *cycle);
 static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf);
 
 static ngx_command_t ngx_http_auth_ldap_commands[] = {
@@ -118,7 +119,7 @@ ngx_module_t ngx_http_auth_ldap_module = {
     ngx_http_auth_ldap_init_worker,      /* init process */
     NULL,                                /* init thread */
     NULL,                                /* exit thread */
-    NULL,                                /* exit process */
+    ngx_http_auth_ldap_exit_worker,      /* exit process */
     NULL,                                /* exit master */
     NGX_MODULE_V1_PADDING
 };
@@ -228,6 +229,13 @@ ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle)
     }
 
     return NGX_OK;
+}
+
+/* Only workers have connections; nginx calls this in no other process. */
+static void
+ngx_http_auth_ldap_exit_worker(ngx_cycle_t *cycle)
+{
+    ngx_http_auth_ldap_close_connections(cycle);
 }
 
 /**

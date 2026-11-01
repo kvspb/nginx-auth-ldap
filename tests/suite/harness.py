@@ -182,6 +182,16 @@ class Nginx:
             time.sleep(0.02)
         raise RuntimeError(f"nginx did not start a new worker:\n{self.log()}")
 
+    def quit(self, timeout: float) -> bool:
+        """Shut down gracefully (SIGQUIT); whether the master exited in time."""
+        assert self.process is not None
+        self.process.send_signal(signal.SIGQUIT)
+        try:
+            self.process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
     def stop(self) -> None:
         if self.process is None or self.process.poll() is not None:
             return
