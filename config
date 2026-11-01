@@ -1,12 +1,47 @@
 ngx_addon_name=ngx_http_auth_ldap_module
 
-LDAP_REQUIRED_LIBS="-lldap"
+# OpenLDAP: libldap and liblber, found by a test program as nginx does for
+# its own libraries, so that a missing library stops ./configure with a
+# clear message instead of failing the compile or the link.
+ngx_feature="OpenLDAP library"
+ngx_feature_name=
+ngx_feature_run=no
+ngx_feature_incs="#include <ldap.h>"
+ngx_feature_path=
+ngx_feature_libs="-lldap -llber"
+ngx_feature_test="LDAP *ld; ldap_initialize(&ld, \"ldap://localhost\");"
+. auto/feature
 
-case "$NGX_PLATFORM" in
-    Darwin:*|FreeBSD:*|Linux:*|SunOS:*)
-        LDAP_REQUIRED_LIBS="$LDAP_REQUIRED_LIBS -llber"
-    ;;
-esac
+if [ $ngx_found = no ]; then
+    # FreeBSD ports, pkgsrc, MacPorts, Homebrew
+    for ngx_ldap_prefix in /usr/local /usr/pkg /opt/local /opt/homebrew/opt/openldap /usr/local/opt/openldap; do
+        ngx_feature="OpenLDAP library in $ngx_ldap_prefix"
+        ngx_feature_path="$ngx_ldap_prefix/include"
+        if [ $NGX_RPATH = YES ]; then
+            ngx_feature_libs="-R$ngx_ldap_prefix/lib -L$ngx_ldap_prefix/lib -lldap -llber"
+        else
+            ngx_feature_libs="-L$ngx_ldap_prefix/lib -lldap -llber"
+        fi
+        . auto/feature
+        if [ $ngx_found = yes ]; then
+            break
+        fi
+    done
+fi
+
+if [ $ngx_found = no ]; then
+    cat << END
+
+$0: error: the http_auth_ldap module requires the OpenLDAP library
+(libldap and liblber with their headers, for example the libldap2-dev,
+libldap-dev, openldap-devel or openldap-dev package).
+
+END
+    exit 1
+fi
+
+LDAP_AUTH_INCS="$ngx_feature_path"
+LDAP_REQUIRED_LIBS="$ngx_feature_libs"
 
 LDAP_AUTH_DEPS="$ngx_addon_dir/src/ngx_http_auth_ldap.h"
 LDAP_AUTH_SRCS=" \
@@ -23,7 +58,7 @@ LDAP_AUTH_SRCS=" \
 if test -n "$ngx_module_link"; then
     ngx_module_type=HTTP
     ngx_module_name=ngx_http_auth_ldap_module
-    ngx_module_incs=
+    ngx_module_incs="$LDAP_AUTH_INCS"
     ngx_module_deps="$LDAP_AUTH_DEPS"
     ngx_module_srcs="$LDAP_AUTH_SRCS"
     ngx_module_libs="$LDAP_REQUIRED_LIBS"
@@ -32,5 +67,6 @@ else
     HTTP_MODULES="$HTTP_MODULES ngx_http_auth_ldap_module"
     NGX_ADDON_DEPS="$NGX_ADDON_DEPS $LDAP_AUTH_DEPS"
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $LDAP_AUTH_SRCS"
+    CORE_INCS="$CORE_INCS $LDAP_AUTH_INCS"
     CORE_LIBS="$CORE_LIBS $LDAP_REQUIRED_LIBS"
 fi

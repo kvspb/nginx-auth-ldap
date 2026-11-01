@@ -79,7 +79,10 @@ Requirements:
   module uses OpenLDAP-specific calls, so other LDAP SDKs do not work.
   Debian and Ubuntu: `libldap-dev` (`libldap2-dev` on older releases);
   Fedora, RHEL: `openldap-devel`; Alpine: `openldap-dev`; FreeBSD:
-  `net/openldap26-client`.
+  `net/openldap26-client`. `./configure` looks for it in the default paths
+  and under `/usr/local`, `/usr/pkg`, `/opt/local` and Homebrew's
+  `openldap`, and stops with an error when it is missing; for another
+  place, pass `--with-cc-opt=-I<dir>/include --with-ld-opt=-L<dir>/lib`.
 - OpenSSL 1.1 or 3 and its headers, for `ldaps://` and certificate checks.
   nginx must be built with OpenSSL (for example with
   `--with-http_ssl_module`); otherwise `ldaps://` URLs are rejected.
@@ -129,7 +132,8 @@ http {
 ```
 
 The path is relative to the nginx prefix; use the directory where your
-distribution keeps modules.
+distribution keeps modules. Without `load_module`, nginx rejects the
+configuration with `unknown directive "ldap_server"`.
 
 ## Quick start
 

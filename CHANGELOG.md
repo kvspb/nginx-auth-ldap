@@ -174,6 +174,10 @@ Known before this release:
 
 ### Changed
 
+- `./configure` checks for the OpenLDAP library, also under `/usr/local`,
+  `/usr/pkg`, `/opt/local` and Homebrew, and stops with a clear error when
+  it is missing, instead of failing the compile; `-llber` is linked on
+  every platform.
 - A user search answered with a referral gets `503` instead of `401`, and
   the log names the referral and suggests the Global Catalog of Active
   Directory; so does the log of a user not found next to search
