@@ -374,6 +374,36 @@ def test_dead_connection_is_not_handed_out_after_a_timeout(nginx, proxy):
     wait_until_ready(server)
 
 
+def test_connection_lost_under_the_user_bind_fails_over_at_once(nginx, proxy):
+    # The connection dies while the user bind is in flight: the server said
+    # nothing about the password, so the next server decides. The request
+    # used to go on to the rebind as binddn with no connection left and
+    # wait in the queue for the reconnect (30 s here), until its
+    # request_timeout gave up on the server.
+    body = (
+        f'require valid_user "uid=$remote_user,{PEOPLE_DN}";\nconnections 1;\n'
+        "reconnect_timeout 30s;\nrequest_timeout 1s;"
+    )
+    http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)) + ldap_server("direct")
+    server = nginx.start(http=http, server=protected_location("proxied direct"))
+    wait_until_ready(server)
+    since = server.log_size()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        proxy.hold()
+        future = pool.submit(status, server)
+        time.sleep(0.3)
+        started = time.monotonic()
+        proxy.drop()
+        proxy.release()
+        result = future.result()
+        elapsed = time.monotonic() - started
+
+    assert result == 200
+    assert elapsed < 0.5, f"the request waited {elapsed:.1f} s before trying the next server"
+    assert "Authentication timed out" not in server.log(since)
+
+
 def test_request_freed_while_it_waits_is_forgotten(nginx, proxy):
     # A reload makes the old worker shut down; worker_shutdown_timeout then
     # terminates the requests still in the access phase and frees them

@@ -650,8 +650,11 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                     /* LDAP operation in progress, wait for the result */
                     return NGX_AGAIN;
                 }
-                if (rc != NGX_OK) {
-                    /* The bind was never sent: nothing to rebind. */
+                if (rc != NGX_OK || ctx->c == NULL) {
+                    /*
+                     * The bind was never sent, or its connection died
+                     * under it (LDAP_SERVER_DOWN): nothing to rebind.
+                     */
                     ctx->phase = PHASE_NEXT;
                     break;
                 }
