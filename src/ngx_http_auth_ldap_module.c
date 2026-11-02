@@ -37,6 +37,20 @@ static char * ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *, void *, void *);
 static ngx_int_t ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle);
 static void ngx_http_auth_ldap_exit_worker(ngx_cycle_t *cycle);
 static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf);
+static ngx_int_t ngx_http_auth_ldap_add_variables(ngx_conf_t *cf);
+static ngx_int_t ngx_http_auth_ldap_init_resolve(ngx_conf_t *cf);
+
+/*
+ * Not cacheable: a value read before the access phase (in a "set", for
+ * example) is empty and must not stick (kvspb#173, kvspb#59).
+ */
+static ngx_http_variable_t ngx_http_auth_ldap_variables[] = {
+    { ngx_string("ldap_user_dn"), NULL, ngx_http_auth_ldap_user_dn_variable,
+      0, NGX_HTTP_VAR_NOCACHEABLE, 0 },
+    { ngx_string("ldap_attr_"), NULL, ngx_http_auth_ldap_attr_variable,
+      0, NGX_HTTP_VAR_NOCACHEABLE | NGX_HTTP_VAR_PREFIX, 0 },
+    ngx_http_null_variable
+};
 
 static ngx_command_t ngx_http_auth_ldap_commands[] = {
     {
@@ -99,7 +113,7 @@ static ngx_command_t ngx_http_auth_ldap_commands[] = {
 };
 
 static ngx_http_module_t ngx_http_auth_ldap_module_ctx = {
-    NULL,                                /* preconfiguration */
+    ngx_http_auth_ldap_add_variables,    /* preconfiguration */
     ngx_http_auth_ldap_init,             /* postconfiguration */
     ngx_http_auth_ldap_create_main_conf, /* create main configuration */
     ngx_http_auth_ldap_init_main_conf,   /* init main configuration */
@@ -123,6 +137,23 @@ ngx_module_t ngx_http_auth_ldap_module = {
     NULL,                                /* exit master */
     NGX_MODULE_V1_PADDING
 };
+
+static ngx_int_t
+ngx_http_auth_ldap_add_variables(ngx_conf_t *cf)
+{
+    ngx_http_variable_t *var, *v;
+
+    for (v = ngx_http_auth_ldap_variables; v->name.len; v++) {
+        var = ngx_http_add_variable(cf, &v->name, v->flags);
+        if (var == NULL) {
+            return NGX_ERROR;
+        }
+        /* data stays 0; nginx sets it to the name of a prefix variable. */
+        var->get_handler = v->get_handler;
+    }
+
+    return NGX_OK;
+}
 
 /**
  * Create main config which will store ldap_servers array
@@ -238,6 +269,47 @@ ngx_http_auth_ldap_exit_worker(ngx_cycle_t *cycle)
     ngx_http_auth_ldap_close_connections(cycle);
 }
 
+/*
+ * Servers with "resolve on" use the resolver of the http block, which may
+ * come after them: look it up once the block is read (kvspb#63).
+ */
+static ngx_int_t
+ngx_http_auth_ldap_init_resolve(ngx_conf_t *cf)
+{
+    ngx_http_auth_ldap_main_conf_t *halmcf;
+    ngx_http_core_loc_conf_t *clcf;
+    ngx_http_auth_ldap_server_t *server;
+    ngx_uint_t i;
+
+    halmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_auth_ldap_module);
+    if (halmcf->servers == NULL) {
+        return NGX_OK;
+    }
+
+    clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+
+    for (i = 0; i < halmcf->servers->nelts; i++) {
+        server = ((ngx_http_auth_ldap_server_t **) halmcf->servers->elts)[i];
+        if (!server->resolve) {
+            continue;
+        }
+
+        /* Without a "resolver", nginx sets one that has no address. */
+        if (clcf->resolver == NULL || clcf->resolver->connections.nelts == 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                "http_auth_ldap: \"resolve\" in ldap_server \"%V\" needs a "
+                "\"resolver\" in the http block", &server->alias);
+            return NGX_ERROR;
+        }
+
+        server->resolver = clcf->resolver;
+        server->resolver_timeout = clcf->resolver_timeout != NGX_CONF_UNSET_MSEC
+                                   ? clcf->resolver_timeout : 30000;
+    }
+
+    return NGX_OK;
+}
+
 /**
  * Init module and add ldap auth handler to NGX_HTTP_ACCESS_PHASE
  */
@@ -247,6 +319,10 @@ ngx_http_auth_ldap_init(ngx_conf_t *cf)
     ngx_http_handler_pt *h;
     ngx_http_core_main_conf_t *cmcf;
     ngx_array_t *handlers;
+
+    if (ngx_http_auth_ldap_init_resolve(cf) != NGX_OK) {
+        return NGX_ERROR;
+    }
 
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import random
 import re
 import signal
 import socket
@@ -36,10 +37,37 @@ def nginx_version() -> tuple[int, int, int]:
     return major, minor, patch
 
 
+def _ephemeral_ports() -> range:
+    try:
+        low, high = map(int, Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().split())
+    except (OSError, ValueError):
+        low, high = 32768, 60999
+    return range(low, high + 1)
+
+
 def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+    """A free port below the ephemeral range.
+
+    nginx binds the port later than this check. A port from the ephemeral
+    range (what bind() to port 0 returns) could meanwhile become the local
+    end of an outgoing connection, such as nginx to LDAP, and nginx would
+    fail with "Address already in use". Ports below that range are only
+    taken by listeners, which are bound right away.
+    """
+    ephemeral = _ephemeral_ports()
+    high = min(ephemeral.start, 65536) - 1
+    low = max(1024, high - 12000)
+    for _ in range(200):
+        port = random.randint(low, high)
+        if port in ephemeral:
+            continue
+        with socket.socket() as sock:
+            try:
+                sock.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise RuntimeError("no free port below the ephemeral range")
 
 
 @dataclass

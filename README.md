@@ -93,7 +93,7 @@ Get the source, from git or as the archive of a release:
 
 ```sh
 git clone https://github.com/kvspb/nginx-auth-ldap.git
-curl -fsSL https://github.com/kvspb/nginx-auth-ldap/archive/refs/tags/v1.1.0.tar.gz | tar -xz
+curl -fsSL https://github.com/kvspb/nginx-auth-ldap/archive/refs/tags/v1.2.0.tar.gz | tar -xz
 ```
 
 ### Static module
@@ -259,7 +259,9 @@ Context: http
 
 Number of cache entries per worker, at least 100. Entries are kept in
 buckets of 8, so the number is rounded up to a multiple of 8; each takes
-32 bytes. When a bucket is full the oldest entry is replaced.
+40 bytes, and an allowed login also keeps its DN and the values of
+[`user_attributes`](#user_attributes) for the [variables](#variables).
+When a bucket is full the oldest entry is replaced.
 
 #### auth_ldap_servers_size
 
@@ -351,6 +353,7 @@ The cache directives belong to the `http` level, not to `ldap_server`.
 
 ```text
 Syntax:  url ldap[s]://host[:port]/base_dn?attribute[,...]?scope?filter;
+         url ldapi://socket_path/base_dn?attribute[,...]?scope?filter;
 Default: -
 ```
 
@@ -358,14 +361,27 @@ Where and how to search for users (an RFC 4516 LDAP URL). Required.
 
 - `ldap://` or `ldaps://` (LDAP over TLS 1.2 or 1.3). For StartTLS on
   `ldap://`, see `starttls`.
+- `ldapi://`: LDAP over a Unix socket on the same host, as in ldap.conf(5).
+  The host is the absolute path of the socket with every `/` written as
+  `%2F`, for example `ldapi://%2Frun%2Fslapd%2Fldapi/dc=example,dc=com?uid?sub`.
+  The path is required: the default of libldap is built into it and
+  unknown to nginx. The nginx workers need write access to the socket.
+  The module binds with `binddn` and `binddn_passwd` (or anonymously) and
+  checks passwords with simple binds, as over TCP: SASL EXTERNAL, which
+  ldapi setups often use for local root, is not supported. `starttls`,
+  the `ssl_*` directives and `so_keepalive` do not apply.
 - `host`: a host name, an IPv4 address, or an IPv6 address in brackets, for
   example `ldaps://[2001:db8::10]/...`. A host name is resolved once, when
   nginx reads the configuration; with several addresses each connection
-  picks one at random. A name that does not resolve fails the check.
+  picks one at random. A name that does not resolve fails the check. To
+  follow DNS changes without a reload, see [`resolve`](#resolve).
 - `port`: defaults to 389 for `ldap://` and 636 for `ldaps://`.
 - `base_dn`: the search base.
 - `attribute`: the attribute that holds the login, for example `uid` or
-  `sAMAccountName`. Required; only the first attribute of a list is used.
+  `sAMAccountName`. Required unless [`user_filter`](#user_filter) is set.
+  Only the first attribute of a list is used, and `nginx -t` warns about
+  the others: to find users by one of several attributes, use
+  `user_filter`.
 - `scope`: `base`, `one` or `sub` (also `onelevel`, `subtree`, `children`).
   The default is `base`, which only finds an entry that is the base DN
   itself: set `sub` or `one`.
@@ -376,6 +392,79 @@ Where and how to search for users (an RFC 4516 LDAP URL). Required.
 
 Quote the value, and percent-encode characters that are special in a URL,
 for example a space as `%20` and `?` as `%3F`.
+
+#### user_filter
+
+```text
+Syntax:  user_filter filter;
+Default: - (the attribute of the url)
+```
+
+The filter that finds the user by the login, instead of the attribute of
+the `url`. `$remote_user` (or `${remote_user}`) stands for the login and
+may appear several times; it is escaped as a filter value (RFC 4515), so a
+login cannot change the filter. No other variable is allowed: write a
+literal `$` as `\24`. The filter of the `url` still applies, and a login
+that finds more than one entry is still refused. For example, log in with
+the user name or the e-mail address:
+
+```nginx
+ldap_server corp {
+    url "ldap://ldap.example.com/ou=people,dc=example,dc=com??sub?(objectClass=inetOrgPerson)";
+    user_filter "(|(uid=$remote_user)(mail=$remote_user))";
+    require valid_user;
+}
+```
+
+Not together with a [`require valid_user`](#require) template, which builds
+the DN without a search.
+
+#### user_attributes
+
+```text
+Syntax:  user_attributes name ...;
+Default: -
+```
+
+Attributes of the user entry that the user search fetches, for the
+variables `$ldap_attr_<name>` (see [Variables](#variables)). A name is
+letters and digits, starting with a letter, as an nginx variable name must
+be; the case does not matter. Not together with a
+[`require valid_user`](#require) template, which skips the search.
+
+#### resolve
+
+```text
+Syntax:  resolve on | off;
+Default: resolve off;
+```
+
+Resolves the host name of the `url` at run time, through the
+[`resolver`](https://nginx.org/en/docs/http/ngx_http_core_module.html#resolver)
+of the `http` block, before every connection to the server, instead of
+once when nginx reads the configuration. The resolver keeps an answer for
+its TTL, or for `valid=`. With several addresses each connection picks one
+at random. A changed record is used when a connection is opened again:
+connections are kept open, so a server that still answers at its old
+address keeps them until they break or nginx reloads. A name that does not
+resolve, or a resolver that does not answer within `resolver_timeout`,
+makes the server unable to decide, like an unreachable one: the next
+server is asked, or the answer is `503`. `nginx -t` then needs a
+`resolver` in the `http` block, and no longer resolves the name itself.
+Not for `ldapi://` urls, and not needed for an address in the `url`.
+
+```nginx
+resolver 127.0.0.53 valid=30s;
+
+ldap_server corp {
+    url "ldaps://ldap.example.com/ou=people,dc=example,dc=com?uid?sub";
+    resolve on;
+    require valid_user;
+}
+```
+
+The certificate of an `ldaps://` server is still checked against the host
+name of the `url`.
 
 #### binddn
 
@@ -653,6 +742,23 @@ Default: -
 Reads `ldap_server` directives from another file, for example the bind
 credentials. A relative path is relative to the directory of `nginx.conf`.
 
+### Variables
+
+Once LDAP allowed the request, also from the cache:
+
+- `$ldap_user_dn`: the DN of the user;
+- `$ldap_attr_<name>`: the first value of an attribute named in
+  [`user_attributes`](#user_attributes) of the server that allowed the
+  request, for example `$ldap_attr_mail` or `$ldap_attr_displayName`. An
+  attribute with several values gives the first one the server returns.
+
+They are empty before the access phase (in `set` or `rewrite`), when the
+request was not allowed by LDAP or `auth_ldap` is `off`, and for an
+attribute that the entry does not have. Control characters in a value, CR
+and LF among them, are written as `\xNN`, so a value cannot add a header.
+Subrequests see the values of their main request. `$remote_user` stays the
+login as the client sent it.
+
 ## Examples
 
 Every example below is a complete `http` block body (or a complete
@@ -908,6 +1014,39 @@ server {
 }
 ```
 
+### Passing the user to the application
+
+Users log in with their user name or e-mail address; the application gets
+the canonical user name, the display name and the address.
+
+```nginx
+ldap_server corp {
+    url "ldap://ldap.example.com/ou=people,dc=example,dc=com??sub?(objectClass=inetOrgPerson)";
+    user_filter "(|(uid=$remote_user)(mail=$remote_user))";
+    user_attributes uid displayName mail;
+    require valid_user;
+}
+
+server {
+    listen 80;
+
+    location / {
+        auth_ldap "Restricted";
+        auth_ldap_servers corp;
+        proxy_set_header X-Remote-User  $ldap_attr_uid;
+        proxy_set_header X-Remote-Name  $ldap_attr_displayName;
+        proxy_set_header X-Remote-Email $ldap_attr_mail;
+        proxy_set_header Authorization  "";
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
+```
+
+`proxy_set_header Authorization ""` keeps the password from the
+application. Values that the application must trust have to come from
+nginx only: `proxy_set_header` replaces a header of the same name that the
+client sent.
+
 ### Several servers
 
 The servers are tried in order. A user who is not found, does not match the
@@ -1116,7 +1255,8 @@ or use `proxy_pass`, `try_files` and the like.
 - A `require group` value is used as the base DN of the group search. A value
   that is not a valid DN fails that server's check and is logged.
 - The `url` filter comes from the configuration and is used as written; it is
-  only checked to be one balanced, parenthesized filter.
+  only checked to be one balanced, parenthesized filter. So is
+  `user_filter`, apart from `$remote_user`, which is escaped.
 - A user search that finds more than one entry is an error, not a match.
 
 ### Cache
@@ -1127,6 +1267,8 @@ or use `proxy_pass`, `try_files` and the like.
   expires. A user who was denied stays denied until the cached deny expires,
   as long as the password is the same.
 - The key holds an MD5 hash of the password, never the password.
+- A cached allow keeps the user DN and the values of `user_attributes` from
+  the time it was cached.
 
 ### What is logged
 
@@ -1165,7 +1307,16 @@ and refuses the configuration, for example:
 - `No user attribute specified in url of ldap_server "<name>"`,
   `No host specified in ...`, `Invalid port ... in ...`,
   `Invalid filter "..." in ...`;
-- `"url" is duplicate`, `"require valid_user" template is duplicate`,
+- `Invalid user_filter "..."`, `only "$remote_user" can be used in
+  user_filter ...`, `user_filter of ldap_server "<name>" does not use
+  $remote_user`;
+- `"resolve" in ldap_server "<name>" needs a "resolver" in the http block`,
+  `"resolve" does not apply to the ldapi:// url of ldap_server "<name>"`;
+- `invalid attribute name "..." in user_attributes`, `"user_attributes"
+  need the user search, which a "require valid_user" template skips`;
+- `"url" is duplicate`, `"user_filter" is duplicate`,
+  `"user_attributes" is duplicate`,
+  `"require valid_user" template is duplicate`,
   `duplicate ldap_server "<name>"`;
 - `host not found in LDAP hostname "<host>"`;
 - `invalid value "..." for require, it must be "valid_user", "user" or "group"`;
@@ -1201,7 +1352,8 @@ ldapsearch -H ldap://ldap.example.com -D "cn=nginx,ou=services,dc=example,dc=com
 | `User bind failed for "..." on server "..." (49: Invalid credentials)` | Wrong password, or a locked or expired account. |
 | `User "..." does not meet the requirements of server "..."` | The user is found, but not in the required groups or users of that server. |
 | `Initial bind failed (49: Invalid credentials ...)` | Wrong `binddn` or `binddn_passwd`. The connection never becomes ready, so requests get `503`. |
-| `Could not connect`, `Unable to connect to LDAP server` | Host or port unreachable; the connection is retried every `reconnect_timeout`. |
+| `Could not connect to "<address>" of ldap_server "..."`, `Unable to connect to LDAP server` | Host or port unreachable; the connection is retried every `reconnect_timeout`. |
+| `Could not resolve "<host>" of ldap_server "..."` | With `resolve on`: the name does not resolve, or the `resolver` does not answer within `resolver_timeout`. The next server is asked; the name is resolved again every `reconnect_timeout`. |
 | `Request timed out (state=...)` | The server accepted the connection but did not answer in time. |
 | `Authentication timed out on server "..."` | The request hit that server's `request_timeout` and goes on to the next server; see the messages before it. |
 | `Server "..." has no connection, trying the next server` | No connection to that server is bound as `binddn`: it is unreachable or rejects `binddn` (look for `Could not connect` or `Initial bind failed`). |

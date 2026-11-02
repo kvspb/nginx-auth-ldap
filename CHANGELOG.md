@@ -8,6 +8,33 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-02
+
+### Added
+
+- `user_filter` finds the user with a filter in which `$remote_user` is the
+  escaped login, for example `(|(uid=$remote_user)(mail=$remote_user))`,
+  so that users can log in by one of several attributes (kvspb#90).
+  `nginx -t` warns when the `url` lists several attributes, of which only
+  the first is used.
+- `$ldap_user_dn` and `$ldap_attr_<name>` give the DN and the attributes
+  named by the new `user_attributes` of the user that LDAP allowed, also
+  from the cache, for `proxy_set_header` and logs: for example the display
+  name and the e-mail address (kvspb#173), or the uid of a user who logged
+  in with a mail address (kvspb#59). Control characters in a value are
+  escaped. A cache entry takes 40 bytes instead of 32, plus the DN and the
+  attributes of an allowed login.
+- `ldapi://` urls connect to an LDAP server over a Unix socket on the same
+  host, for example `ldapi://%2Frun%2Fslapd%2Fldapi/dc=example,dc=com?uid?sub`
+  (kvspb#229).
+- `resolve on` in an `ldap_server` block resolves the host name of the `url`
+  through the `resolver` of the `http` block before every connection, so
+  that a changed DNS record is followed without a reload (kvspb#63).
+
+### Changed
+
+- The `Could not connect` error names the address and the server.
+
 ## [1.1.0] - 2026-11-02
 
 ### Added
@@ -296,7 +323,8 @@ Known before this release:
 First tagged version by Valery Komarov. Later upstream changes until 2024
 were not released under a version number.
 
-[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v0.1...v1.0.0

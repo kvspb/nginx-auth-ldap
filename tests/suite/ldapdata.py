@@ -38,6 +38,14 @@ UNICODE_UID = "jürgen§"
 TWIN_UID = "twin"
 TWIN_OTHER_SECRET = "twin-other-" + "secret"  # nosec B105
 
+# Users with attributes (user_filter, user_attributes). frank has two mail
+# values; grace has the mail "frank", the uid of frank, and a description
+# with CR LF in it.
+ATTRIBUTE_USERS = {
+    "frank": {"mail": ["frank@example.org", "castle@example.org"], "displayName": "Frank Castle"},
+    "grace": {"mail": ["frank"], "description": "Grace\r\nX-Injected: yes", "title": "\x01first"},
+}
+
 # Service account from seed.ldif. Test-only credential of a disposable
 # container; override via the environment if the fixture changes.
 BIND_DN = os.environ.get("LDAP_BIND_DN", f"cn=nginx,ou=services,{BASE_DN}")

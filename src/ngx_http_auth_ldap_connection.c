@@ -36,6 +36,12 @@ static void ngx_http_auth_ldap_initial_bind(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_idle_closed(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_note_referral(ngx_http_auth_ldap_connection_t *c, char **refs);
 static void ngx_http_auth_ldap_set_keepalive(ngx_http_auth_ldap_connection_t *c, ngx_socket_t fd);
+static void ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c);
+static void ngx_http_auth_ldap_resolve(ngx_http_auth_ldap_connection_t *c);
+static void ngx_http_auth_ldap_resolve_failed(ngx_http_auth_ldap_connection_t *c);
+static void ngx_http_auth_ldap_resolve_handler(ngx_resolver_ctx_t *ctx);
+static void ngx_http_auth_ldap_connect_peer(ngx_http_auth_ldap_connection_t *c, struct sockaddr *sockaddr,
+    socklen_t socklen, ngx_str_t *name);
 
 /*** Asynchronous LDAP connection handling ***/
 
@@ -45,6 +51,12 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
     ngx_queue_t *q;
     ngx_http_auth_ldap_ctx_t *ctx;
     ngx_pool_t *pool;
+
+    /* Only the exit of the worker closes a connection while it resolves. */
+    if (c->resolving != NULL) {
+        ngx_resolve_name_done(c->resolving);
+        c->resolving = NULL;
+    }
 
     if (c->ld) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Unbinding from the server \"%V\")",
@@ -375,6 +387,13 @@ ngx_http_auth_ldap_set_keepalive(ngx_http_auth_ldap_connection_t *c, ngx_socket_
         return;
     }
 
+#if (NGX_HAVE_UNIX_DOMAIN)
+    /* No keepalive on a Unix socket (ldapi://): the peer is the host. */
+    if (c->conn.sockaddr->sa_family == AF_UNIX) {
+        return;
+    }
+#endif
+
 #if (NGX_HAVE_KEEPALIVE_TUNABLE)
     value = c->server->keepidle;
     if (value != 0) {
@@ -510,7 +529,10 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
     c = conn->data;
 
     if (c->ld == NULL) {
-        ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Could not connect");
+        /* The address too: with "resolve on" it may change (kvspb#63). */
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+            "http_auth_ldap: Could not connect to \"%V\" of ldap_server \"%V\"",
+            c->conn.name, &c->server->alias);
         ngx_http_auth_ldap_close_connection(c);
         return;
     }
@@ -643,6 +665,9 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 if (ldap_msgtype(result) == LDAP_RES_SEARCH_ENTRY) {
                     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received a search entry");
                     c->rctx->search_entries++;
+                    if (c->rctx->dn.data == NULL && c->rctx->phase == PHASE_SEARCH) {
+                        ngx_http_auth_ldap_entry_attributes(c->rctx, c->ld, result);
+                    }
                     if (c->rctx->dn.data == NULL) {
                         dn = ldap_get_dn(c->ld, result);
                         if (dn != NULL) {
@@ -694,20 +719,108 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
 static void
 ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
 {
-    ngx_peer_connection_t *pconn;
-    ngx_connection_t *conn;
     ngx_addr_t *addr;
-    ngx_int_t rc;
+
+    /* A host name with "resolve on": no address until it is resolved. */
+    if (c->server->parsed_url.naddrs == 0) {
+        ngx_http_auth_ldap_resolve(c);
+        return;
+    }
 
     addr = &c->server->parsed_url.addrs[ngx_random() % c->server->parsed_url.naddrs];
+    ngx_http_auth_ldap_connect_peer(c, addr->sockaddr, addr->socklen, &addr->name);
+}
+
+/*
+ * Resolve the host name of the url through the resolver of the http block,
+ * which caches it for its TTL or valid= (kvspb#63). The answer may come at
+ * once, from within ngx_resolve_name().
+ */
+static void
+ngx_http_auth_ldap_resolve(ngx_http_auth_ldap_connection_t *c)
+{
+    ngx_resolver_ctx_t *ctx;
+
+    ctx = ngx_resolve_start(c->server->resolver, NULL);
+    if (ctx == NULL || ctx == NGX_NO_RESOLVER) {
+        ngx_http_auth_ldap_resolve_failed(c);
+        return;
+    }
+
+    ctx->name = c->server->parsed_url.host;
+    ctx->handler = ngx_http_auth_ldap_resolve_handler;
+    ctx->data = c;
+    ctx->timeout = c->server->resolver_timeout;
+    /* A worker shutting down gracefully does not wait for it. */
+    ctx->cancelable = 1;
+
+    c->resolving = ctx;
+    if (ngx_resolve_name(ctx) != NGX_OK) {
+        /* ngx_resolve_name() freed it. */
+        c->resolving = NULL;
+        ngx_http_auth_ldap_resolve_failed(c);
+    }
+}
+
+static void
+ngx_http_auth_ldap_resolve_failed(ngx_http_auth_ldap_connection_t *c)
+{
+    ngx_log_error(NGX_LOG_ERR, c->log, 0,
+        "http_auth_ldap: Unable to resolve \"%V\" of ldap_server \"%V\"",
+        &c->server->parsed_url.host, &c->server->alias);
+    c->server->failing = 1;
+    ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
+}
+
+static void
+ngx_http_auth_ldap_resolve_handler(ngx_resolver_ctx_t *ctx)
+{
+    ngx_http_auth_ldap_connection_t *c;
+    ngx_resolver_addr_t *addr;
+
+    c = ctx->data;
+    c->resolving = NULL;
+
+    if (ctx->state) {
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+            "http_auth_ldap: Could not resolve \"%V\" of ldap_server \"%V\" (%i: %s)",
+            &ctx->name, &c->server->alias, ctx->state, ngx_resolver_strerror(ctx->state));
+        ngx_resolve_name_done(ctx);
+        /* Like an address that refuses: the next server is asked. */
+        c->server->failing = 1;
+        ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
+        return;
+    }
+
+    /* The answer belongs to the resolver: copy one address, any of them. */
+    addr = &ctx->addrs[ngx_random() % ctx->naddrs];
+    ngx_memcpy(&c->sockaddr, addr->sockaddr, addr->socklen);
+    c->socklen = addr->socklen;
+    ngx_resolve_name_done(ctx);
+
+    ngx_inet_set_port(&c->sockaddr.sockaddr, (in_port_t) c->server->ludpp->lud_port);
+    c->peer_name.data = c->peer_text;
+    c->peer_name.len = ngx_sock_ntop(&c->sockaddr.sockaddr, c->socklen, c->peer_text,
+                                     NGX_SOCKADDR_STRLEN, 1);
+
+    ngx_http_auth_ldap_connect_peer(c, &c->sockaddr.sockaddr, c->socklen, &c->peer_name);
+}
+
+static void
+ngx_http_auth_ldap_connect_peer(ngx_http_auth_ldap_connection_t *c, struct sockaddr *sockaddr,
+    socklen_t socklen, ngx_str_t *name)
+{
+    ngx_peer_connection_t *pconn;
+    ngx_connection_t *conn;
+    ngx_int_t rc;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Connecting to LDAP server \"%V\".",
-        &addr->name);
+        name);
 
     pconn = &c->conn;
-    pconn->sockaddr = addr->sockaddr;
-    pconn->socklen = addr->socklen;
-    pconn->name = &addr->name;
+    pconn->sockaddr = sockaddr;
+    pconn->socklen = socklen;
+    pconn->name = name;
     pconn->get = ngx_event_get_peer;
     pconn->log = c->log;
     /* A reset is logged by the module, in context: as info when idle. */
@@ -717,7 +830,7 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: ngx_event_connect_peer() -> %d.", rc);
     if (rc == NGX_ERROR || rc == NGX_BUSY || rc == NGX_DECLINED) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Unable to connect to LDAP server \"%V\".",
-            &addr->name);
+            name);
         c->server->failing = 1;
         ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
         return;

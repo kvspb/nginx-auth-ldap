@@ -36,6 +36,7 @@ static void ngx_http_auth_ldap_cache_hash_str(ngx_md5_t *md5ctx,
     ngx_str_t *value);
 static ngx_int_t ngx_http_auth_ldap_cache_hash_templates(ngx_http_request_t *r,
     ngx_md5_t *md5ctx, ngx_http_complex_value_t *values, ngx_uint_t n);
+static u_char *ngx_http_auth_ldap_cache_user(ngx_http_auth_ldap_ctx_t *ctx);
 
 /*** Authentication cache ***/
 
@@ -97,6 +98,7 @@ ngx_http_auth_ldap_check_cache(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
     ngx_http_auth_ldap_cache_hash_str(&md5ctx, &r->headers_in.passwd);
 
     ctx->cache_bucket = NULL;
+    ctx->cache_hit = NULL;
 
     if (ngx_http_auth_ldap_cache_hash_templates(r, &md5ctx,
             &server->require_valid_user_dn,
@@ -128,6 +130,7 @@ ngx_http_auth_ldap_check_cache(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
         if (elt->small_hash == ctx->cache_small_hash &&
                 ngx_current_msec - elt->time < cache->expiration_time &&
                 memcmp(elt->big_hash, ctx->cache_big_hash, 16) == 0) {
+            ctx->cache_hit = elt;
             return elt->outcome;
         }
     }
@@ -141,10 +144,20 @@ ngx_http_auth_ldap_update_cache(ngx_http_auth_ldap_ctx_t *ctx,
 {
     ngx_http_auth_ldap_cache_elt_t *elt, *oldest_elt;
     ngx_uint_t i;
+    u_char *user;
 
     if (ctx->cache_bucket == NULL) {
         /* The key could not be built: never store under a partial key. */
         return;
+    }
+
+    user = NULL;
+    if (outcome == OUTCOME_ALLOW) {
+        user = ngx_http_auth_ldap_cache_user(ctx);
+        if (user == NULL) {
+            /* An allow without its user would lose the variables. */
+            return;
+        }
     }
 
     /* The entry used least recently, an unused one first (time 0). */
@@ -156,10 +169,89 @@ ngx_http_auth_ldap_update_cache(ngx_http_auth_ldap_ctx_t *ctx,
         }
     }
 
+    ngx_free(oldest_elt->user);
+    oldest_elt->user = user;
     oldest_elt->time = ngx_current_msec;
     oldest_elt->outcome = outcome;
     oldest_elt->small_hash = ctx->cache_small_hash;
     ngx_memcpy(oldest_elt->big_hash, ctx->cache_big_hash, 16);
+}
+
+/*
+ * The user of an allow for the cache entry: the DN and the values of
+ * user_attributes, each as a size_t length and its bytes. Kept by the
+ * worker with malloc(), as the cache itself, and freed when the entry is
+ * reused.
+ */
+static u_char *
+ngx_http_auth_ldap_cache_user(ngx_http_auth_ldap_ctx_t *ctx)
+{
+    ngx_str_t *values;
+    ngx_uint_t i, n;
+    size_t size;
+    u_char *user, *p;
+
+    n = ctx->allowed_attrs != NULL ? ctx->server->user_attributes->nelts : 0;
+    values = ctx->allowed_attrs;
+
+    size = sizeof(size_t) * (1 + n) + ctx->allowed_dn.len;
+    for (i = 0; i < n; i++) {
+        size += values[i].len;
+    }
+
+    user = ngx_alloc(size, ctx->r->connection->log);
+    if (user == NULL) {
+        return NULL;
+    }
+
+    p = ngx_cpymem(user, &ctx->allowed_dn.len, sizeof(size_t));
+    p = ngx_cpymem(p, ctx->allowed_dn.data, ctx->allowed_dn.len);
+    for (i = 0; i < n; i++) {
+        p = ngx_cpymem(p, &values[i].len, sizeof(size_t));
+        p = ngx_cpymem(p, values[i].data, values[i].len);
+    }
+
+    return user;
+}
+
+/*
+ * A cached allow of server: the user of ctx->cache_hit, copied into the
+ * request, for the variables. The entry may be reused before they are read.
+ */
+ngx_int_t
+ngx_http_auth_ldap_restore_user(ngx_http_auth_ldap_ctx_t *ctx, ngx_http_auth_ldap_server_t *server)
+{
+    ngx_str_t *values, *value;
+    ngx_uint_t i, n;
+    u_char *p;
+
+    p = ctx->cache_hit->user;
+    n = server->user_attributes != NULL ? server->user_attributes->nelts : 0;
+
+    values = NULL;
+    if (n > 0) {
+        values = ngx_pcalloc(ctx->r->pool, n * sizeof(ngx_str_t));
+        if (values == NULL) {
+            return NGX_ERROR;
+        }
+    }
+
+    for (i = 0; i <= n; i++) {
+        value = i == 0 ? &ctx->allowed_dn : &values[i - 1];
+        ngx_memcpy(&value->len, p, sizeof(size_t));
+        p += sizeof(size_t);
+        value->data = ngx_pnalloc(ctx->r->pool, value->len);
+        if (value->data == NULL) {
+            return NGX_ERROR;
+        }
+        ngx_memcpy(value->data, p, value->len);
+        p += value->len;
+    }
+
+    ctx->allowed_server = server;
+    ctx->allowed_attrs = values;
+
+    return NGX_OK;
 }
 
 /* Length-prefixed, so that adjacent values cannot run into each other. */
