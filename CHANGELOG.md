@@ -8,6 +8,8 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-02
+
 ### Added
 
 - `auth_ldap` takes variables, and a value of `off` turns the check off for
@@ -20,6 +22,16 @@ Entries refer to issues of the original repository as kvspb#N
   log (kvspb#171). Control characters in the login are escaped.
 - `binddn_passwd_file` reads the password of `binddn` from a file of its own,
   such as a container secret (kvspb#105, kvspb#217).
+
+### Changed
+
+- The error log lines of a failed login now name the login and the server:
+  `User bind failed for "<login>" on server "<name>" (49: ...)` instead of
+  `User bind failed (49: ...)`, and `Could not find user DN for "<login>"
+  on server "<name>"` instead of `Could not find user DN`. Update log
+  filters that match the old text.
+- A second `auth_ldap` in the same block fails `nginx -t` with
+  "is duplicate"; the last one used to win silently.
 
 ### Fixed
 
@@ -284,7 +296,8 @@ Known before this release:
 First tagged version by Valery Komarov. Later upstream changes until 2024
 were not released under a version number.
 
-[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v0.1...v1.0.0
 [0.1]: https://github.com/kvspb/nginx-auth-ldap/releases/tag/v0.1
