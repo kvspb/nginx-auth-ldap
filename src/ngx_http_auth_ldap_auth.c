@@ -359,12 +359,14 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 }
 
                 /*
-                 * A server without a single connection bound as binddn
-                 * (unreachable, or rejecting binddn) cannot answer soon:
-                 * go on to the next one instead of waiting for its
-                 * request_timeout. The last server is waited for.
+                 * A server without a single connection bound as binddn,
+                 * whose last connection attempt failed (unreachable, or
+                 * rejecting binddn), cannot answer soon: go on to the next
+                 * one instead of waiting for its request_timeout. A server
+                 * that is still connecting, as after the start of a worker,
+                 * is waited for, and so is the last server.
                  */
-                if (ctx->server->established == 0
+                if (ctx->server->established == 0 && ctx->server->failing
                     && ctx->server_index + 1 < conf->servers->nelts)
                 {
                     ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,

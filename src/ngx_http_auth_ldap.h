@@ -100,6 +100,8 @@ typedef struct {
     ngx_queue_t free_connections;
     ngx_queue_t waiting_requests;
     ngx_uint_t established;         /* connections bound as binddn, per worker */
+    ngx_flag_t failing;             /* a connection failed to come up since
+                                       the last one that did, per worker */
     struct ngx_http_auth_ldap_connection **conns;  /* all of them, per worker */
 } ngx_http_auth_ldap_server_t;
 

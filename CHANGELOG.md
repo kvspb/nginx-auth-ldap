@@ -21,6 +21,14 @@ Entries refer to issues of the original repository as kvspb#N
 - `binddn_passwd_file` reads the password of `binddn` from a file of its own,
   such as a container secret (kvspb#105, kvspb#217).
 
+### Fixed
+
+- With several servers in `auth_ldap_servers`, a server whose connections
+  were still being opened, as right after a worker started or after the
+  server closed an idle connection, was skipped as if it were unreachable:
+  the request went to the next server, or got `503` when that one denied.
+  A server is now skipped only once a connection to it has failed.
+
 ## [1.0.1] - 2026-11-01
 
 ### Fixed

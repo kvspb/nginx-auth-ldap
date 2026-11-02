@@ -58,7 +58,9 @@ and [`auth_ldap_servers`](#auth_ldap_servers) with the names of one or more
       next request.
 3. Allows the request as soon as one server allows it. A server that cannot
    decide is left for the next one: it has no connection bound as `binddn`
-   (unless it is the last server), it does not finish within its
+   and its last connection attempt failed (unless it is the last server; a
+   server that is still connecting is waited for), it does not finish
+   within its
    [`request_timeout`](#request_timeout), the connection broke, or it
    answered busy, unavailable or over a limit, or with a referral. When every server denies the
    user, the answer is `401`; when a server could not decide and no later

@@ -2,6 +2,7 @@
 
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -323,3 +324,62 @@ def test_first_server_that_went_away_is_skipped_at_once(nginx):
 
     assert code == 200
     assert elapsed < 0.5, f"answered after {elapsed:.2f} s"
+
+
+def test_server_that_is_still_connecting_is_waited_for(nginx):
+    # Right after a worker starts, no connection of a server is bound yet.
+    # Such a server used to be skipped as if it were unreachable, so the
+    # first requests went to the next server, or got 503 when that one
+    # denied. A server is only skipped once a connection to it has failed.
+    with LdapProxy() as proxy:
+        proxy.hold()
+        first = ldap_server("first", f"require valid_user;{TIMEOUTS}", url=url_for("127.0.0.1", proxy.port))
+        # The second server admits nobody but bob.
+        second = ldap_server("second", f'require user "uid=bob,{PEOPLE_DN}";{TIMEOUTS}')
+        server = nginx.start(http=first + second, server=protected_location("first second"))
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(server.get, auth=creds("alice"), timeout=10)
+            time.sleep(0.3)
+            proxy.release()
+            response = pending.result()
+
+    assert response.status_code == 200
+    assert "has no connection" not in server.log()
+
+
+def test_server_that_reconnects_after_a_drop_is_waited_for(nginx):
+    # A connection that the server closed is reopened at once. Until it is
+    # bound again the server has no connection, but nothing failed: requests
+    # wait for it instead of going to the next server.
+    with LdapProxy() as proxy:
+        first = ldap_server("first", f"require valid_user;{TIMEOUTS}", url=url_for("127.0.0.1", proxy.port))
+        second = ldap_server("second", f'require user "uid=bob,{PEOPLE_DN}";{TIMEOUTS}')
+        server = nginx.start(http=first + second, server=protected_location("first second"))
+        deadline = time.monotonic() + 5
+        while server.get(auth=creds("alice")).status_code != 200 and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+        proxy.hold()
+        proxy.drop()
+        time.sleep(0.3)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(server.get, auth=creds("alice"), timeout=10)
+            time.sleep(0.3)
+            proxy.release()
+            response = pending.result()
+
+    assert response.status_code == 200
+
+
+def test_server_whose_connect_fails_at_once_is_skipped(nginx):
+    # connect() to a link-local address without a zone fails at once
+    # (EINVAL), before any event: that counts as a failed connection too.
+    first = ldap_server("first", f"require valid_user;{TIMEOUTS}", url=url_for("[fe80::1]", 389))
+    server = nginx.start(http=first + ldap_server("second"), server=protected_location("first second"))
+    time.sleep(0.2)
+
+    started = time.monotonic()
+    assert server.get(auth=creds("alice")).status_code == 200
+    assert time.monotonic() - started < 0.5
+    assert 'Server "first" has no connection' in server.log()
