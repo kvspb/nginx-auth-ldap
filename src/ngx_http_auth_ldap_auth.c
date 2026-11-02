@@ -49,6 +49,9 @@ static ngx_int_t ngx_http_auth_ldap_wait_result(ngx_http_request_t *r, ngx_http_
 static void ngx_http_auth_ldap_cleanup_request(void *data);
 static ngx_flag_t ngx_http_auth_ldap_server_failed(int code);
 static ngx_str_t *ngx_http_auth_ldap_login(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
+static ngx_flag_t ngx_http_auth_ldap_control(u_char c);
+static ngx_int_t ngx_http_auth_ldap_header_safe(ngx_pool_t *pool, u_char *data, size_t len, ngx_str_t *out);
+static ngx_int_t ngx_http_auth_ldap_allow(ngx_http_auth_ldap_ctx_t *ctx);
 static void ngx_http_auth_ldap_deny_requirements(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_challenge(ngx_http_request_t *r, ngx_http_auth_ldap_loc_conf_t *alcf,
     ngx_str_t *challenge);
@@ -119,6 +122,167 @@ ngx_http_auth_ldap_login(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
     ctx->login.len = p - ctx->login.data;
 
     return &ctx->login;
+}
+
+/*
+ * A copy of a value of the directory for a variable, which may end up in a
+ * header: control characters, CR and LF among them, are written as \xNN so
+ * that they cannot start a header of their own.
+ */
+static ngx_flag_t
+ngx_http_auth_ldap_control(u_char c)
+{
+    return c < 0x20 || c == 0x7f;
+}
+
+static ngx_int_t
+ngx_http_auth_ldap_header_safe(ngx_pool_t *pool, u_char *data, size_t len, ngx_str_t *out)
+{
+    size_t  i;
+    u_char *p;
+
+    p = ngx_pnalloc(pool, 4 * len);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    out->data = p;
+    for (i = 0; i < len; i++) {
+        if (ngx_http_auth_ldap_control(data[i])) {
+            p = ngx_sprintf(p, "\\x%02xd", data[i]);
+        } else {
+            *p++ = data[i];
+        }
+    }
+    out->len = p - out->data;
+
+    return NGX_OK;
+}
+
+/*
+ * The first value of each of user_attributes in the first entry of the
+ * user search, for $ldap_attr_<name>. On allocation failure the
+ * variables stay empty.
+ */
+void
+ngx_http_auth_ldap_entry_attributes(ngx_http_auth_ldap_ctx_t *ctx, LDAP *ld, LDAPMessage *entry)
+{
+    ngx_http_auth_ldap_server_t *server;
+    struct berval **bv;
+    ngx_str_t *names, *values;
+    ngx_uint_t i;
+
+    server = ctx->server;
+    if (server->user_attributes == NULL) {
+        return;
+    }
+
+    names = server->user_attributes->elts;
+    values = ngx_pcalloc(ctx->r->pool, server->user_attributes->nelts * sizeof(ngx_str_t));
+    if (values == NULL) {
+        return;
+    }
+
+    for (i = 0; i < server->user_attributes->nelts; i++) {
+        bv = ldap_get_values_len(ld, entry, (const char *) names[i].data);
+        if (bv == NULL) {
+            continue;
+        }
+        if (bv[0] != NULL) {
+            /* Left empty on allocation failure. */
+            (void) ngx_http_auth_ldap_header_safe(ctx->r->pool, (u_char *) bv[0]->bv_val,
+                       bv[0]->bv_len, &values[i]);
+        }
+        ldap_value_free_len(bv);
+    }
+
+    ctx->search_attrs = values;
+}
+
+/* LDAP allowed the request on ctx->server: keep the user for the variables. */
+static ngx_int_t
+ngx_http_auth_ldap_allow(ngx_http_auth_ldap_ctx_t *ctx)
+{
+    if (ngx_http_auth_ldap_header_safe(ctx->r->pool, ctx->user_dn.data, ctx->user_dn.len,
+            &ctx->allowed_dn) != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    ctx->allowed_server = ctx->server;
+    ctx->allowed_attrs = ctx->search_attrs;
+
+    return NGX_OK;
+}
+
+static ngx_http_auth_ldap_ctx_t *
+ngx_http_auth_ldap_allowed_ctx(ngx_http_request_t *r)
+{
+    ngx_http_auth_ldap_ctx_t *ctx;
+
+    /* Subrequests skip the access phase: the user is that of the main one. */
+    ctx = ngx_http_get_module_ctx(r->main, ngx_http_auth_ldap_module);
+    if (ctx == NULL || ctx->allowed_server == NULL) {
+        return NULL;
+    }
+
+    return ctx;
+}
+
+ngx_int_t
+ngx_http_auth_ldap_user_dn_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_http_auth_ldap_ctx_t *ctx;
+
+    ctx = ngx_http_auth_ldap_allowed_ctx(r);
+    if (ctx == NULL || ctx->allowed_dn.len == 0) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    v->data = ctx->allowed_dn.data;
+    v->len = ctx->allowed_dn.len;
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
+/* $ldap_attr_<name>: data is the name of the variable, in lower case. */
+ngx_int_t
+ngx_http_auth_ldap_attr_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_str_t *var = (ngx_str_t *) data;
+    ngx_http_auth_ldap_ctx_t *ctx;
+    ngx_str_t *names, name;
+    ngx_uint_t i;
+
+    v->not_found = 1;
+
+    ctx = ngx_http_auth_ldap_allowed_ctx(r);
+    if (ctx == NULL || ctx->allowed_attrs == NULL) {
+        return NGX_OK;
+    }
+
+    name.data = var->data + sizeof("ldap_attr_") - 1;
+    name.len = var->len - (sizeof("ldap_attr_") - 1);
+
+    names = ctx->allowed_server->user_attributes->elts;
+    for (i = 0; i < ctx->allowed_server->user_attributes->nelts; i++) {
+        if (names[i].len == name.len
+            && ngx_strncasecmp(names[i].data, name.data, name.len) == 0)
+        {
+            v->data = ctx->allowed_attrs[i].data;
+            v->len = ctx->allowed_attrs[i].len;
+            v->valid = 1;
+            v->no_cacheable = 0;
+            v->not_found = 0;
+            break;
+        }
+    }
+
+    return NGX_OK;
 }
 
 /* The user was found and may have the right password, but the require
@@ -518,6 +682,10 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                     ngx_http_auth_ldap_return_connection(ctx->c);
                 }
 
+                if (ctx->outcome == OUTCOME_ALLOW && ngx_http_auth_ldap_allow(ctx) != NGX_OK) {
+                    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+                }
+
                 if (ngx_http_auth_ldap_cache.buckets != NULL &&
                     (ctx->outcome == OUTCOME_DENY || ctx->outcome == OUTCOME_ALLOW)) {
                     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Caching outcome %d", ctx->outcome);
@@ -567,7 +735,7 @@ ngx_http_auth_ldap_cached_outcome(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_
             continue;
         }
         rc = ngx_http_auth_ldap_check_cache(r, ctx, &ngx_http_auth_ldap_cache, s);
-        if (rc == OUTCOME_ALLOW) {
+        if (rc == OUTCOME_ALLOW && ngx_http_auth_ldap_restore_user(ctx, s) == NGX_OK) {
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                 "http_auth_ldap: Using cached allow from server %ui", i);
             return OUTCOME_CACHED_ALLOW;
@@ -577,6 +745,9 @@ ngx_http_auth_ldap_cached_outcome(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_
     /* Last, so that ctx keeps the key of ctx->server for
      * ngx_http_auth_ldap_update_cache() in PHASE_NEXT. */
     rc = ngx_http_auth_ldap_check_cache(r, ctx, &ngx_http_auth_ldap_cache, ctx->server);
+    if (rc == OUTCOME_ALLOW && ngx_http_auth_ldap_restore_user(ctx, ctx->server) != NGX_OK) {
+        return OUTCOME_UNCERTAIN;
+    }
     if (rc == OUTCOME_DENY || rc == OUTCOME_ALLOW) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
             "http_auth_ldap: Using cached outcome %d", rc);
@@ -792,6 +963,7 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
 
         attrs[0] = LDAP_NO_ATTRS;
         attrs[1] = NULL;
+        ctx->search_attrs = NULL;
         ctx->search_entries = 0;
         ngx_str_null(&ctx->referral);
         /* The read handler only records the first entry DN while ctx->dn is
@@ -800,7 +972,9 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
         ngx_str_null(&ctx->dn);
 
         /* Two entries are enough to tell an ambiguous login from a unique one. */
-        rc = ldap_search_ext(ctx->c->ld, ctx->server->ludpp->lud_dn, ctx->server->ludpp->lud_scope, (const char *) filter, attrs, 0, NULL, NULL, NULL, 2, &ctx->c->msgid);
+        rc = ldap_search_ext(ctx->c->ld, ctx->server->ludpp->lud_dn, ctx->server->ludpp->lud_scope, (const char *) filter,
+            ctx->server->search_attrs != NULL ? ctx->server->search_attrs : attrs,
+            0, NULL, NULL, NULL, 2, &ctx->c->msgid);
         return ngx_http_auth_ldap_wait_result(r, ctx, "ldap_search_ext", rc, STATE_SEARCHING);
     }
 

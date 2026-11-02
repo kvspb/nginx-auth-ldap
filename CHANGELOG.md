@@ -15,6 +15,13 @@ Entries refer to issues of the original repository as kvspb#N
   so that users can log in by one of several attributes (kvspb#90).
   `nginx -t` warns when the `url` lists several attributes, of which only
   the first is used.
+- `$ldap_user_dn` and `$ldap_attr_<name>` give the DN and the attributes
+  named by the new `user_attributes` of the user that LDAP allowed, also
+  from the cache, for `proxy_set_header` and logs: for example the display
+  name and the e-mail address (kvspb#173), or the uid of a user who logged
+  in with a mail address (kvspb#59). Control characters in a value are
+  escaped. A cache entry takes 40 bytes instead of 32, plus the DN and the
+  attributes of an allowed login.
 
 ## [1.1.0] - 2026-11-02
 

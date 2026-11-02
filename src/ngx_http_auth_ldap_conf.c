@@ -43,6 +43,7 @@ static ngx_int_t ngx_http_auth_ldap_template_shape(ngx_conf_t *cf, ngx_http_auth
 static ngx_int_t ngx_http_auth_ldap_check_filter(const char *filter);
 static char * ngx_http_auth_ldap_parse_user_filter(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static ngx_flag_t ngx_http_auth_ldap_name_char(u_char c);
+static char * ngx_http_auth_ldap_parse_user_attributes(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 #if (NGX_OPENSSL)
 static char * ngx_http_auth_ldap_create_ssl(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_load_ca(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
@@ -173,6 +174,16 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
             "http_auth_ldap: \"user_filter\" and a \"require valid_user\" template "
             "in ldap_server \"%V\": the template builds the DN without a search, use one",
+            &server->alias);
+        return NGX_CONF_ERROR;
+    }
+
+    if (server->user_attributes != NULL
+        && server->require_valid_user_dn.value.data != NULL)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: \"user_attributes\" need the user search, which a "
+            "\"require valid_user\" template skips, in ldap_server \"%V\"",
             &server->alias);
         return NGX_CONF_ERROR;
     }
@@ -348,6 +359,8 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         return ngx_http_auth_ldap_read_passwd(cf, server, &value[1]);
     } else if (ngx_strcmp(value[0].data, "user_filter") == 0) {
         return ngx_http_auth_ldap_parse_user_filter(cf, server);
+    } else if (ngx_strcmp(value[0].data, "user_attributes") == 0) {
+        return ngx_http_auth_ldap_parse_user_attributes(cf, server);
     } else if (ngx_strcmp(value[0].data, "group_attribute") == 0) {
         server->group_attribute = value[1];
     } else if (ngx_strcmp(value[0].data, "group_attribute_is_dn") == 0) {
@@ -786,6 +799,63 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
             server->ludpp->lud_scheme);
         return NGX_CONF_ERROR;
     }
+}
+
+/*
+ * user_attributes: the attributes of the user entry that the user search
+ * fetches, for the variables $ldap_attr_<name> (kvspb#173, kvspb#59). A
+ * name is letters and digits, starting with a letter, so that it is also
+ * an nginx variable name: no OID, hyphen or option.
+ */
+static char *
+ngx_http_auth_ldap_parse_user_attributes(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server)
+{
+    ngx_str_t   *value, *name;
+    ngx_uint_t   i, j;
+    u_char       c;
+
+    value = cf->args->elts;
+
+    if (cf->args->nelts < 2) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: invalid number of arguments in \"%V\"", &value[0]);
+        return NGX_CONF_ERROR;
+    }
+
+    if (server->user_attributes != NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: \"user_attributes\" is duplicate");
+        return NGX_CONF_ERROR;
+    }
+
+    server->user_attributes = ngx_array_create(cf->pool, cf->args->nelts - 1, sizeof(ngx_str_t));
+    server->search_attrs = ngx_pcalloc(cf->pool, cf->args->nelts * sizeof(char *));
+    if (server->user_attributes == NULL || server->search_attrs == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    for (i = 1; i < cf->args->nelts; i++) {
+        for (j = 0; j < value[i].len; j++) {
+            c = value[i].data[j];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                  || (j > 0 && c >= '0' && c <= '9')))
+            {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                    "http_auth_ldap: invalid attribute name \"%V\" in user_attributes: "
+                    "letters and digits only, starting with a letter", &value[i]);
+                return NGX_CONF_ERROR;
+            }
+        }
+
+        name = ngx_array_push(server->user_attributes);
+        if (name == NULL) {
+            return NGX_CONF_ERROR;
+        }
+        /* nginx arguments are NUL-terminated. */
+        *name = value[i];
+        server->search_attrs[i - 1] = (char *) value[i].data;
+    }
+
+    return NGX_CONF_OK;
 }
 
 /* Whether c may continue an nginx variable name. */

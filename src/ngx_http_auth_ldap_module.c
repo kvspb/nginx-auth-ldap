@@ -37,6 +37,19 @@ static char * ngx_http_auth_ldap_merge_loc_conf(ngx_conf_t *, void *, void *);
 static ngx_int_t ngx_http_auth_ldap_init_worker(ngx_cycle_t *cycle);
 static void ngx_http_auth_ldap_exit_worker(ngx_cycle_t *cycle);
 static ngx_int_t ngx_http_auth_ldap_init(ngx_conf_t *cf);
+static ngx_int_t ngx_http_auth_ldap_add_variables(ngx_conf_t *cf);
+
+/*
+ * Not cacheable: a value read before the access phase (in a "set", for
+ * example) is empty and must not stick (kvspb#173, kvspb#59).
+ */
+static ngx_http_variable_t ngx_http_auth_ldap_variables[] = {
+    { ngx_string("ldap_user_dn"), NULL, ngx_http_auth_ldap_user_dn_variable,
+      0, NGX_HTTP_VAR_NOCACHEABLE, 0 },
+    { ngx_string("ldap_attr_"), NULL, ngx_http_auth_ldap_attr_variable,
+      0, NGX_HTTP_VAR_NOCACHEABLE | NGX_HTTP_VAR_PREFIX, 0 },
+    ngx_http_null_variable
+};
 
 static ngx_command_t ngx_http_auth_ldap_commands[] = {
     {
@@ -99,7 +112,7 @@ static ngx_command_t ngx_http_auth_ldap_commands[] = {
 };
 
 static ngx_http_module_t ngx_http_auth_ldap_module_ctx = {
-    NULL,                                /* preconfiguration */
+    ngx_http_auth_ldap_add_variables,    /* preconfiguration */
     ngx_http_auth_ldap_init,             /* postconfiguration */
     ngx_http_auth_ldap_create_main_conf, /* create main configuration */
     ngx_http_auth_ldap_init_main_conf,   /* init main configuration */
@@ -123,6 +136,23 @@ ngx_module_t ngx_http_auth_ldap_module = {
     NULL,                                /* exit master */
     NGX_MODULE_V1_PADDING
 };
+
+static ngx_int_t
+ngx_http_auth_ldap_add_variables(ngx_conf_t *cf)
+{
+    ngx_http_variable_t *var, *v;
+
+    for (v = ngx_http_auth_ldap_variables; v->name.len; v++) {
+        var = ngx_http_add_variable(cf, &v->name, v->flags);
+        if (var == NULL) {
+            return NGX_ERROR;
+        }
+        /* data stays 0; nginx sets it to the name of a prefix variable. */
+        var->get_handler = v->get_handler;
+    }
+
+    return NGX_OK;
+}
 
 /**
  * Create main config which will store ldap_servers array

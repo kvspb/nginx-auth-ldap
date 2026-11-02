@@ -43,7 +43,7 @@ TWIN_OTHER_SECRET = "twin-other-" + "secret"  # nosec B105
 # with CR LF in it.
 ATTRIBUTE_USERS = {
     "frank": {"mail": ["frank@example.org", "castle@example.org"], "displayName": "Frank Castle"},
-    "grace": {"mail": ["frank"], "description": "Grace\r\nX-Injected: yes"},
+    "grace": {"mail": ["frank"], "description": "Grace\r\nX-Injected: yes", "title": "\x01first"},
 }
 
 # Service account from seed.ldif. Test-only credential of a disposable

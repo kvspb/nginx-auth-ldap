@@ -344,7 +344,7 @@ def worker_memory(nginx, size: int) -> int:
 def test_large_cache_size_is_honoured(nginx):
     # The bucket table ended at 1109 buckets: any auth_ldap_cache_size above
     # 8872 entries was cut to that without a word (audit F30). Two million
-    # entries of 32 bytes take about 62 MB; the cut cache took 0.3 MB. The
+    # entries of 40 bytes take about 78 MB; the cut cache took 0.3 MB. The
     # size is large, as an AddressSanitizer build serves a few MB from
     # address space it reserved before, which VmSize does not show again.
     grown = worker_memory(nginx, 2000000) - worker_memory(nginx, 100)

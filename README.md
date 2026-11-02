@@ -259,7 +259,9 @@ Context: http
 
 Number of cache entries per worker, at least 100. Entries are kept in
 buckets of 8, so the number is rounded up to a multiple of 8; each takes
-32 bytes. When a bucket is full the oldest entry is replaced.
+40 bytes, and an allowed login also keeps its DN and the values of
+[`user_attributes`](#user_attributes) for the [variables](#variables).
+When a bucket is full the oldest entry is replaced.
 
 #### auth_ldap_servers_size
 
@@ -405,6 +407,19 @@ ldap_server corp {
 
 Not together with a [`require valid_user`](#require) template, which builds
 the DN without a search.
+
+#### user_attributes
+
+```text
+Syntax:  user_attributes name ...;
+Default: -
+```
+
+Attributes of the user entry that the user search fetches, for the
+variables `$ldap_attr_<name>` (see [Variables](#variables)). A name is
+letters and digits, starting with a letter, as an nginx variable name must
+be; the case does not matter. Not together with a
+[`require valid_user`](#require) template, which skips the search.
 
 #### binddn
 
@@ -682,6 +697,23 @@ Default: -
 Reads `ldap_server` directives from another file, for example the bind
 credentials. A relative path is relative to the directory of `nginx.conf`.
 
+### Variables
+
+Once LDAP allowed the request, also from the cache:
+
+- `$ldap_user_dn`: the DN of the user;
+- `$ldap_attr_<name>`: the first value of an attribute named in
+  [`user_attributes`](#user_attributes) of the server that allowed the
+  request, for example `$ldap_attr_mail` or `$ldap_attr_displayName`. An
+  attribute with several values gives the first one the server returns.
+
+They are empty before the access phase (in `set` or `rewrite`), when the
+request was not allowed by LDAP or `auth_ldap` is `off`, and for an
+attribute that the entry does not have. Control characters in a value, CR
+and LF among them, are written as `\xNN`, so a value cannot add a header.
+Subrequests see the values of their main request. `$remote_user` stays the
+login as the client sent it.
+
 ## Examples
 
 Every example below is a complete `http` block body (or a complete
@@ -937,6 +969,39 @@ server {
 }
 ```
 
+### Passing the user to the application
+
+Users log in with their user name or e-mail address; the application gets
+the canonical user name, the display name and the address.
+
+```nginx
+ldap_server corp {
+    url "ldap://ldap.example.com/ou=people,dc=example,dc=com??sub?(objectClass=inetOrgPerson)";
+    user_filter "(|(uid=$remote_user)(mail=$remote_user))";
+    user_attributes uid displayName mail;
+    require valid_user;
+}
+
+server {
+    listen 80;
+
+    location / {
+        auth_ldap "Restricted";
+        auth_ldap_servers corp;
+        proxy_set_header X-Remote-User  $ldap_attr_uid;
+        proxy_set_header X-Remote-Name  $ldap_attr_displayName;
+        proxy_set_header X-Remote-Email $ldap_attr_mail;
+        proxy_set_header Authorization  "";
+        proxy_pass http://127.0.0.1:8080;
+    }
+}
+```
+
+`proxy_set_header Authorization ""` keeps the password from the
+application. Values that the application must trust have to come from
+nginx only: `proxy_set_header` replaces a header of the same name that the
+client sent.
+
 ### Several servers
 
 The servers are tried in order. A user who is not found, does not match the
@@ -1157,6 +1222,8 @@ or use `proxy_pass`, `try_files` and the like.
   expires. A user who was denied stays denied until the cached deny expires,
   as long as the password is the same.
 - The key holds an MD5 hash of the password, never the password.
+- A cached allow keeps the user DN and the values of `user_attributes` from
+  the time it was cached.
 
 ### What is logged
 
@@ -1198,7 +1265,10 @@ and refuses the configuration, for example:
 - `Invalid user_filter "..."`, `only "$remote_user" can be used in
   user_filter ...`, `user_filter of ldap_server "<name>" does not use
   $remote_user`;
+- `invalid attribute name "..." in user_attributes`, `"user_attributes"
+  need the user search, which a "require valid_user" template skips`;
 - `"url" is duplicate`, `"user_filter" is duplicate`,
+  `"user_attributes" is duplicate`,
   `"require valid_user" template is duplicate`,
   `duplicate ldap_server "<name>"`;
 - `host not found in LDAP hostname "<host>"`;

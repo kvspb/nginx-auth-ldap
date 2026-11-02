@@ -643,6 +643,9 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 if (ldap_msgtype(result) == LDAP_RES_SEARCH_ENTRY) {
                     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Received a search entry");
                     c->rctx->search_entries++;
+                    if (c->rctx->dn.data == NULL && c->rctx->phase == PHASE_SEARCH) {
+                        ngx_http_auth_ldap_entry_attributes(c->rctx, c->ld, result);
+                    }
                     if (c->rctx->dn.data == NULL) {
                         dn = ldap_get_dn(c->ld, result);
                         if (dn != NULL) {

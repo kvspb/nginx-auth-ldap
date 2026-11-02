@@ -84,6 +84,9 @@ typedef struct {
     ngx_array_t *user_filter;       /* ngx_str_t: the parts of user_filter
                                        around each $remote_user; NULL when
                                        the url attribute finds the user */
+    ngx_array_t *user_attributes;   /* ngx_str_t names, NUL-terminated;
+                                       NULL when unset */
+    char **search_attrs;            /* the same for ldap_search_ext() */
     ngx_http_complex_value_t require_valid_user_dn;
     ngx_array_t *user_dn_shape;     /* ngx_uint_t AVAs per RDN of the template,
                                        NULL when it is not a DN as written */
@@ -127,6 +130,9 @@ typedef struct {
     ngx_msec_t time;         /* ngx_current_msec when created            */
     u_char big_hash[16];     /* md5 of username, server alias and url,
                                 password, expanded require templates */
+    u_char *user;            /* an allow: the user DN and the values of
+                                user_attributes, each a size_t length and
+                                bytes (ngx_alloc); NULL for a deny */
 } ngx_http_auth_ldap_cache_elt_t;
 
 typedef struct {
@@ -166,7 +172,15 @@ typedef struct {
     ngx_str_t login;         /* the login escaped for the log, once set */
     ngx_str_t user_dn;
 
+    ngx_str_t *search_attrs; /* values of user_attributes from the user
+                                search of ctx->server, or NULL */
+    ngx_http_auth_ldap_server_t *allowed_server;  /* NULL until allowed */
+    ngx_str_t allowed_dn;    /* for $ldap_user_dn, safe for a header */
+    ngx_str_t *allowed_attrs;  /* for $ldap_attr_*, per user_attributes of
+                                  allowed_server, or NULL */
+
     ngx_http_auth_ldap_cache_elt_t *cache_bucket;
+    ngx_http_auth_ldap_cache_elt_t *cache_hit;  /* entry of the last hit */
     u_char cache_big_hash[16];
     uint32_t cache_small_hash;
 } ngx_http_auth_ldap_ctx_t;
@@ -217,6 +231,7 @@ char *ngx_http_auth_ldap_servers(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 ngx_int_t ngx_http_auth_ldap_init_cache(ngx_cycle_t *cycle);
 ngx_int_t ngx_http_auth_ldap_check_cache(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx, ngx_http_auth_ldap_cache_t *cache, ngx_http_auth_ldap_server_t *server);
 void ngx_http_auth_ldap_update_cache(ngx_http_auth_ldap_ctx_t *ctx, ngx_http_auth_ldap_cache_t *cache, ngx_flag_t outcome);
+ngx_int_t ngx_http_auth_ldap_restore_user(ngx_http_auth_ldap_ctx_t *ctx, ngx_http_auth_ldap_server_t *server);
 
 /* ngx_http_auth_ldap_connection.c */
 void ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c);
@@ -237,6 +252,9 @@ void ngx_http_auth_ldap_ssl_handshake(ngx_http_auth_ldap_connection_t *c);
 
 /* ngx_http_auth_ldap_auth.c */
 ngx_int_t ngx_http_auth_ldap_handler(ngx_http_request_t *r);
+void ngx_http_auth_ldap_entry_attributes(ngx_http_auth_ldap_ctx_t *ctx, LDAP *ld, LDAPMessage *entry);
+ngx_int_t ngx_http_auth_ldap_user_dn_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
+ngx_int_t ngx_http_auth_ldap_attr_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 
 /* ngx_http_auth_ldap_filter.c */
 ngx_int_t ngx_http_auth_ldap_escape_filter_value(ngx_pool_t *pool, ngx_str_t *src, ngx_str_t *dst);

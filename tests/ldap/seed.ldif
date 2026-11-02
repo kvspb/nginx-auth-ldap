@@ -97,7 +97,8 @@ mail: castle@example.org
 userPassword: frank-secret
 
 # Her mail is the uid of frank: a filter on uid or mail matches both for
-# "frank". Her description holds CR LF ("Grace\r\nX-Injected: yes").
+# "frank". Her description holds CR LF ("Grace\r\nX-Injected: yes"), her
+# title starts with a control character ("\x01first").
 dn: uid=grace,ou=people,dc=example,dc=org
 objectClass: inetOrgPerson
 uid: grace
@@ -105,6 +106,7 @@ cn: Grace Hopper
 sn: Hopper
 mail: frank
 description:: R3JhY2UNClgtSW5qZWN0ZWQ6IHllcw==
+title:: AWZpcnN0
 userPassword: grace-secret
 
 # Login name with characters that are special in LDAP filters (RFC 4515).
