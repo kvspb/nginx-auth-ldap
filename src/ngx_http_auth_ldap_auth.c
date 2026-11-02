@@ -38,6 +38,8 @@ static ngx_int_t ngx_http_auth_ldap_expand_user_dn(ngx_http_request_t *r, ngx_ht
 static ngx_flag_t ngx_http_auth_ldap_same_shape(ngx_http_request_t *r, ngx_array_t *expected, ngx_str_t *dn);
 static ngx_int_t ngx_http_auth_ldap_dn_equal(ngx_http_request_t *r, ngx_str_t *a, ngx_str_t *b);
 static ngx_int_t ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
+static u_char *ngx_http_auth_ldap_user_filter(ngx_http_request_t *r, ngx_http_auth_ldap_server_t *server,
+    ngx_str_t *user);
 static ngx_int_t ngx_http_auth_ldap_check_user(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
@@ -708,10 +710,62 @@ done:
     return rc;
 }
 
+/*
+ * The filter of the user search: the filter of the url, and either the
+ * user_filter with the login for each $remote_user or (<attribute>=<login>).
+ * The login is escaped already.
+ */
+static u_char *
+ngx_http_auth_ldap_user_filter(ngx_http_request_t *r, ngx_http_auth_ldap_server_t *server,
+    ngx_str_t *user)
+{
+    LDAPURLDesc *ludpp;
+    ngx_str_t *parts;
+    ngx_uint_t i;
+    size_t len;
+    u_char *filter, *p;
+    const char *base;
+
+    ludpp = server->ludpp;
+    base = ludpp->lud_filter != NULL ? ludpp->lud_filter : "(objectClass=*)";
+    len = sizeof("(&)") + ngx_strlen(base);
+
+    if (server->user_filter == NULL) {
+        len += sizeof("(=)") - 1 + ngx_strlen(ludpp->lud_attrs[0]) + user->len;
+        filter = ngx_pnalloc(r->pool, len);
+        if (filter == NULL) {
+            return NULL;
+        }
+        ngx_sprintf(filter, "(&%s(%s=%V))%Z", base, ludpp->lud_attrs[0], user);
+        return filter;
+    }
+
+    parts = server->user_filter->elts;
+    for (i = 0; i < server->user_filter->nelts; i++) {
+        len += parts[i].len + user->len;
+    }
+
+    filter = ngx_pnalloc(r->pool, len);
+    if (filter == NULL) {
+        return NULL;
+    }
+
+    p = ngx_sprintf(filter, "(&%s", base);
+    for (i = 0; i < server->user_filter->nelts; i++) {
+        if (i > 0) {
+            p = ngx_cpymem(p, user->data, user->len);
+        }
+        p = ngx_cpymem(p, parts[i].data, parts[i].len);
+    }
+    *p++ = ')';
+    *p = '\0';
+
+    return filter;
+}
+
 static ngx_int_t
 ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
 {
-    LDAPURLDesc *ludpp;
     u_char *filter;
     char *attrs[2];
     ngx_int_t rc;
@@ -728,18 +782,11 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
             return NGX_AGAIN;
         }
 
-        ludpp = ctx->server->ludpp;
-        filter = ngx_pcalloc(
-            r->pool,
-            (ludpp->lud_filter != NULL ? ngx_strlen(ludpp->lud_filter) : ngx_strlen("(objectClass=*)")) +
-            ngx_strlen("(&(=))") + ngx_strlen(ludpp->lud_attrs[0]) + user.len + 1);
+        filter = ngx_http_auth_ldap_user_filter(r, ctx->server, &user);
         if (filter == NULL) {
             ngx_http_auth_ldap_return_connection(ctx->c);
             return NGX_ERROR;
         }
-        ngx_sprintf(filter, "(&%s(%s=%V))%Z",
-                ludpp->lud_filter != NULL ? ludpp->lud_filter : "(objectClass=*)",
-                ludpp->lud_attrs[0], &user);
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search filter is \"%s\"",
             (const char *) filter);
 
@@ -753,7 +800,7 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
         ngx_str_null(&ctx->dn);
 
         /* Two entries are enough to tell an ambiguous login from a unique one. */
-        rc = ldap_search_ext(ctx->c->ld, ludpp->lud_dn, ludpp->lud_scope, (const char *) filter, attrs, 0, NULL, NULL, NULL, 2, &ctx->c->msgid);
+        rc = ldap_search_ext(ctx->c->ld, ctx->server->ludpp->lud_dn, ctx->server->ludpp->lud_scope, (const char *) filter, attrs, 0, NULL, NULL, NULL, 2, &ctx->c->msgid);
         return ngx_http_auth_ldap_wait_result(r, ctx, "ldap_search_ext", rc, STATE_SEARCHING);
     }
 

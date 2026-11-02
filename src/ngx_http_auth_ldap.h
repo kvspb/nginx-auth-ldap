@@ -81,6 +81,9 @@ typedef struct {
 
     ngx_array_t *require_group;     /* array of ngx_http_complex_value_t */
     ngx_array_t *require_user;      /* array of ngx_http_complex_value_t */
+    ngx_array_t *user_filter;       /* ngx_str_t: the parts of user_filter
+                                       around each $remote_user; NULL when
+                                       the url attribute finds the user */
     ngx_http_complex_value_t require_valid_user_dn;
     ngx_array_t *user_dn_shape;     /* ngx_uint_t AVAs per RDN of the template,
                                        NULL when it is not a DN as written */

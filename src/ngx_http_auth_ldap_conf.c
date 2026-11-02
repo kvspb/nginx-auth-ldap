@@ -41,6 +41,8 @@ static char * ngx_http_auth_ldap_read_passwd(ngx_conf_t *cf, ngx_http_auth_ldap_
 static char * ngx_http_auth_ldap_parse_keepalive(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static ngx_int_t ngx_http_auth_ldap_template_shape(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server, ngx_str_t *template);
 static ngx_int_t ngx_http_auth_ldap_check_filter(const char *filter);
+static char * ngx_http_auth_ldap_parse_user_filter(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
+static ngx_flag_t ngx_http_auth_ldap_name_char(u_char c);
 #if (NGX_OPENSSL)
 static char * ngx_http_auth_ldap_create_ssl(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_load_ca(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
@@ -53,7 +55,7 @@ static const char *ngx_http_auth_ldap_single_value_directives[] = {
     "group_attribute_is_dn", "satisfy", "referral", "max_down_retries",
     "connections", "so_keepalive", "starttls", "ssl_check_cert", "ssl_ca_dir", "ssl_ca_file",
     "connect_timeout", "reconnect_timeout", "bind_timeout",
-    "request_timeout", "include", NULL
+    "request_timeout", "include", "user_filter", NULL
 };
 
 /* Messages for the errors of ldap_url_parse(). */
@@ -163,6 +165,35 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
                            "http_auth_ldap: no \"url\" in ldap_server \"%V\"",
                            &server->alias);
         return NGX_CONF_ERROR;
+    }
+
+    if (server->user_filter != NULL
+        && server->require_valid_user_dn.value.data != NULL)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: \"user_filter\" and a \"require valid_user\" template "
+            "in ldap_server \"%V\": the template builds the DN without a search, use one",
+            &server->alias);
+        return NGX_CONF_ERROR;
+    }
+
+    if (server->user_filter == NULL) {
+        if (server->ludpp->lud_attrs == NULL) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                "http_auth_ldap: No user attribute specified in url of ldap_server \"%V\"",
+                &server->alias);
+            return NGX_CONF_ERROR;
+        }
+
+        /* The url reads as if every attribute of the list were a login
+         * (kvspb#90). */
+        if (server->ludpp->lud_attrs[1] != NULL) {
+            ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                "http_auth_ldap: only \"%s\", the first attribute of the url of "
+                "ldap_server \"%V\", holds the login; use user_filter to find "
+                "users by several attributes",
+                server->ludpp->lud_attrs[0], &server->alias);
+        }
     }
 
     if (server->starttls) {
@@ -315,6 +346,8 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
             goto both_passwords;
         }
         return ngx_http_auth_ldap_read_passwd(cf, server, &value[1]);
+    } else if (ngx_strcmp(value[0].data, "user_filter") == 0) {
+        return ngx_http_auth_ldap_parse_user_filter(cf, server);
     } else if (ngx_strcmp(value[0].data, "group_attribute") == 0) {
         server->group_attribute = value[1];
     } else if (ngx_strcmp(value[0].data, "group_attribute_is_dn") == 0) {
@@ -685,12 +718,6 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
         return NGX_CONF_ERROR;
     }
 
-    if (server->ludpp->lud_attrs == NULL) {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-            "http_auth_ldap: No user attribute specified in url of ldap_server \"%V\"", &server->alias);
-        return NGX_CONF_ERROR;
-    }
-
     if (server->ludpp->lud_host == NULL || server->ludpp->lud_host[0] == '\0') {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
             "http_auth_ldap: No host specified in url of ldap_server \"%V\"", &server->alias);
@@ -759,6 +786,101 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
             server->ludpp->lud_scheme);
         return NGX_CONF_ERROR;
     }
+}
+
+/* Whether c may continue an nginx variable name. */
+static ngx_flag_t
+ngx_http_auth_ldap_name_char(u_char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+           || (c >= '0' && c <= '9') || c == '_';
+}
+
+/*
+ * user_filter: the filter that finds the user, with $remote_user (or
+ * ${remote_user}) for the login, which the search puts in escaped as a
+ * filter value (RFC 4515). No other variable: its value would go into the
+ * filter unescaped. A literal "$" is written as \24. Kept as the parts
+ * around each $remote_user (kvspb#90).
+ */
+static char *
+ngx_http_auth_ldap_parse_user_filter(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server)
+{
+    static ngx_str_t  plain = ngx_string("$remote_user");
+    static ngx_str_t  braced = ngx_string("${remote_user}");
+    ngx_str_t        *value, *part;
+    u_char           *p, *start, *end;
+    size_t            len;
+
+    value = cf->args->elts;
+
+    if (server->user_filter != NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: \"user_filter\" is duplicate");
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_http_auth_ldap_check_filter((const char *) value[1].data) != NGX_OK) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: Invalid user_filter \"%V\" in ldap_server \"%V\"",
+            &value[1], &server->alias);
+        return NGX_CONF_ERROR;
+    }
+
+    server->user_filter = ngx_array_create(cf->pool, 2, sizeof(ngx_str_t));
+    if (server->user_filter == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    start = value[1].data;
+    end = value[1].data + value[1].len;
+
+    for (p = start; p < end; p++) {
+        if (*p != '$') {
+            continue;
+        }
+
+        /* The value is NUL-terminated: the comparisons stop at its end. */
+        if (ngx_strncmp(p, braced.data, braced.len) == 0) {
+            len = braced.len;
+
+        } else if (ngx_strncmp(p, plain.data, plain.len) == 0
+                   && !ngx_http_auth_ldap_name_char(p[plain.len]))
+        {
+            len = plain.len;
+
+        } else {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                "http_auth_ldap: only \"$remote_user\" can be used in user_filter "
+                "of ldap_server \"%V\"; write a literal \"$\" as \\24", &server->alias);
+            return NGX_CONF_ERROR;
+        }
+
+        part = ngx_array_push(server->user_filter);
+        if (part == NULL) {
+            return NGX_CONF_ERROR;
+        }
+        part->data = start;
+        part->len = p - start;
+
+        p += len - 1;
+        start = p + 1;
+    }
+
+    if (server->user_filter->nelts == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: user_filter of ldap_server \"%V\" does not use $remote_user",
+            &server->alias);
+        return NGX_CONF_ERROR;
+    }
+
+    part = ngx_array_push(server->user_filter);
+    if (part == NULL) {
+        return NGX_CONF_ERROR;
+    }
+    part->data = start;
+    part->len = end - start;
+
+    return NGX_CONF_OK;
 }
 
 /**

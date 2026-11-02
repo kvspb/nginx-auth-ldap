@@ -8,6 +8,14 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+### Added
+
+- `user_filter` finds the user with a filter in which `$remote_user` is the
+  escaped login, for example `(|(uid=$remote_user)(mail=$remote_user))`,
+  so that users can log in by one of several attributes (kvspb#90).
+  `nginx -t` warns when the `url` lists several attributes, of which only
+  the first is used.
+
 ## [1.1.0] - 2026-11-02
 
 ### Added

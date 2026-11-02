@@ -365,7 +365,10 @@ Where and how to search for users (an RFC 4516 LDAP URL). Required.
 - `port`: defaults to 389 for `ldap://` and 636 for `ldaps://`.
 - `base_dn`: the search base.
 - `attribute`: the attribute that holds the login, for example `uid` or
-  `sAMAccountName`. Required; only the first attribute of a list is used.
+  `sAMAccountName`. Required unless [`user_filter`](#user_filter) is set.
+  Only the first attribute of a list is used, and `nginx -t` warns about
+  the others: to find users by one of several attributes, use
+  `user_filter`.
 - `scope`: `base`, `one` or `sub` (also `onelevel`, `subtree`, `children`).
   The default is `base`, which only finds an entry that is the base DN
   itself: set `sub` or `one`.
@@ -376,6 +379,32 @@ Where and how to search for users (an RFC 4516 LDAP URL). Required.
 
 Quote the value, and percent-encode characters that are special in a URL,
 for example a space as `%20` and `?` as `%3F`.
+
+#### user_filter
+
+```text
+Syntax:  user_filter filter;
+Default: - (the attribute of the url)
+```
+
+The filter that finds the user by the login, instead of the attribute of
+the `url`. `$remote_user` (or `${remote_user}`) stands for the login and
+may appear several times; it is escaped as a filter value (RFC 4515), so a
+login cannot change the filter. No other variable is allowed: write a
+literal `$` as `\24`. The filter of the `url` still applies, and a login
+that finds more than one entry is still refused. For example, log in with
+the user name or the e-mail address:
+
+```nginx
+ldap_server corp {
+    url "ldap://ldap.example.com/ou=people,dc=example,dc=com??sub?(objectClass=inetOrgPerson)";
+    user_filter "(|(uid=$remote_user)(mail=$remote_user))";
+    require valid_user;
+}
+```
+
+Not together with a [`require valid_user`](#require) template, which builds
+the DN without a search.
 
 #### binddn
 
@@ -1116,7 +1145,8 @@ or use `proxy_pass`, `try_files` and the like.
 - A `require group` value is used as the base DN of the group search. A value
   that is not a valid DN fails that server's check and is logged.
 - The `url` filter comes from the configuration and is used as written; it is
-  only checked to be one balanced, parenthesized filter.
+  only checked to be one balanced, parenthesized filter. So is
+  `user_filter`, apart from `$remote_user`, which is escaped.
 - A user search that finds more than one entry is an error, not a match.
 
 ### Cache
@@ -1165,7 +1195,11 @@ and refuses the configuration, for example:
 - `No user attribute specified in url of ldap_server "<name>"`,
   `No host specified in ...`, `Invalid port ... in ...`,
   `Invalid filter "..." in ...`;
-- `"url" is duplicate`, `"require valid_user" template is duplicate`,
+- `Invalid user_filter "..."`, `only "$remote_user" can be used in
+  user_filter ...`, `user_filter of ldap_server "<name>" does not use
+  $remote_user`;
+- `"url" is duplicate`, `"user_filter" is duplicate`,
+  `"require valid_user" template is duplicate`,
   `duplicate ldap_server "<name>"`;
 - `host not found in LDAP hostname "<host>"`;
 - `invalid value "..." for require, it must be "valid_user", "user" or "group"`;
