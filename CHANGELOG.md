@@ -14,6 +14,10 @@ Entries refer to issues of the original repository as kvspb#N
   the request, as `auth_basic` does: a `geo` or `map` variable can exempt
   clients or requests without `if` (kvspb#77, kvspb#238, PR #257). Quotes
   and backslashes in the realm are escaped.
+- Every denied login is logged with the login, the server and the reason
+  (wrong password, no such user, requirements not met, cached denial),
+  never the password, so that tools such as fail2ban can use the error
+  log (kvspb#171). Control characters in the login are escaped.
 
 ## [1.0.1] - 2026-11-01
 

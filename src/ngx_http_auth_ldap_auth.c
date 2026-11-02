@@ -46,6 +46,8 @@ static ngx_int_t ngx_http_auth_ldap_wait_result(ngx_http_request_t *r, ngx_http_
         const char *call, int rc, ngx_http_auth_ldap_connection_state_t state);
 static void ngx_http_auth_ldap_cleanup_request(void *data);
 static ngx_flag_t ngx_http_auth_ldap_server_failed(int code);
+static ngx_str_t *ngx_http_auth_ldap_login(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
+static void ngx_http_auth_ldap_deny_requirements(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx);
 static ngx_int_t ngx_http_auth_ldap_challenge(ngx_http_request_t *r, ngx_http_auth_ldap_loc_conf_t *alcf,
     ngx_str_t *challenge);
 
@@ -77,6 +79,55 @@ ngx_http_auth_ldap_server_failed(int code)
         /* OpenLDAP API errors (LDAP_SERVER_DOWN, LDAP_TIMEOUT...) */
         return code < 0;
     }
+}
+
+/*
+ * The login for the error log: quotes, backslashes and control characters
+ * escaped as \xNN, so that a login cannot forge a log line. Computed once
+ * per request; "-" when memory runs out.
+ */
+static ngx_str_t *
+ngx_http_auth_ldap_login(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
+{
+    static ngx_str_t unknown = ngx_string("-");
+    ngx_str_t *user;
+    ngx_uint_t i;
+    u_char c, *p;
+
+    if (ctx->login.data != NULL) {
+        return &ctx->login;
+    }
+
+    /* Room for every byte written as \xNN. */
+    user = &r->headers_in.user;
+    p = ngx_pnalloc(r->pool, 4 * user->len + 1);
+    if (p == NULL) {
+        return &unknown;
+    }
+
+    ctx->login.data = p;
+    for (i = 0; i < user->len; i++) {
+        c = user->data[i];
+        if (c < 0x20 || c == 0x7f || c == '"' || c == '\\') {
+            p = ngx_sprintf(p, "\\x%02xd", c);
+        } else {
+            *p++ = c;
+        }
+    }
+    ctx->login.len = p - ctx->login.data;
+
+    return &ctx->login;
+}
+
+/* The user was found and may have the right password, but the require
+ * rules of this server do not admit them. */
+static void
+ngx_http_auth_ldap_deny_requirements(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
+{
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+        "http_auth_ldap: User \"%V\" does not meet the requirements of server \"%V\"",
+        ngx_http_auth_ldap_login(r, ctx), &ctx->server->alias);
+    ctx->outcome = OUTCOME_DENY;
 }
 
 /*
@@ -296,6 +347,11 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
 
                 if (ngx_http_auth_ldap_cache.buckets != NULL) {
                     ctx->outcome = ngx_http_auth_ldap_cached_outcome(r, ctx, conf);
+                    if (ctx->outcome == OUTCOME_CACHED_DENY) {
+                        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                            "http_auth_ldap: User \"%V\" denied by the cache of server \"%V\"",
+                            ngx_http_auth_ldap_login(r, ctx), &ctx->server->alias);
+                    }
                     if (ctx->outcome != OUTCOME_UNCERTAIN) {
                         ctx->phase = PHASE_NEXT;
                         break;
@@ -410,8 +466,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                     if ((ctx->server->satisfy_all == 0) && (
                             (ctx->server->require_user != NULL) ||
                             (ctx->server->require_group != NULL))){
-                        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: no requirement satisfied");
-                        ctx->outcome = OUTCOME_DENY;
+                        ngx_http_auth_ldap_deny_requirements(r, ctx);
                         ctx->phase = PHASE_NEXT;
                         /*rc = NGX_DECLINED;*/
                         break;
@@ -704,7 +759,7 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
     if (ctx->search_entries > 1 || ctx->error_code == LDAP_SIZELIMIT_EXCEEDED) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
             "http_auth_ldap: User search for \"%V\" returned more than one entry",
-            &r->headers_in.user);
+            ngx_http_auth_ldap_login(r, ctx));
         ctx->outcome = OUTCOME_ERROR;
         return NGX_ERROR;
     }
@@ -730,12 +785,14 @@ ngx_http_auth_ldap_search(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *ctx)
     if (ctx->dn.data == NULL && ctx->referral.data != NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
             "http_auth_ldap: User \"%V\" not found on server \"%V\", which referred to \"%V\"; "
-            NGX_HTTP_AUTH_LDAP_GC_HINT, &r->headers_in.user, &ctx->server->alias, &ctx->referral);
+            NGX_HTTP_AUTH_LDAP_GC_HINT, ngx_http_auth_ldap_login(r, ctx), &ctx->server->alias, &ctx->referral);
         return NGX_ERROR;
     }
 
     if (ctx->dn.data == NULL) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: Could not find user DN");
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+            "http_auth_ldap: Could not find user DN for \"%V\" on server \"%V\"",
+            ngx_http_auth_ldap_login(r, ctx), &ctx->server->alias);
         return NGX_ERROR;
     }
 
@@ -774,7 +831,7 @@ ngx_http_auth_ldap_check_user(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *c
             }
         } else {
             if (ctx->server->satisfy_all == 1) {
-                ctx->outcome = OUTCOME_DENY;
+                ngx_http_auth_ldap_deny_requirements(r, ctx);
                 return NGX_DECLINED;
             }
         }
@@ -806,7 +863,7 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
         if (ctx->dn.data == NULL) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_search_ext() returned NULL result");
             if (ctx->server->satisfy_all == 1) {
-                ctx->outcome = OUTCOME_DENY;
+                ngx_http_auth_ldap_deny_requirements(r, ctx);
                 return NGX_DECLINED;
             }
         } else {
@@ -819,7 +876,7 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
                 ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: ldap_search_ext() request failed (%d: %s)",
                               ctx->error_code, ldap_err2string(ctx->error_code));
                 if (ctx->server->satisfy_all == 1) {
-                    ctx->outcome = OUTCOME_DENY;
+                    ngx_http_auth_ldap_deny_requirements(r, ctx);
                     return NGX_DECLINED;
                 }
             } else {
@@ -928,7 +985,9 @@ ngx_http_auth_ldap_check_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *c
 
     /* On the second call, process the operation result */
     if (ctx->error_code != LDAP_SUCCESS) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: User bind failed (%d: %s)",
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+            "http_auth_ldap: User bind failed for \"%V\" on server \"%V\" (%d: %s)",
+            ngx_http_auth_ldap_login(r, ctx), &ctx->server->alias,
             ctx->error_code, ldap_err2string(ctx->error_code));
         ctx->outcome = ngx_http_auth_ldap_server_failed(ctx->error_code)
                        ? OUTCOME_UNAVAILABLE : OUTCOME_DENY;

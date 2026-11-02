@@ -158,6 +158,7 @@ typedef struct {
     ngx_uint_t search_entries;
     ngx_str_t referral;      /* first referral of the user search, if any */
     ngx_str_t challenge;     /* the WWW-Authenticate value of the request */
+    ngx_str_t login;         /* the login escaped for the log, once set */
     ngx_str_t user_dn;
 
     ngx_http_auth_ldap_cache_elt_t *cache_bucket;

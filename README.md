@@ -1113,17 +1113,25 @@ or use `proxy_pass`, `try_files` and the like.
 ### What is logged
 
 Passwords and `binddn_passwd` are never logged. At level `error` the module
-logs, with the `http_auth_ldap:` prefix:
+logs, with the `http_auth_ldap:` prefix and the client address that nginx
+adds to every line, one line for each server that denies a login:
 
-- failed user binds, for example `User bind failed (49: Invalid credentials)`
-  (without the login);
-- user searches that find nothing (`Could not find user DN`) or more than one
-  entry (`User search for "<login>" returned more than one entry`);
-- a group that the user is not a member of
-  (`ldap_search_ext() returned NULL result`), which is normal with
-  `satisfy any`;
-- connection, bind, TLS and certificate failures, and timeouts
-  (`Authentication timed out`).
+- `User bind failed for "<login>" on server "<name>" (49: Invalid credentials)`:
+  wrong password, or a locked or expired account;
+- `Could not find user DN for "<login>" on server "<name>"`: no such user
+  (and `User search for "<login>" returned more than one entry`);
+- `User "<login>" does not meet the requirements of server "<name>"`: found,
+  but not admitted by its `require user` / `require group` rules;
+- `User "<login>" denied by the cache of server "<name>"`: a denial cached
+  with `auth_ldap_cache_enabled on`.
+
+In the login, quotes, backslashes and control characters are written as
+`\xNN`, so a login cannot forge a log line. These lines suit tools such as
+fail2ban. The module also logs a group that the user is not a member of
+(`ldap_search_ext() returned NULL result`, normal with `satisfy any`) and
+connection, bind, TLS and certificate failures, and timeouts
+(`Authentication timed out`). A successful login is not logged; the access
+log has `$remote_user` for that.
 
 nginx built with `--with-debug` and `error_log ... debug` also logs the
 login, the search filters and the DNs.
@@ -1167,12 +1175,13 @@ ldapsearch -H ldap://ldap.example.com -D "cn=nginx,ou=services,dc=example,dc=com
 
 | Log message | Likely cause |
 | --- | --- |
-| `Could not find user DN` | Wrong base DN, scope, login attribute or filter. The scope defaults to `base`: add `?sub` to the `url`. |
+| `Could not find user DN for "..."` | No such user, or a wrong base DN, scope, login attribute or filter. The scope defaults to `base`: add `?sub` to the `url`. |
 | `ldap_search_ext() request failed (32: No such object)` | The base DN of the `url` names no entry; with Active Directory, check the order of the `dc=` parts. |
 | `Invalid or missing scope string.` (from `nginx -t`) | The scope of the `url` is not `base`, `one` or `sub`, or a `?` of the `url` is missing or not percent-encoded. |
 | `referred the user search to "..."`, `not found on server "...", which referred to "..."` | The entry is on another server, for example in another Active Directory domain: point the `url` at the Global Catalog (port 3268). |
 | `User search for "..." returned more than one entry` | The login is not unique below the base DN: narrow the base or the filter. |
-| `User bind failed (49: Invalid credentials)` | Wrong password, or a locked or expired account. |
+| `User bind failed for "..." on server "..." (49: Invalid credentials)` | Wrong password, or a locked or expired account. |
+| `User "..." does not meet the requirements of server "..."` | The user is found, but not in the required groups or users of that server. |
 | `Initial bind failed (49: Invalid credentials ...)` | Wrong `binddn` or `binddn_passwd`. The connection never becomes ready, so requests get `503`. |
 | `Could not connect`, `Unable to connect to LDAP server` | Host or port unreachable; the connection is retried every `reconnect_timeout`. |
 | `Request timed out (state=...)` | The server accepted the connection but did not answer in time. |
