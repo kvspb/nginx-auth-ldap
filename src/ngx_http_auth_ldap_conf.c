@@ -37,6 +37,7 @@ static char * ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_lda
 static char * ngx_http_auth_ldap_parse_satisfy(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf);
 static char * ngx_http_auth_ldap_parse_flag(ngx_conf_t *cf, ngx_flag_t *flag);
+static char * ngx_http_auth_ldap_read_passwd(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server, ngx_str_t *name);
 static char * ngx_http_auth_ldap_parse_keepalive(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static ngx_int_t ngx_http_auth_ldap_template_shape(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server, ngx_str_t *template);
 static ngx_int_t ngx_http_auth_ldap_check_filter(const char *filter);
@@ -48,7 +49,7 @@ static char * ngx_http_auth_ldap_load_ca(ngx_conf_t *cf, ngx_http_auth_ldap_serv
 /* ldap_server directives that take exactly one value; "require" is checked
  * in ngx_http_auth_ldap_parse_require(). */
 static const char *ngx_http_auth_ldap_single_value_directives[] = {
-    "url", "binddn", "binddn_passwd", "group_attribute",
+    "url", "binddn", "binddn_passwd", "binddn_passwd_file", "group_attribute",
     "group_attribute_is_dn", "satisfy", "referral", "max_down_retries",
     "connections", "so_keepalive", "starttls", "ssl_check_cert", "ssl_ca_dir", "ssl_ca_file",
     "connect_timeout", "reconnect_timeout", "bind_timeout",
@@ -305,7 +306,15 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
     } else if (ngx_strcmp(value[0].data, "binddn") == 0) {
         server->bind_dn = value[1];
     } else if (ngx_strcmp(value[0].data, "binddn_passwd") == 0) {
+        if (server->bind_dn_passwd.data != NULL) {
+            goto both_passwords;
+        }
         server->bind_dn_passwd = value[1];
+    } else if (ngx_strcmp(value[0].data, "binddn_passwd_file") == 0) {
+        if (server->bind_dn_passwd.data != NULL) {
+            goto both_passwords;
+        }
+        return ngx_http_auth_ldap_read_passwd(cf, server, &value[1]);
     } else if (ngx_strcmp(value[0].data, "group_attribute") == 0) {
         server->group_attribute = value[1];
     } else if (ngx_strcmp(value[0].data, "group_attribute_is_dn") == 0) {
@@ -354,6 +363,13 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
     }
 
     return NGX_CONF_OK;
+
+both_passwords:
+
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+        "http_auth_ldap: \"binddn_passwd_file\" and \"binddn_passwd\" in ldap_server \"%V\": use one",
+        &server->alias);
+    return NGX_CONF_ERROR;
 }
 
 /**
@@ -453,6 +469,81 @@ invalid:
 #endif
         , &value[1]);
     return NGX_CONF_ERROR;
+}
+
+/*
+ * binddn_passwd_file: the password of binddn from a file of its own, such
+ * as a container secret, read when nginx reads the configuration (as root,
+ * by the master). One line; a final newline is dropped. An empty password
+ * is refused: a bind with a DN and no password is an unauthenticated bind,
+ * which servers let through without checking anything (RFC 4513, 5.1.2).
+ * The content is never logged (kvspb#105, kvspb#217).
+ */
+static char *
+ngx_http_auth_ldap_read_passwd(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server, ngx_str_t *name)
+{
+    ngx_str_t path;
+    ngx_file_info_t fi;
+    ngx_fd_t fd;
+    ssize_t n;
+    size_t size;
+    u_char *buf, *p;
+
+    path = *name;
+    if (ngx_conf_full_name(cf->cycle, &path, 1) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    fd = ngx_open_file(path.data, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
+    if (fd == NGX_INVALID_FILE) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, ngx_errno,
+            "http_auth_ldap: cannot read binddn_passwd_file \"%V\"", &path);
+        return NGX_CONF_ERROR;
+    }
+
+    buf = NULL;
+    n = -1;
+    if (ngx_fd_info(fd, &fi) != NGX_FILE_ERROR && ngx_file_size(&fi) <= 4096) {
+        size = (size_t) ngx_file_size(&fi);
+        buf = ngx_pnalloc(cf->pool, size);
+        if (buf != NULL) {
+            n = ngx_read_fd(fd, buf, size);
+        }
+    }
+    ngx_close_file(fd);
+
+    if (buf == NULL || n < 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, ngx_errno,
+            "http_auth_ldap: cannot read binddn_passwd_file \"%V\"", &path);
+        return NGX_CONF_ERROR;
+    }
+
+    if (n > 0 && buf[n - 1] == '\n') {
+        n--;
+        if (n > 0 && buf[n - 1] == '\r') {
+            n--;
+        }
+    }
+
+    for (p = buf; p < buf + n; p++) {
+        if (*p == '\n' || *p == '\r' || *p == '\0') {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                "http_auth_ldap: binddn_passwd_file \"%V\" has more than one line", &path);
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    if (n == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: binddn_passwd_file \"%V\" is empty", &path);
+        return NGX_CONF_ERROR;
+    }
+
+    /* ldap_sasl_bind() gets it as a berval, with its length. */
+    server->bind_dn_passwd.data = buf;
+    server->bind_dn_passwd.len = n;
+
+    return NGX_CONF_OK;
 }
 
 /**

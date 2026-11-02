@@ -18,6 +18,8 @@ Entries refer to issues of the original repository as kvspb#N
   (wrong password, no such user, requirements not met, cached denial),
   never the password, so that tools such as fail2ban can use the error
   log (kvspb#171). Control characters in the login are escaped.
+- `binddn_passwd_file` reads the password of `binddn` from a file of its own,
+  such as a container secret (kvspb#105, kvspb#217).
 
 ## [1.0.1] - 2026-11-01
 

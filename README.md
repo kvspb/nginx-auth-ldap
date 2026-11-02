@@ -394,7 +394,23 @@ Default: -
 ```
 
 The password of `binddn`. It is never logged. Keep it in a file that only
-root can read, see [`include`](#include).
+root can read, see [`include`](#include), or use `binddn_passwd_file`.
+
+#### binddn_passwd_file
+
+```text
+Syntax:  binddn_passwd_file file;
+Default: -
+```
+
+Reads the password of `binddn` from a file that holds only the password,
+such as a Docker or Kubernetes secret or a systemd credential. A relative
+path is relative to the directory of `nginx.conf`. The file is read when
+nginx reads the configuration (by the master, as root), so a changed
+password takes effect on the next reload. One line; a final newline is
+dropped. A missing, unreadable or empty file, a file of more than one line
+and a block with both `binddn_passwd` and `binddn_passwd_file` fail the
+configuration check.
 
 #### require
 
