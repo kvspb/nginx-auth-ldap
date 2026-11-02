@@ -64,6 +64,9 @@ typedef struct {
     ngx_str_t url;
     ngx_url_t parsed_url;
     ngx_str_t alias;
+    ngx_flag_t resolve;             /* resolve the host name at run time */
+    ngx_resolver_t *resolver;       /* the resolver of the http block */
+    ngx_msec_t resolver_timeout;
 
     ngx_str_t bind_dn;
     ngx_str_t bind_dn_passwd;
@@ -215,6 +218,11 @@ typedef struct ngx_http_auth_ldap_connection {
                                    successful initial bind */
     ngx_msec_t idle_reconnect;  /* when an idle close was last reconnected
                                    at once; 0 for never */
+    ngx_resolver_ctx_t *resolving;  /* the host name being resolved */
+    ngx_sockaddr_t sockaddr;    /* the address resolved for this connection */
+    socklen_t socklen;
+    ngx_str_t peer_name;
+    u_char peer_text[NGX_SOCKADDR_STRLEN];
 } ngx_http_auth_ldap_connection_t;
 
 

@@ -373,7 +373,8 @@ Where and how to search for users (an RFC 4516 LDAP URL). Required.
 - `host`: a host name, an IPv4 address, or an IPv6 address in brackets, for
   example `ldaps://[2001:db8::10]/...`. A host name is resolved once, when
   nginx reads the configuration; with several addresses each connection
-  picks one at random. A name that does not resolve fails the check.
+  picks one at random. A name that does not resolve fails the check. To
+  follow DNS changes without a reload, see [`resolve`](#resolve).
 - `port`: defaults to 389 for `ldap://` and 636 for `ldaps://`.
 - `base_dn`: the search base.
 - `attribute`: the attribute that holds the login, for example `uid` or
@@ -430,6 +431,40 @@ variables `$ldap_attr_<name>` (see [Variables](#variables)). A name is
 letters and digits, starting with a letter, as an nginx variable name must
 be; the case does not matter. Not together with a
 [`require valid_user`](#require) template, which skips the search.
+
+#### resolve
+
+```text
+Syntax:  resolve on | off;
+Default: resolve off;
+```
+
+Resolves the host name of the `url` at run time, through the
+[`resolver`](https://nginx.org/en/docs/http/ngx_http_core_module.html#resolver)
+of the `http` block, before every connection to the server, instead of
+once when nginx reads the configuration. The resolver keeps an answer for
+its TTL, or for `valid=`. With several addresses each connection picks one
+at random. A changed record is used when a connection is opened again:
+connections are kept open, so a server that still answers at its old
+address keeps them until they break or nginx reloads. A name that does not
+resolve, or a resolver that does not answer within `resolver_timeout`,
+makes the server unable to decide, like an unreachable one: the next
+server is asked, or the answer is `503`. `nginx -t` then needs a
+`resolver` in the `http` block, and no longer resolves the name itself.
+Not for `ldapi://` urls, and not needed for an address in the `url`.
+
+```nginx
+resolver 127.0.0.53 valid=30s;
+
+ldap_server corp {
+    url "ldaps://ldap.example.com/ou=people,dc=example,dc=com?uid?sub";
+    resolve on;
+    require valid_user;
+}
+```
+
+The certificate of an `ldaps://` server is still checked against the host
+name of the `url`.
 
 #### binddn
 
@@ -1275,6 +1310,8 @@ and refuses the configuration, for example:
 - `Invalid user_filter "..."`, `only "$remote_user" can be used in
   user_filter ...`, `user_filter of ldap_server "<name>" does not use
   $remote_user`;
+- `"resolve" in ldap_server "<name>" needs a "resolver" in the http block`,
+  `"resolve" does not apply to the ldapi:// url of ldap_server "<name>"`;
 - `invalid attribute name "..." in user_attributes`, `"user_attributes"
   need the user search, which a "require valid_user" template skips`;
 - `"url" is duplicate`, `"user_filter" is duplicate`,
@@ -1315,7 +1352,8 @@ ldapsearch -H ldap://ldap.example.com -D "cn=nginx,ou=services,dc=example,dc=com
 | `User bind failed for "..." on server "..." (49: Invalid credentials)` | Wrong password, or a locked or expired account. |
 | `User "..." does not meet the requirements of server "..."` | The user is found, but not in the required groups or users of that server. |
 | `Initial bind failed (49: Invalid credentials ...)` | Wrong `binddn` or `binddn_passwd`. The connection never becomes ready, so requests get `503`. |
-| `Could not connect`, `Unable to connect to LDAP server` | Host or port unreachable; the connection is retried every `reconnect_timeout`. |
+| `Could not connect to "<address>" of ldap_server "..."`, `Unable to connect to LDAP server` | Host or port unreachable; the connection is retried every `reconnect_timeout`. |
+| `Could not resolve "<host>" of ldap_server "..."` | With `resolve on`: the name does not resolve, or the `resolver` does not answer within `resolver_timeout`. The next server is asked; the name is resolved again every `reconnect_timeout`. |
 | `Request timed out (state=...)` | The server accepted the connection but did not answer in time. |
 | `Authentication timed out on server "..."` | The request hit that server's `request_timeout` and goes on to the next server; see the messages before it. |
 | `Server "..." has no connection, trying the next server` | No connection to that server is bound as `binddn`: it is unreachable or rejects `binddn` (look for `Could not connect` or `Initial bind failed`). |

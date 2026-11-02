@@ -42,11 +42,18 @@ def _operation_tags(data: bytes) -> list[int]:
 
 
 class LdapProxy:
-    def __init__(self, upstream: tuple[str, int] = (LDAP_HOST, 389), unix_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        upstream: tuple[str, int] = (LDAP_HOST, 389),
+        unix_path: Path | None = None,
+        host: str = "127.0.0.1",
+        port: int = 0,
+    ) -> None:
         self.upstream = upstream
         self.unix_path = unix_path
+        self.host = host
         if unix_path is None:
-            self._listener = socket.create_server(("127.0.0.1", 0))
+            self._listener = socket.create_server((host, port))
             self.port: int = self._listener.getsockname()[1]
         else:
             self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

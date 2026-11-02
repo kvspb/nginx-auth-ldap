@@ -57,7 +57,7 @@ static const char *ngx_http_auth_ldap_single_value_directives[] = {
     "group_attribute_is_dn", "satisfy", "referral", "max_down_retries",
     "connections", "so_keepalive", "starttls", "ssl_check_cert", "ssl_ca_dir", "ssl_ca_file",
     "connect_timeout", "reconnect_timeout", "bind_timeout",
-    "request_timeout", "include", "user_filter", NULL
+    "request_timeout", "include", "user_filter", "resolve", NULL
 };
 
 /* Messages for the errors of ldap_url_parse(). */
@@ -166,6 +166,27 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "http_auth_ldap: no \"url\" in ldap_server \"%V\"",
                            &server->alias);
+        return NGX_CONF_ERROR;
+    }
+
+    /*
+     * A host name: resolved now, once, or with "resolve on" before every
+     * connection, through the resolver of the http block (kvspb#63). An
+     * address in the url needs neither.
+     */
+    if (ngx_strcmp(server->ludpp->lud_scheme, "ldapi") == 0) {
+        if (server->resolve) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                "http_auth_ldap: \"resolve\" does not apply to the ldapi:// url of "
+                "ldap_server \"%V\"", &server->alias);
+            return NGX_CONF_ERROR;
+        }
+
+    } else if (server->parsed_url.naddrs == 0 && !server->resolve
+               && ngx_inet_resolve_host(cf->pool, &server->parsed_url) != NGX_OK)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: %s in LDAP hostname \"%V\"",
+            server->parsed_url.err, &server->parsed_url.url);
         return NGX_CONF_ERROR;
     }
 
@@ -388,6 +409,8 @@ ngx_http_auth_ldap_ldap_server(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         server->connections = i;
     } else if (ngx_strcmp(value[0].data, "so_keepalive") == 0) {
         return ngx_http_auth_ldap_parse_keepalive(cf, server);
+    } else if (ngx_strcmp(value[0].data, "resolve") == 0) {
+        return ngx_http_auth_ldap_parse_flag(cf, &server->resolve);
     } else if (ngx_strcmp(value[0].data, "starttls") == 0) {
         return ngx_http_auth_ldap_parse_flag(cf, &server->starttls);
     } else if (ngx_strcmp(value[0].data, "ssl_check_cert") == 0) {
@@ -785,6 +808,8 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
     ngx_memzero(&server->parsed_url, sizeof(ngx_url_t));
     server->parsed_url.url = host;
     server->parsed_url.default_port = server->ludpp->lud_port;
+    /* A host name is resolved after the block, once "resolve" is known. */
+    server->parsed_url.no_resolve = 1;
     if (ngx_parse_url(cf->pool, &server->parsed_url) != NGX_OK) {
         if (server->parsed_url.err) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: %s in LDAP hostname \"%V\"",

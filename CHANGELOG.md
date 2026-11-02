@@ -25,6 +25,13 @@ Entries refer to issues of the original repository as kvspb#N
 - `ldapi://` urls connect to an LDAP server over a Unix socket on the same
   host, for example `ldapi://%2Frun%2Fslapd%2Fldapi/dc=example,dc=com?uid?sub`
   (kvspb#229).
+- `resolve on` in an `ldap_server` block resolves the host name of the `url`
+  through the `resolver` of the `http` block before every connection, so
+  that a changed DNS record is followed without a reload (kvspb#63).
+
+### Changed
+
+- The `Could not connect` error names the address and the server.
 
 ## [1.1.0] - 2026-11-02
 
