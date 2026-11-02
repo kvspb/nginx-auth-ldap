@@ -375,6 +375,13 @@ ngx_http_auth_ldap_set_keepalive(ngx_http_auth_ldap_connection_t *c, ngx_socket_
         return;
     }
 
+#if (NGX_HAVE_UNIX_DOMAIN)
+    /* No keepalive on a Unix socket (ldapi://): the peer is the host. */
+    if (c->conn.sockaddr->sa_family == AF_UNIX) {
+        return;
+    }
+#endif
+
 #if (NGX_HAVE_KEEPALIVE_TUNABLE)
     value = c->server->keepidle;
     if (value != 0) {

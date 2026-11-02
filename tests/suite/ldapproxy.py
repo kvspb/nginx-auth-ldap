@@ -1,5 +1,8 @@
 """A TCP proxy in front of the LDAP server that can hold its answers.
 
+It listens on a loopback port, or on a Unix socket when given a path (for
+ldapi:// urls).
+
 Tests use it to keep LDAP operations in flight for as long as they need:
 while held, everything the server sends is buffered; release() delivers it.
 """
@@ -12,6 +15,7 @@ import struct
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from types import TracebackType
 from typing import Self
 
@@ -38,10 +42,17 @@ def _operation_tags(data: bytes) -> list[int]:
 
 
 class LdapProxy:
-    def __init__(self, upstream: tuple[str, int] = (LDAP_HOST, 389)) -> None:
+    def __init__(self, upstream: tuple[str, int] = (LDAP_HOST, 389), unix_path: Path | None = None) -> None:
         self.upstream = upstream
-        self._listener = socket.create_server(("127.0.0.1", 0))
-        self.port: int = self._listener.getsockname()[1]
+        self.unix_path = unix_path
+        if unix_path is None:
+            self._listener = socket.create_server(("127.0.0.1", 0))
+            self.port: int = self._listener.getsockname()[1]
+        else:
+            self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._listener.bind(str(unix_path))
+            self._listener.listen()
+            self.port = 0
         self._held = threading.Event()
         self._hold_tag: int | None = None
         self._hold_skip = 0
@@ -129,6 +140,8 @@ class LdapProxy:
         self._stopping.set()
         self.release()
         self._listener.close()
+        if self.unix_path is not None:
+            self.unix_path.unlink(missing_ok=True)
         for sock in self._sockets:
             try:
                 sock.close()

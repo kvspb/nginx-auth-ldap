@@ -41,6 +41,7 @@ static char * ngx_http_auth_ldap_read_passwd(ngx_conf_t *cf, ngx_http_auth_ldap_
 static char * ngx_http_auth_ldap_parse_keepalive(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static ngx_int_t ngx_http_auth_ldap_template_shape(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server, ngx_str_t *template);
 static ngx_int_t ngx_http_auth_ldap_check_filter(const char *filter);
+static char * ngx_http_auth_ldap_parse_ldapi(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_user_filter(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static ngx_flag_t ngx_http_auth_ldap_name_char(u_char c);
 static char * ngx_http_auth_ldap_parse_user_attributes(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
@@ -731,6 +732,19 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
         return NGX_CONF_ERROR;
     }
 
+    if (server->ludpp->lud_filter != NULL
+        && ngx_http_auth_ldap_check_filter(server->ludpp->lud_filter) != NGX_OK)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: Invalid filter \"%s\" in url of ldap_server \"%V\"", server->ludpp->lud_filter,
+            &server->alias);
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_strcmp(server->ludpp->lud_scheme, "ldapi") == 0) {
+        return ngx_http_auth_ldap_parse_ldapi(cf, server);
+    }
+
     if (server->ludpp->lud_host == NULL || server->ludpp->lud_host[0] == '\0') {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
             "http_auth_ldap: No host specified in url of ldap_server \"%V\"", &server->alias);
@@ -740,15 +754,6 @@ ngx_http_auth_ldap_parse_url(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server
     if (server->ludpp->lud_port < 1 || server->ludpp->lud_port > 65535) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
             "http_auth_ldap: Invalid port %d in url of ldap_server \"%V\"", server->ludpp->lud_port,
-            &server->alias);
-        return NGX_CONF_ERROR;
-    }
-
-    if (server->ludpp->lud_filter != NULL
-        && ngx_http_auth_ldap_check_filter(server->ludpp->lud_filter) != NGX_OK)
-    {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-            "http_auth_ldap: Invalid filter \"%s\" in url of ldap_server \"%V\"", server->ludpp->lud_filter,
             &server->alias);
         return NGX_CONF_ERROR;
     }
@@ -951,6 +956,61 @@ ngx_http_auth_ldap_parse_user_filter(ngx_conf_t *cf, ngx_http_auth_ldap_server_t
     part->len = end - start;
 
     return NGX_CONF_OK;
+}
+
+/*
+ * ldapi://: LDAP over a Unix socket, whose path is the host of the url,
+ * percent-encoded, as in ldap.conf(5) (kvspb#229). nginx connects to it as
+ * "unix:<path>". libldap has a default path, built in, which nginx cannot
+ * know: the path is required.
+ */
+static char *
+ngx_http_auth_ldap_parse_ldapi(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server)
+{
+#if (NGX_HAVE_UNIX_DOMAIN)
+    u_char  *path;
+    size_t   len;
+
+    path = (u_char *) server->ludpp->lud_host;
+    if (path == NULL || path[0] != '/') {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: ldapi:// url of ldap_server \"%V\" needs the path of the "
+            "socket, percent-encoded, for example ldapi://%%2Frun%%2Fslapd%%2Fldapi/...",
+            &server->alias);
+        return NGX_CONF_ERROR;
+    }
+
+    len = ngx_strlen(path);
+
+    ngx_memzero(&server->parsed_url, sizeof(ngx_url_t));
+    server->parsed_url.url.data = ngx_pnalloc(cf->pool, sizeof("unix:") - 1 + len);
+    if (server->parsed_url.url.data == NULL) {
+        return NGX_CONF_ERROR;
+    }
+    server->parsed_url.url.len = ngx_sprintf(server->parsed_url.url.data, "unix:%s", path)
+                                 - server->parsed_url.url.data;
+
+    if (ngx_parse_url(cf->pool, &server->parsed_url) != NGX_OK) {
+        if (server->parsed_url.err) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "http_auth_ldap: %s in LDAP hostname \"%V\"",
+                server->parsed_url.err, &server->parsed_url.url);
+        }
+        return NGX_CONF_ERROR;
+    }
+
+    /*
+     * For ldap_init_fd(), which gets the connected socket and only needs a
+     * url without commas (it reads a list): not the configured one, whose
+     * base DN has them. Logs name the socket as "unix:<path>".
+     */
+    ngx_str_set(&server->url, "ldapi://");
+
+    return NGX_CONF_OK;
+#else
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+        "http_auth_ldap: ldapi:// needs Unix domain sockets, which this platform lacks");
+    return NGX_CONF_ERROR;
+#endif
 }
 
 /**

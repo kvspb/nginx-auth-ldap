@@ -22,6 +22,9 @@ Entries refer to issues of the original repository as kvspb#N
   in with a mail address (kvspb#59). Control characters in a value are
   escaped. A cache entry takes 40 bytes instead of 32, plus the DN and the
   attributes of an allowed login.
+- `ldapi://` urls connect to an LDAP server over a Unix socket on the same
+  host, for example `ldapi://%2Frun%2Fslapd%2Fldapi/dc=example,dc=com?uid?sub`
+  (kvspb#229).
 
 ## [1.1.0] - 2026-11-02
 

@@ -353,6 +353,7 @@ The cache directives belong to the `http` level, not to `ldap_server`.
 
 ```text
 Syntax:  url ldap[s]://host[:port]/base_dn?attribute[,...]?scope?filter;
+         url ldapi://socket_path/base_dn?attribute[,...]?scope?filter;
 Default: -
 ```
 
@@ -360,6 +361,15 @@ Where and how to search for users (an RFC 4516 LDAP URL). Required.
 
 - `ldap://` or `ldaps://` (LDAP over TLS 1.2 or 1.3). For StartTLS on
   `ldap://`, see `starttls`.
+- `ldapi://`: LDAP over a Unix socket on the same host, as in ldap.conf(5).
+  The host is the absolute path of the socket with every `/` written as
+  `%2F`, for example `ldapi://%2Frun%2Fslapd%2Fldapi/dc=example,dc=com?uid?sub`.
+  The path is required: the default of libldap is built into it and
+  unknown to nginx. The nginx workers need write access to the socket.
+  The module binds with `binddn` and `binddn_passwd` (or anonymously) and
+  checks passwords with simple binds, as over TCP: SASL EXTERNAL, which
+  ldapi setups often use for local root, is not supported. `starttls`,
+  the `ssl_*` directives and `so_keepalive` do not apply.
 - `host`: a host name, an IPv4 address, or an IPv6 address in brackets, for
   example `ldaps://[2001:db8::10]/...`. A host name is resolved once, when
   nginx reads the configuration; with several addresses each connection
