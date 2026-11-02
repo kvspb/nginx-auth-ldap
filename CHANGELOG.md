@@ -8,6 +8,8 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-02
+
 ### Added
 
 - `user_filter` finds the user with a filter in which `$remote_user` is the
@@ -321,7 +323,8 @@ Known before this release:
 First tagged version by Valery Komarov. Later upstream changes until 2024
 were not released under a version number.
 
-[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v0.1...v1.0.0
