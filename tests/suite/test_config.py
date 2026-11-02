@@ -226,6 +226,13 @@ def server_case(
             'invalid number of arguments in "auth_ldap_servers"',
             id="auth-ldap-servers-without-servers",
         ),
+        pytest.param(
+            USERS,
+            'location / { auth_ldap "a"; auth_ldap "b"; auth_ldap_servers users; }',
+            1,
+            '"auth_ldap" directive is duplicate',
+            id="auth-ldap-twice",
+        ),
         server_case(
             "timeout-not-a-time",
             "'connect_timeout' value has to be a valid time unit greater than 0",
@@ -336,11 +343,13 @@ def worker_memory(nginx, size: int) -> int:
 
 def test_large_cache_size_is_honoured(nginx):
     # The bucket table ended at 1109 buckets: any auth_ldap_cache_size above
-    # 8872 entries was cut to that without a word (audit F30). 200000
-    # entries of 32 bytes take about 6 MB; the cut cache took 0.3 MB.
-    grown = worker_memory(nginx, 200000) - worker_memory(nginx, 100)
+    # 8872 entries was cut to that without a word (audit F30). Two million
+    # entries of 32 bytes take about 62 MB; the cut cache took 0.3 MB. The
+    # size is large, as an AddressSanitizer build serves a few MB from
+    # address space it reserved before, which VmSize does not show again.
+    grown = worker_memory(nginx, 2000000) - worker_memory(nginx, 100)
 
-    assert 5000 < grown < 12000, f"the worker grew by {grown} kB"
+    assert 40000 < grown < 130000, f"the worker grew by {grown} kB"
 
 
 @pytest.mark.skipif(

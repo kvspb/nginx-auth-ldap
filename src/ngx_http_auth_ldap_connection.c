@@ -89,6 +89,9 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
             || c->state == STATE_SEARCHING)
         {
             c->server->established--;
+        } else {
+            /* It never came up: the server is unreachable or refuses. */
+            c->server->failing = 1;
         }
         c->state = STATE_DISCONNECTED;
         ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
@@ -614,6 +617,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Initial bind successful");
                     c->state = STATE_READY;
                     c->server->established++;
+                    c->server->failing = 0;
                     c->down_retries = 0;
                     ngx_http_auth_ldap_return_connection(c);
                 } else {
@@ -714,6 +718,7 @@ ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c)
     if (rc == NGX_ERROR || rc == NGX_BUSY || rc == NGX_DECLINED) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Unable to connect to LDAP server \"%V\".",
             &addr->name);
+        c->server->failing = 1;
         ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
         return;
     }

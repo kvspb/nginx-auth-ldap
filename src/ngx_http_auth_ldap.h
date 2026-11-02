@@ -100,6 +100,8 @@ typedef struct {
     ngx_queue_t free_connections;
     ngx_queue_t waiting_requests;
     ngx_uint_t established;         /* connections bound as binddn, per worker */
+    ngx_flag_t failing;             /* a connection failed to come up since
+                                       the last one that did, per worker */
     struct ngx_http_auth_ldap_connection **conns;  /* all of them, per worker */
 } ngx_http_auth_ldap_server_t;
 
@@ -112,7 +114,7 @@ typedef struct {
 } ngx_http_auth_ldap_main_conf_t;
 
 typedef struct {
-    ngx_str_t realm;
+    ngx_http_complex_value_t *realm;  /* NULL when unset; "off" turns it off */
     ngx_array_t *servers;       /* array of ngx_http_auth_ldap_server_t* */
 } ngx_http_auth_ldap_loc_conf_t;
 
@@ -157,6 +159,8 @@ typedef struct {
     ngx_str_t dn;
     ngx_uint_t search_entries;
     ngx_str_t referral;      /* first referral of the user search, if any */
+    ngx_str_t challenge;     /* the WWW-Authenticate value of the request */
+    ngx_str_t login;         /* the login escaped for the log, once set */
     ngx_str_t user_dn;
 
     ngx_http_auth_ldap_cache_elt_t *cache_bucket;

@@ -58,7 +58,9 @@ and [`auth_ldap_servers`](#auth_ldap_servers) with the names of one or more
       next request.
 3. Allows the request as soon as one server allows it. A server that cannot
    decide is left for the next one: it has no connection bound as `binddn`
-   (unless it is the last server), it does not finish within its
+   and its last connection attempt failed (unless it is the last server; a
+   server that is still connecting is waited for), it does not finish
+   within its
    [`request_timeout`](#request_timeout), the connection broke, or it
    answered busy, unavailable or over a limit, or with a referral. When every server denies the
    user, the answer is `401`; when a server could not decide and no later
@@ -91,7 +93,7 @@ Get the source, from git or as the archive of a release:
 
 ```sh
 git clone https://github.com/kvspb/nginx-auth-ldap.git
-curl -fsSL https://github.com/kvspb/nginx-auth-ldap/archive/refs/tags/v1.0.1.tar.gz | tar -xz
+curl -fsSL https://github.com/kvspb/nginx-auth-ldap/archive/refs/tags/v1.1.0.tar.gz | tar -xz
 ```
 
 ### Static module
@@ -282,13 +284,40 @@ Context: http, server, location, limit_except
 ```
 
 Turns LDAP authentication on with the given realm, which is sent in
-`WWW-Authenticate: Basic realm="realm", charset="UTF-8"`, or off. The
-realm is inserted as it is: do not put a double quote in it. The charset
-asks the browser to send the login and password in UTF-8 (RFC 7617), as the
-directory stores them; a client that sends ISO-8859-1 anyway cannot log in
-with a password that is not ASCII. Levels without `auth_ldap` inherit it.
-`auth_ldap` without servers rejects every request with `401` and logs
+`WWW-Authenticate: Basic realm="realm", charset="UTF-8"`, or off. The realm
+may contain variables, and when it expands to `off` the check is off for
+that request, as with `auth_basic`; quotes and backslashes in it are escaped.
+The charset asks the browser to send the login and password in UTF-8
+(RFC 7617), as the directory stores them; a client that sends ISO-8859-1
+anyway cannot log in with a password that is not ASCII. Levels without
+`auth_ldap` inherit it. `auth_ldap` without servers rejects every request
+with `401` and logs
 `"auth_ldap" requires one or more "auth_ldap_servers" in the same location`.
+
+A `geo` or `map` variable turns the check off per client or per request,
+without `if`:
+
+```nginx
+ldap_server corp {
+    url "ldap://ldap.example.com/ou=people,dc=example,dc=com?uid?sub?(objectClass=inetOrgPerson)";
+    include /etc/nginx/ldap/bind.conf;
+}
+
+geo $ldap_realm {
+    default      "Restricted";
+    192.0.2.0/24 off;
+}
+
+server {
+    listen 80;
+
+    location / {
+        auth_ldap $ldap_realm;
+        auth_ldap_servers corp;
+        root /var/www/html;
+    }
+}
+```
 
 #### auth_ldap_servers
 
@@ -311,9 +340,10 @@ and so does a second `url`, a second `require valid_user` template, or a
 second `ldap_server` block with the same name.
 
 Older articles show directives such as `auth_ldap_url`, `auth_ldap_binddn`
-or `auth_ldap_require` at the location level. This module never had them:
-their settings are `url`, `binddn` and `require` in an `ldap_server` block,
-and a location chooses the blocks with `auth_ldap_servers`. For different
+or `auth_ldap_require`. They belong to version 0.1 (2011) and were replaced
+in 2013 by the `ldap_server` blocks: their settings are now `url`, `binddn`
+and `require` in an `ldap_server` block, and a location chooses the blocks
+with `auth_ldap_servers`. For different
 requirements per location, define one `ldap_server` block for each.
 The cache directives belong to the `http` level, not to `ldap_server`.
 
@@ -366,7 +396,23 @@ Default: -
 ```
 
 The password of `binddn`. It is never logged. Keep it in a file that only
-root can read, see [`include`](#include).
+root can read, see [`include`](#include), or use `binddn_passwd_file`.
+
+#### binddn_passwd_file
+
+```text
+Syntax:  binddn_passwd_file file;
+Default: -
+```
+
+Reads the password of `binddn` from a file that holds only the password,
+such as a Docker or Kubernetes secret or a systemd credential. A relative
+path is relative to the directory of `nginx.conf`. The file is read when
+nginx reads the configuration (by the master, as root), so a changed
+password takes effect on the next reload. One line; a final newline is
+dropped. A missing, unreadable or empty file, a file of more than one line
+and a block with both `binddn_passwd` and `binddn_passwd_file` fail the
+configuration check.
 
 #### require
 
@@ -1026,6 +1072,30 @@ Empty passwords are rejected before LDAP is asked: many servers treat a
 simple bind with an empty password as an anonymous bind that succeeds
 (RFC 4513, section 5.1.2).
 
+`error_page 401` replaces the response of the module and keeps its
+`WWW-Authenticate` header. The error page is served by an internal redirect,
+which runs the access phase again, so its location needs `auth_ldap off`;
+otherwise it fails authentication too and nginx sends its built-in page:
+
+```nginx
+ldap_server corp {
+    url "ldap://ldap.example.com/ou=people,dc=example,dc=com?uid?sub?(objectClass=inetOrgPerson)";
+    include /etc/nginx/ldap/bind.conf;
+}
+
+server {
+    listen 80;
+    root /var/www/html;
+    auth_ldap "Restricted";
+    auth_ldap_servers corp;
+    error_page 401 /errors/401.html;
+
+    location /errors/ {
+        auth_ldap off;
+    }
+}
+```
+
 Do not use `return` in a protected location: it runs in the rewrite phase,
 before the access phase, so it answers without authentication. Serve content
 or use `proxy_pass`, `try_files` and the like.
@@ -1061,17 +1131,25 @@ or use `proxy_pass`, `try_files` and the like.
 ### What is logged
 
 Passwords and `binddn_passwd` are never logged. At level `error` the module
-logs, with the `http_auth_ldap:` prefix:
+logs, with the `http_auth_ldap:` prefix and the client address that nginx
+adds to every line, one line for each server that denies a login:
 
-- failed user binds, for example `User bind failed (49: Invalid credentials)`
-  (without the login);
-- user searches that find nothing (`Could not find user DN`) or more than one
-  entry (`User search for "<login>" returned more than one entry`);
-- a group that the user is not a member of
-  (`ldap_search_ext() returned NULL result`), which is normal with
-  `satisfy any`;
-- connection, bind, TLS and certificate failures, and timeouts
-  (`Authentication timed out`).
+- `User bind failed for "<login>" on server "<name>" (49: Invalid credentials)`:
+  wrong password, or a locked or expired account;
+- `Could not find user DN for "<login>" on server "<name>"`: no such user
+  (and `User search for "<login>" returned more than one entry`);
+- `User "<login>" does not meet the requirements of server "<name>"`: found,
+  but not admitted by its `require user` / `require group` rules;
+- `User "<login>" denied by the cache of server "<name>"`: a denial cached
+  with `auth_ldap_cache_enabled on`.
+
+In the login, quotes, backslashes and control characters are written as
+`\xNN`, so a login cannot forge a log line. These lines suit tools such as
+fail2ban. The module also logs a group that the user is not a member of
+(`ldap_search_ext() returned NULL result`, normal with `satisfy any`) and
+connection, bind, TLS and certificate failures, and timeouts
+(`Authentication timed out`). A successful login is not logged; the access
+log has `$remote_user` for that.
 
 nginx built with `--with-debug` and `error_log ... debug` also logs the
 login, the search filters and the DNs.
@@ -1115,12 +1193,13 @@ ldapsearch -H ldap://ldap.example.com -D "cn=nginx,ou=services,dc=example,dc=com
 
 | Log message | Likely cause |
 | --- | --- |
-| `Could not find user DN` | Wrong base DN, scope, login attribute or filter. The scope defaults to `base`: add `?sub` to the `url`. |
+| `Could not find user DN for "..."` | No such user, or a wrong base DN, scope, login attribute or filter. The scope defaults to `base`: add `?sub` to the `url`. |
 | `ldap_search_ext() request failed (32: No such object)` | The base DN of the `url` names no entry; with Active Directory, check the order of the `dc=` parts. |
 | `Invalid or missing scope string.` (from `nginx -t`) | The scope of the `url` is not `base`, `one` or `sub`, or a `?` of the `url` is missing or not percent-encoded. |
 | `referred the user search to "..."`, `not found on server "...", which referred to "..."` | The entry is on another server, for example in another Active Directory domain: point the `url` at the Global Catalog (port 3268). |
 | `User search for "..." returned more than one entry` | The login is not unique below the base DN: narrow the base or the filter. |
-| `User bind failed (49: Invalid credentials)` | Wrong password, or a locked or expired account. |
+| `User bind failed for "..." on server "..." (49: Invalid credentials)` | Wrong password, or a locked or expired account. |
+| `User "..." does not meet the requirements of server "..."` | The user is found, but not in the required groups or users of that server. |
 | `Initial bind failed (49: Invalid credentials ...)` | Wrong `binddn` or `binddn_passwd`. The connection never becomes ready, so requests get `503`. |
 | `Could not connect`, `Unable to connect to LDAP server` | Host or port unreachable; the connection is retried every `reconnect_timeout`. |
 | `Request timed out (state=...)` | The server accepted the connection but did not answer in time. |
