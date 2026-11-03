@@ -7,6 +7,7 @@ Failover to another server is tested in test_multiple_servers.py.
 
 from __future__ import annotations
 
+import errno
 import socket
 import time
 from collections.abc import Iterator
@@ -69,7 +70,7 @@ def test_refused_connection_is_logged_with_its_error(nginx, closed_port, events)
 
     line = next(line for line in server.log().splitlines() if "Could not connect" in line)
     assert f'"127.0.0.1:{closed_port}" of ldap_server "down"' in line
-    assert "(111: Connection refused)" in line
+    assert f"({errno.ECONNREFUSED}: " in line
 
 
 def test_connect_that_times_out_is_closed_and_retried(nginx):
@@ -91,7 +92,8 @@ def test_connect_that_times_out_is_closed_and_retried(nginx):
 
     lines = attempts()
     assert len(lines) >= 2, server.log()
-    assert all("(110: Connection timed out)" in line for line in lines), lines
+    # By number: musl says "Operation timed out", glibc "Connection timed out".
+    assert all(f"({errno.ETIMEDOUT}: " in line for line in lines), lines
 
 
 def test_timeout_is_answered_with_503(nginx, closed_port):
