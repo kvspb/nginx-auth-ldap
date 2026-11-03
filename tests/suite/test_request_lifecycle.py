@@ -234,6 +234,45 @@ def test_request_queued_on_a_server_that_fails_to_come_up_fails_over(nginx, prox
     assert "Authentication timed out" not in server.log()
 
 
+def test_request_sent_on_by_a_failing_server_leaves_its_queue(nginx, proxy):
+    # A request with a next server leaves the queue of the failing one; a
+    # request of a location with that server only stays. Once the server is
+    # up again, its connection goes to the request that stayed, not to the
+    # one that left and waits on the next server.
+    body = (
+        "require valid_user;\nconnections 1;\nbind_timeout 1s;\nreconnect_timeout 300ms;\nrequest_timeout 5s;"
+    )
+    with LdapProxy() as held:
+        held.hold_at(0x61, skip=1)
+        proxy.hold()
+        http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)) + ldap_server(
+            "held", body, url=url_for("127.0.0.1", held.port)
+        )
+        locations = protected_location("proxied held", "/both/") + protected_location("proxied", "/only/")
+        server = nginx.start(http=http, server=locations)
+        end = time.monotonic() + 3
+        while not proxy.sent and time.monotonic() < end:
+            time.sleep(0.01)
+        assert proxy.sent, "the service bind never arrived"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            moved = pool.submit(server.get, "/both/", auth=creds("alice"), timeout=10)
+            time.sleep(0.2)
+            started = time.monotonic()
+            stayed = pool.submit(server.get, "/only/", auth=creds("bob"), timeout=10)
+            # After the bind_timeout of the first connection: the next
+            # connection binds.
+            time.sleep(1.2)
+            proxy.release()
+            result = stayed.result().status_code
+            elapsed = time.monotonic() - started
+            held.release()
+            moved.result()
+
+    assert result == 200
+    assert elapsed < 3, f"the request that stayed was served after {elapsed:.1f} s"
+
+
 def test_requests_taken_from_the_queue_time_out_cleanly(nginx, proxy):
     # The server never answers and request_timeout is 1 s. A takes the only
     # connection; B and C wait. A's timeout hands the connection to B, D
@@ -714,6 +753,21 @@ def test_operation_sent_on_a_reset_connection_of_a_server_that_is_down_is_503(ng
     assert result == 503
     assert elapsed < 1.5, f"answered after {elapsed:.1f} s"
     assert "Authentication timed out" not in server.log()
+
+
+def test_operation_is_sent_again_only_once(nginx, proxy):
+    # Both connections of the pool were reset: the operation fails on the
+    # first, is sent again on the second, fails there too, and the request
+    # answers 503 instead of trying on.
+    server = start(nginx, proxy, connections=2)
+
+    (result,) = keepalive_requests_while_the_connection_is_reset(server, proxy, 1)
+
+    assert result == 503
+    log = server.log()
+    assert log.count("failed (-1: Can't contact LDAP server)") == 2
+    assert log.count("sending it again") == 1
+    wait_until_ready(server)
 
 
 def test_connection_reset_under_a_send_is_not_handed_to_the_next_request(nginx, proxy):

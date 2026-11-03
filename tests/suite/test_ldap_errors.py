@@ -14,6 +14,7 @@ A fake LDAP server gives the answers slapd cannot be made to give.
 from __future__ import annotations
 
 import os
+import re
 import signal
 import threading
 import time
@@ -305,7 +306,9 @@ def test_referral_in_a_connection_setup_answer_is_freed(nginx, starttls):
         fake.close()
 
     reports = "".join(path.read_text() for path in nginx.prefix.glob("lsan*"))
-    assert "ldap_parse_result" not in reports, reports
+    # By library path: builds without llvm-symbolizer (make mutate) print
+    # frames as module+offset only, without the function name.
+    assert not re.search(r"/lib(ldap|lber)[-.]", reports), reports
 
 
 def test_server_failure_during_a_group_search_is_503(nginx, directory):
