@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from conftest import ldap_server, protected_location, url_for
-from ldapdata import creds
+from ldapdata import LDAP_HOST, LDAPS_PORT, PEOPLE_DN, creds
 from ldapproxy import LdapProxy
 
 
@@ -36,6 +38,33 @@ def test_quit_closes_the_ldap_connections(nginx):
 
     assert server.quit(timeout=5)
     assert "open socket" not in server.log()
+
+
+@pytest.mark.parametrize("scheme", ["ldap", "ldaps", "starttls"])
+def test_quit_does_not_wait_for_a_connection_that_is_coming_up(nginx, scheme):
+    # The server never answers the service bind, the StartTLS request or
+    # the TLS handshake. Their connect_timeout and bind_timeout guard only
+    # the pool connection, never a request, yet a worker shutting down
+    # waited for them as for a request.
+    port = LDAPS_PORT if scheme == "ldaps" else 389
+    with LdapProxy(upstream=(LDAP_HOST, port)) as silent:
+        silent.hold()
+        body = "require valid_user;\nconnections 1;\nconnect_timeout 30s;\nbind_timeout 30s;"
+        if scheme == "starttls":
+            body += "\nstarttls on;\nssl_check_cert off;"
+        if scheme == "ldaps":
+            body += "\nssl_check_cert off;"
+            url = f"ldaps://127.0.0.1:{silent.port}/{PEOPLE_DN}?uid?sub?(objectClass=inetOrgPerson)"
+        else:
+            url = url_for("127.0.0.1", silent.port)
+        server = nginx.start(http=ldap_server("silent", body, url=url), server=protected_location("silent"))
+        end = time.monotonic() + 3
+        while not silent.sent and time.monotonic() < end:
+            time.sleep(0.05)
+        assert silent.sent, "nothing reached the server"
+
+        assert server.quit(timeout=5), "the worker waited for the timer of the connection"
+        assert "open socket" not in server.log()
 
 
 def test_shutdown_timeout_closes_a_connection_that_is_still_binding(nginx):

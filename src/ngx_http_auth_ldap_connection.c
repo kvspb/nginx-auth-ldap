@@ -926,6 +926,12 @@ ngx_http_auth_ldap_connect_peer(ngx_http_auth_ldap_connection_t *c, struct socka
     conn->data = c;
     conn->write->handler = ngx_http_auth_ldap_connect_handler;
     conn->read->handler = ngx_http_auth_ldap_read_handler;
+    /*
+     * Its timers (connect_timeout, bind_timeout) guard the pool connection,
+     * never a request: a worker shutting down need not wait for them, and
+     * exit_process closes the connection.
+     */
+    conn->read->cancelable = 1;
     ngx_add_timer(conn->read, c->server->connect_timeout);
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: connect_timeout=%d.", c->server->connect_timeout);
 
