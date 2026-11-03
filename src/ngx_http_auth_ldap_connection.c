@@ -215,8 +215,6 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
 void
 ngx_http_auth_ldap_return_connection(ngx_http_auth_ldap_connection_t *c)
 {
-    ngx_queue_t *q;
-
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Marking the connection to \"%V\" as free",
         &c->server->alias);
 
@@ -228,11 +226,31 @@ ngx_http_auth_ldap_return_connection(ngx_http_auth_ldap_connection_t *c)
     }
 
     ngx_queue_insert_head(&c->server->free_connections, &c->queue);
-    if (!ngx_queue_empty(&c->server->waiting_requests)) {
-        q = ngx_queue_last(&c->server->waiting_requests);
-        ngx_http_auth_ldap_unqueue_request(ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue));
-        ngx_http_auth_ldap_wake_request((ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue))->r);
+    ngx_http_auth_ldap_wake_next(c->server);
+}
+
+/*
+ * Wake the request that waits longest, if a connection is free. The wake is
+ * posted: a request woken but gone before it ran, or leaving the server
+ * without the connection, must call this again, or the rest of the queue
+ * waits for its request_timeout with the connection free.
+ */
+void
+ngx_http_auth_ldap_wake_next(ngx_http_auth_ldap_server_t *server)
+{
+    ngx_queue_t *q;
+    ngx_http_auth_ldap_ctx_t *ctx;
+
+    if (ngx_queue_empty(&server->free_connections)
+        || ngx_queue_empty(&server->waiting_requests))
+    {
+        return;
     }
+
+    q = ngx_queue_last(&server->waiting_requests);
+    ctx = ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue);
+    ngx_http_auth_ldap_unqueue_request(ctx);
+    ngx_http_auth_ldap_wake_request(ctx->r);
 }
 
 /*

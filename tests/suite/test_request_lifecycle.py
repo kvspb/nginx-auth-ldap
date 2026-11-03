@@ -168,6 +168,47 @@ def test_waiting_requests_are_served_after_one_timed_out(nginx, proxy):
     assert status(server) == 200
 
 
+def test_waiter_that_leaves_before_it_runs_passes_the_connection_on(nginx, proxy):
+    # The service bind answers while two requests wait for the connection.
+    # The first waiter is woken through a posted event, and its client goes
+    # away in the same batch of events, before that event runs: closing it
+    # drops the event. The second waiter used to stay in the queue with the
+    # connection free until its request_timeout.
+    body = "require valid_user;\nconnections 1;\nbind_timeout 30s;\nrequest_timeout 5s;"
+    proxy.hold()
+    server = nginx.start(
+        http=ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)),
+        server=protected_location("proxied"),
+    )
+    end = time.monotonic() + 3
+    while not proxy.sent and time.monotonic() < end:
+        time.sleep(0.01)
+    assert proxy.sent, "the service bind never arrived"
+    (worker,) = server.worker_pids()
+
+    token = base64.b64encode(f"alice:{password('alice')}".encode()).decode()
+    first = socket.create_connection(("127.0.0.1", server.port))
+    first.sendall(f"GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic {token}\r\n\r\n".encode())
+    time.sleep(0.2)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        second = pool.submit(status, server, "bob", 10)
+        time.sleep(0.2)
+        started = time.monotonic()
+        os.kill(worker, signal.SIGSTOP)
+        try:
+            proxy.release()
+            time.sleep(0.2)
+            first.close()
+            time.sleep(0.2)
+        finally:
+            os.kill(worker, signal.SIGCONT)
+        result = second.result()
+        elapsed = time.monotonic() - started
+
+    assert result == 200
+    assert elapsed < 2, f"the second waiter got the free connection after {elapsed:.1f} s"
+
+
 def test_requests_taken_from_the_queue_time_out_cleanly(nginx, proxy):
     # The server never answers and request_timeout is 1 s. A takes the only
     # connection; B and C wait. A's timeout hands the connection to B, D

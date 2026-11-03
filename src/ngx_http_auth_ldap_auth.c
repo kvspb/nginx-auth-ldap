@@ -464,6 +464,11 @@ ngx_http_auth_ldap_cleanup_request(void *data)
 
     ngx_http_auth_ldap_unqueue_request(ctx);
     ngx_http_auth_ldap_close_request_connection(ctx);
+
+    /* It may have been woken for a free connection it never took. */
+    if (ctx->server != NULL) {
+        ngx_http_auth_ldap_wake_next(ctx->server);
+    }
 }
 
 /**
@@ -697,6 +702,9 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
 
                 if (ctx->c != NULL) {
                     ngx_http_auth_ldap_return_connection(ctx->c);
+                } else {
+                    /* Woken for a free connection, it leaves without it. */
+                    ngx_http_auth_ldap_wake_next(ctx->server);
                 }
 
                 if (ctx->outcome == OUTCOME_ALLOW && ngx_http_auth_ldap_allow(ctx) != NGX_OK) {
