@@ -141,7 +141,8 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
  * A connection of the server failed to come up. If none is up, the
  * requests waiting for one would wait for their request_timeout: send
  * those that have a next server on to it, as PHASE_START does for new
- * requests. The last server is waited for.
+ * requests. The last server is waited for, except by a request that has
+ * already sent its operation again: it answers 503.
  */
 static void
 ngx_http_auth_ldap_server_failing(ngx_http_auth_ldap_server_t *server)
@@ -162,7 +163,8 @@ ngx_http_auth_ldap_server_failing(ngx_http_auth_ldap_server_t *server)
         next = ngx_queue_next(q);
         ctx = ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue);
         conf = ngx_http_get_module_loc_conf(ctx->r, ngx_http_auth_ldap_module);
-        if (ctx->server_index + 1 >= conf->servers->nelts) {
+        /* One that sent its operation again does not wait any more. */
+        if (ctx->server_index + 1 >= conf->servers->nelts && !ctx->resent) {
             continue;
         }
 

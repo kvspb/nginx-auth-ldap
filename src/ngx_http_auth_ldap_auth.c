@@ -525,6 +525,7 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
             case PHASE_START:
                 ctx->server = ((ngx_http_auth_ldap_server_t **) conf->servers->elts)[ctx->server_index];
                 ctx->outcome = OUTCOME_UNCERTAIN;
+                ctx->resent = 0;
 
                 ngx_add_timer(r->connection->write, ctx->server->request_timeout);
                 ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: request_timeout=%d",ctx->server->request_timeout);
@@ -590,6 +591,10 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                     /* LDAP operation in progress, wait for the results */
                     return NGX_AGAIN;
                 }
+                if (rc == NGX_BUSY) {
+                    /* Its connection was gone: send it again. */
+                    break;
+                }
                 if (rc != NGX_OK) {
                     /* Search failed, try next server */
                     ctx->phase = PHASE_NEXT;
@@ -635,6 +640,10 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                     /* LDAP operation in progress, wait for the results */
                     return NGX_AGAIN;
                 }
+                if (rc == NGX_BUSY) {
+                    /* Its connection was gone: send it again. */
+                    break;
+                }
                 if (rc != NGX_OK) {
                     /* Group check failed, try next server */
                     ctx->phase = PHASE_NEXT;
@@ -670,6 +679,10 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 if (rc == NGX_AGAIN) {
                     /* LDAP operation in progress, wait for the result */
                     return NGX_AGAIN;
+                }
+                if (rc == NGX_BUSY) {
+                    /* Its connection was gone: send it again. */
+                    break;
                 }
                 if (rc != NGX_OK || ctx->c == NULL) {
                     /*
@@ -1299,8 +1312,24 @@ ngx_http_auth_ldap_wait_result(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: %s() failed (%d: %s)",
             call, rc, ldap_err2string(rc));
         if (rc == LDAP_SERVER_DOWN) {
-            ctx->outcome = OUTCOME_UNAVAILABLE;
             ngx_http_auth_ldap_close_request_connection(ctx);
+
+            /*
+             * The server never got it: the connection was gone, as one the
+             * server closed while idle before nginx read the close. Send
+             * it again, once, on another connection. Not the rebind: its
+             * connection, bound as the user, is closed now anyway. Nor a
+             * later group: the phase would take its state for an answer.
+             */
+            if (!ctx->resent && ctx->iteration == 0 && ctx->phase != PHASE_REBIND) {
+                ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                    "http_auth_ldap: The connection to server \"%V\" was gone, sending it again",
+                    &ctx->server->alias);
+                ctx->resent = 1;
+                return NGX_BUSY;
+            }
+
+            ctx->outcome = OUTCOME_UNAVAILABLE;
         } else {
             ctx->outcome = OUTCOME_ERROR;
             ngx_http_auth_ldap_return_connection(ctx->c);

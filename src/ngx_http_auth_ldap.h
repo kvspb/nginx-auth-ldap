@@ -168,6 +168,7 @@ typedef struct {
     int replied;
     int error_code;
     ngx_flag_t unavailable;  /* a server could not decide: answer 503 */
+    ngx_flag_t resent;       /* an operation was sent again on this server */
     ngx_str_t dn;
     ngx_uint_t search_entries;
     ngx_str_t referral;      /* first referral of the user search, if any */

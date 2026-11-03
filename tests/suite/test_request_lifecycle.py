@@ -678,33 +678,54 @@ def keepalive_requests_while_the_connection_is_reset(
 
 
 @pytest.mark.parametrize("starter", [start, start_with_user_bind], ids=["search", "user-bind"])
-def test_operation_sent_on_a_reset_connection_is_503(nginx, proxy, starter):
+def test_operation_sent_on_a_reset_connection_is_sent_again(nginx, proxy, starter):
     # The failed send made OpenLDAP close its sockbuf inside
     # ldap_search_ext(); shutdown() of the reset socket failed, and the
     # sockbuf close called close_connection(), which unbound the same LDAP
     # handle again from inside the library: the worker hung for good
     # (PR #250 a02deb2, PR #251 3bdf4bc). Then the failed call was taken
     # for an answer about the credentials (401), and the dead connection
-    # went back to the pool.
+    # went back to the pool. The server never got the operation, and a
+    # reset of an idle connection says nothing about the server: the
+    # operation is sent again, once, on a new connection.
     server = starter(nginx, proxy)
 
     (result,) = keepalive_requests_while_the_connection_is_reset(server, proxy, 1)
 
     assert result is not None, "the request was never answered"
-    assert result == 503
-    assert "failed (-1: Can't contact LDAP server)" in server.log()
+    assert result == 200
+    log = server.log()
+    assert "failed (-1: Can't contact LDAP server)" in log
+    assert "sending it again" in log
     wait_until_ready(server)
+
+
+@pytest.mark.parametrize("starter", [start, start_with_user_bind], ids=["search", "user-bind"])
+def test_operation_sent_on_a_reset_connection_of_a_server_that_is_down_is_503(nginx, proxy, starter):
+    # The new connection is refused too: the request does not wait for
+    # its request_timeout once the one retry failed.
+    server = starter(nginx, proxy)
+    proxy.refuse()
+
+    started = time.monotonic()
+    (result,) = keepalive_requests_while_the_connection_is_reset(server, proxy, 1)
+    elapsed = time.monotonic() - started
+
+    assert result == 503
+    assert elapsed < 1.5, f"answered after {elapsed:.1f} s"
+    assert "Authentication timed out" not in server.log()
 
 
 def test_connection_reset_under_a_send_is_not_handed_to_the_next_request(nginx, proxy):
     # The connection whose send failed has lost its socket inside OpenLDAP.
     # Given back to the pool, it went to the next request, which failed on
-    # it too instead of waiting for the reconnect.
+    # it too instead of waiting for the reconnect: one failed send only.
     server = start(nginx, proxy)
 
     results = keepalive_requests_while_the_connection_is_reset(server, proxy, 2)
 
-    assert sorted(results, key=str) == [200, 503]
+    assert results == [200, 200]
+    assert server.log().count("failed (-1: Can't contact LDAP server)") == 1
 
 
 def test_connection_closed_after_a_request_timeout_is_reconnected_at_once(nginx, proxy):
