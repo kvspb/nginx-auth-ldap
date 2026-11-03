@@ -17,6 +17,7 @@ import resource
 import signal
 import socket
 import subprocess
+import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -677,6 +678,51 @@ def test_idle_connection_closed_by_the_server_is_replaced_at_once(nginx, proxy, 
     log = server.log(since)
     assert "[error]" not in log, log
     assert "closed the idle connection" in log
+
+
+class StopsReadingAfterTheBind(FakeLdapServer):
+    """Answers the service bind, then reads nothing for a while: a large
+    request fills the socket buffers and nginx gets EAGAIN under its send."""
+
+    def __init__(self, pause: float) -> None:
+        super().__init__()
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        self.pause = pause
+        self.bound = threading.Event()
+
+    def close_after(self, op: int) -> bool:
+        if op == BIND_REQUEST and not self.bound.is_set():
+            self.bound.set()
+            time.sleep(self.pause)
+        return False
+
+
+@pytest.mark.parametrize("events", ["epoll", "poll"])
+def test_operation_that_fills_the_send_buffer_is_sent_in_full(nginx, events):
+    # libldap leaves an operation whose send got EAGAIN in the "writing"
+    # state and sends the rest only from ldap_result() once the socket is
+    # writable. The write handler of the connection did nothing, so the
+    # search waited for the request_timeout although the server read again.
+    fake = StopsReadingAfterTheBind(pause=1)
+    try:
+        body = "require valid_user;\nconnections 1;\nrequest_timeout 5s;"
+        nginx.start(
+            http=ldap_server("slow", body, url=fake.url()),
+            server="large_client_header_buffers 2 8m;\n" + protected_location("slow"),
+            events=f"use {events};",
+        )
+        assert fake.bound.wait(5), "the service bind never arrived"
+        # Larger than the socket buffers of both ends together.
+        login = "x" * (5 * 1024 * 1024)
+        started = time.monotonic()
+        response = requests.get(nginx.url(), auth=(login, "secret"), timeout=10)
+        elapsed = time.monotonic() - started
+
+        assert response.status_code == 401, nginx.log()
+        assert elapsed < 4, f"the search was sent in full only after {elapsed:.1f} s"
+        assert "Authentication timed out" not in nginx.log()
+    finally:
+        fake.close()
 
 
 class DropsAfterTheBind(FakeLdapServer):

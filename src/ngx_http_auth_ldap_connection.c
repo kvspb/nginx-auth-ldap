@@ -263,13 +263,30 @@ ngx_http_auth_ldap_reply_connection(ngx_http_auth_ldap_connection_t *c, int erro
     ngx_http_auth_ldap_wake_request(ctx->r);
 }
 
+/*
+ * An operation whose send got EAGAIN waits inside libldap, which sends the
+ * rest from ldap_result(): run the read handler, which calls it, once the
+ * socket is writable again. The event is handled first: the read handler
+ * may close the connection.
+ */
 void
 ngx_http_auth_ldap_dummy_write_handler(ngx_event_t *wev)
 {
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, wev->log, 0, "http_auth_ldap: Dummy write handler");
+    ngx_connection_t *conn;
+    ngx_http_auth_ldap_connection_t *c;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, wev->log, 0, "http_auth_ldap: Write handler");
+
+    conn = wev->data;
+    c = conn->data;
 
     if (ngx_handle_write_event(wev, 0) != NGX_OK) {
-        ngx_http_auth_ldap_close_connection(((ngx_connection_t *) wev->data)->data);
+        ngx_http_auth_ldap_close_connection(c);
+        return;
+    }
+
+    if (c->ld != NULL) {
+        ngx_http_auth_ldap_read_handler(conn->read);
     }
 }
 
