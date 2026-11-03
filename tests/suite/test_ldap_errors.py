@@ -13,13 +13,18 @@ A fake LDAP server gives the answers slapd cannot be made to give.
 
 from __future__ import annotations
 
+import os
+import signal
+import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from conftest import ldap_server, protected_location
 from fakeldap import (
+    BIND_REQUEST,
     BIND_RESPONSE,
     EXTENDED_RESPONSE,
     SEARCH_DONE,
@@ -174,6 +179,55 @@ def test_server_failure_during_the_user_search_is_503(nginx, directory, code):
 
     directory.search = SUCCESS
     assert status(server) == 200
+
+
+class ClosesAfterTheUserBind(Directory):
+    """Answers the user bind when told to, then closes the connection."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.got_user_bind = threading.Event()
+        self.answer = threading.Event()
+
+    def answer_bind(self, msgid: int, dn: str) -> bytes | None:
+        self.last_bind = dn
+        if dn != BIND_DN:
+            self.got_user_bind.set()
+            self.answer.wait(5)
+        return super().answer_bind(msgid, dn)
+
+    def close_after(self, op: int) -> bool:
+        return op == BIND_REQUEST and self.last_bind != BIND_DN
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"), [(SUCCESS, 200), (INVALID_CREDENTIALS, 401)], ids=["ok", "denied"]
+)
+def test_answer_stands_when_the_connection_closes_right_after_it(nginx, code, expected):
+    # The read handler reads the BindResponse and, in the same pass, the
+    # close of the connection: the worker is stopped while both arrive. The
+    # request has its answer; the close must not turn it into "Can't
+    # contact LDAP server" (503).
+    directory = ClosesAfterTheUserBind()
+    try:
+        server = start(nginx, directory, cache=False)
+        directory.user_bind = code
+        (worker,) = server.worker_pids()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(status, server)
+            assert directory.got_user_bind.wait(5), "the user bind never arrived"
+            os.kill(worker, signal.SIGSTOP)
+            try:
+                directory.answer.set()
+                time.sleep(0.3)
+            finally:
+                os.kill(worker, signal.SIGCONT)
+            result = future.result()
+
+        assert result == expected, server.log()
+    finally:
+        directory.answer.set()
+        directory.close()
 
 
 def test_search_that_finds_nobody_still_denies(nginx, directory):

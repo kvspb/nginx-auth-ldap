@@ -122,6 +122,15 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
      */
     if (ctx != NULL) {
         ctx->c = NULL;
+
+        /*
+         * Its answer came in the same pass, and its wake is posted: the
+         * close says nothing about that answer.
+         */
+        if (ctx->replied) {
+            return;
+        }
+
         ctx->replied = 1;
         ctx->error_code = LDAP_SERVER_DOWN;
         ngx_http_auth_ldap_wake_request(ctx->r);
