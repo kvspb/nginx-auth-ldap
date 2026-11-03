@@ -53,6 +53,26 @@ def test_refused_connection(nginx, closed_port):
     assert_times_out(server, "http_auth_ldap: Could not connect")
 
 
+@pytest.mark.parametrize("events", ["epoll", "poll"])
+def test_refused_connection_is_logged_with_its_error(nginx, closed_port, events):
+    # The connect handler never read SO_ERROR: the log did not say why the
+    # connect failed, and with poll the service bind went out on the failed
+    # socket first.
+    url = url_for("127.0.0.1", closed_port)
+    server = nginx.start(
+        http=ldap_server("down", "require valid_user;" + TIMEOUTS, url=url),
+        server=protected_location("down"),
+        events=f"use {events};",
+    )
+    end = time.monotonic() + 3
+    while "Could not connect" not in server.log() and time.monotonic() < end:
+        time.sleep(0.05)
+
+    line = next(line for line in server.log().splitlines() if "Could not connect" in line)
+    assert f'"127.0.0.1:{closed_port}" of ldap_server "down"' in line
+    assert "(111: Connection refused)" in line
+
+
 def test_timeout_is_answered_with_503(nginx, closed_port):
     server = down_server(nginx, closed_port)
 

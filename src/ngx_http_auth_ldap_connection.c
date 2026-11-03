@@ -37,6 +37,8 @@ static void ngx_http_auth_ldap_initial_bind(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_idle_closed(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_note_referral(ngx_http_auth_ldap_connection_t *c, char **refs);
 static void ngx_http_auth_ldap_set_keepalive(ngx_http_auth_ldap_connection_t *c, ngx_socket_t fd);
+static ngx_err_t ngx_http_auth_ldap_socket_error(ngx_connection_t *conn);
+static void ngx_http_auth_ldap_connect_failed(ngx_http_auth_ldap_connection_t *c, ngx_err_t err);
 static void ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_resolve(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_resolve_failed(ngx_http_auth_ldap_connection_t *c);
@@ -503,11 +505,38 @@ ngx_http_auth_ldap_set_keepalive(ngx_http_auth_ldap_connection_t *c, ngx_socket_
     }
 }
 
+/* The pending error of a socket whose connect() was in progress. */
+static ngx_err_t
+ngx_http_auth_ldap_socket_error(ngx_connection_t *conn)
+{
+    int err;
+    socklen_t len;
+
+    err = 0;
+    len = sizeof(int);
+    if (getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (void *) &err, &len) == -1) {
+        err = ngx_socket_errno;
+    }
+
+    return err;
+}
+
+static void
+ngx_http_auth_ldap_connect_failed(ngx_http_auth_ldap_connection_t *c, ngx_err_t err)
+{
+    /* The address too: with "resolve on" it may change (kvspb#63). */
+    ngx_log_error(NGX_LOG_ERR, c->log, err,
+        "http_auth_ldap: Could not connect to \"%V\" of ldap_server \"%V\"",
+        c->conn.name, &c->server->alias);
+    ngx_http_auth_ldap_close_connection(c);
+}
+
 static void
 ngx_http_auth_ldap_connect_handler(ngx_event_t *wev)
 {
     ngx_connection_t *conn;
     ngx_http_auth_ldap_connection_t *c;
+    ngx_err_t err;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, wev->log, 0, "http_auth_ldap: Connect handler");
 
@@ -516,6 +545,13 @@ ngx_http_auth_ldap_connect_handler(ngx_event_t *wev)
 
     if (ngx_handle_write_event(wev, 0) != NGX_OK) {
         ngx_http_auth_ldap_close_connection(c);
+        return;
+    }
+
+    /* As ngx_http_upstream_test_connect(): writable says nothing more. */
+    err = ngx_http_auth_ldap_socket_error(conn);
+    if (err != 0) {
+        ngx_http_auth_ldap_connect_failed(c, err);
         return;
     }
 
@@ -615,11 +651,8 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
     }
 
     if (c->ld == NULL) {
-        /* The address too: with "resolve on" it may change (kvspb#63). */
-        ngx_log_error(NGX_LOG_ERR, c->log, 0,
-            "http_auth_ldap: Could not connect to \"%V\" of ldap_server \"%V\"",
-            c->conn.name, &c->server->alias);
-        ngx_http_auth_ldap_close_connection(c);
+        ngx_http_auth_ldap_connect_failed(c,
+            rev->timedout ? NGX_ETIMEDOUT : ngx_http_auth_ldap_socket_error(conn));
         return;
     }
 
