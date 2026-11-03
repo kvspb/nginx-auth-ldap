@@ -32,10 +32,13 @@
 
 static void ngx_http_auth_ldap_reconnect_handler(ngx_event_t *);
 static void ngx_http_auth_ldap_wake_request(ngx_http_request_t *r);
+static void ngx_http_auth_ldap_server_failing(ngx_http_auth_ldap_server_t *server);
 static void ngx_http_auth_ldap_initial_bind(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_idle_closed(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_note_referral(ngx_http_auth_ldap_connection_t *c, char **refs);
 static void ngx_http_auth_ldap_set_keepalive(ngx_http_auth_ldap_connection_t *c, ngx_socket_t fd);
+static ngx_err_t ngx_http_auth_ldap_socket_error(ngx_connection_t *conn);
+static void ngx_http_auth_ldap_connect_failed(ngx_http_auth_ldap_connection_t *c, ngx_err_t err);
 static void ngx_http_auth_ldap_connect(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_resolve(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_resolve_failed(ngx_http_auth_ldap_connection_t *c);
@@ -89,6 +92,7 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
     while (q != ngx_queue_sentinel(&c->server->free_connections)) {
         if (q == &c->queue) {
             ngx_queue_remove(q);
+            ngx_queue_init(q);
             break;
         }
         q = ngx_queue_next(q);
@@ -103,7 +107,7 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
             c->server->established--;
         } else {
             /* It never came up: the server is unreachable or refuses. */
-            c->server->failing = 1;
+            ngx_http_auth_ldap_server_failing(c->server);
         }
         c->state = STATE_DISCONNECTED;
         ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
@@ -118,8 +122,59 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
      */
     if (ctx != NULL) {
         ctx->c = NULL;
+
+        /*
+         * Its answer came in the same pass, and its wake is posted: the
+         * close says nothing about that answer.
+         */
+        if (ctx->replied) {
+            return;
+        }
+
         ctx->replied = 1;
         ctx->error_code = LDAP_SERVER_DOWN;
+        ngx_http_auth_ldap_wake_request(ctx->r);
+    }
+}
+
+/*
+ * A connection of the server failed to come up. If none is up, the
+ * requests waiting for one would wait for their request_timeout: send
+ * those that have a next server on to it, as PHASE_START does for new
+ * requests. The last server is waited for, except by a request that has
+ * already sent its operation again: it answers 503.
+ */
+static void
+ngx_http_auth_ldap_server_failing(ngx_http_auth_ldap_server_t *server)
+{
+    ngx_queue_t *q, *next;
+    ngx_http_auth_ldap_ctx_t *ctx;
+    ngx_http_auth_ldap_loc_conf_t *conf;
+
+    server->failing = 1;
+    if (server->established != 0) {
+        return;
+    }
+
+    for (q = ngx_queue_head(&server->waiting_requests);
+         q != ngx_queue_sentinel(&server->waiting_requests);
+         q = next)
+    {
+        next = ngx_queue_next(q);
+        ctx = ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue);
+        conf = ngx_http_get_module_loc_conf(ctx->r, ngx_http_auth_ldap_module);
+        /* One that sent its operation again does not wait any more. */
+        if (ctx->server_index + 1 >= conf->servers->nelts && !ctx->resent) {
+            continue;
+        }
+
+        ngx_log_error(NGX_LOG_WARN, ctx->r->connection->log, 0,
+            "http_auth_ldap: Server \"%V\" has no connection, trying the next server",
+            &server->alias);
+        ngx_http_auth_ldap_unqueue_request(ctx);
+        ctx->outcome = OUTCOME_UNAVAILABLE;
+        ctx->phase = PHASE_NEXT;
+        ctx->iteration = 0;
         ngx_http_auth_ldap_wake_request(ctx->r);
     }
 }
@@ -156,10 +211,9 @@ ngx_http_auth_ldap_close_request_connection(ngx_http_auth_ldap_ctx_t *ctx)
 }
 
 /*
- * Run the phases of a request that waited for LDAP. This runs from an
- * event of the LDAP connection, not of the client connection, so run the
- * subrequests it posts (SSI, mirror) here too, as nginx does after its own
- * event handlers; otherwise they wait for the next client event.
+ * Defer resuming the request: returning a connection may wake another
+ * waiter that returns it immediately, nesting the whole queue on the stack.
+ * The client event handler runs both the phases and posted subrequests.
  */
 static void
 ngx_http_auth_ldap_wake_request(ngx_http_request_t *r)
@@ -169,8 +223,7 @@ ngx_http_auth_ldap_wake_request(ngx_http_request_t *r)
     c = r->connection;
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Waking authentication request \"%V\"",
         &r->request_line);
-    ngx_http_core_run_phases(r);
-    ngx_http_run_posted_requests(c);
+    ngx_post_event(c->write, &ngx_posted_events);
 }
 
 int
@@ -194,6 +247,7 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
     if (!ngx_queue_empty(&server->free_connections)) {
         q = ngx_queue_last(&server->free_connections);
         ngx_queue_remove(q);
+        ngx_queue_init(q);
         c = ngx_queue_data(q, ngx_http_auth_ldap_connection_t, queue);
         c->rctx = ctx;
         ctx->c = c;
@@ -217,8 +271,6 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
 void
 ngx_http_auth_ldap_return_connection(ngx_http_auth_ldap_connection_t *c)
 {
-    ngx_queue_t *q;
-
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Marking the connection to \"%V\" as free",
         &c->server->alias);
 
@@ -230,11 +282,31 @@ ngx_http_auth_ldap_return_connection(ngx_http_auth_ldap_connection_t *c)
     }
 
     ngx_queue_insert_head(&c->server->free_connections, &c->queue);
-    if (!ngx_queue_empty(&c->server->waiting_requests)) {
-        q = ngx_queue_last(&c->server->waiting_requests);
-        ngx_http_auth_ldap_unqueue_request(ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue));
-        ngx_http_auth_ldap_wake_request((ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue))->r);
+    ngx_http_auth_ldap_wake_next(c->server);
+}
+
+/*
+ * Wake the request that waits longest, if a connection is free. The wake is
+ * posted: a request woken but gone before it ran, or leaving the server
+ * without the connection, must call this again, or the rest of the queue
+ * waits for its request_timeout with the connection free.
+ */
+void
+ngx_http_auth_ldap_wake_next(ngx_http_auth_ldap_server_t *server)
+{
+    ngx_queue_t *q;
+    ngx_http_auth_ldap_ctx_t *ctx;
+
+    if (ngx_queue_empty(&server->free_connections)
+        || ngx_queue_empty(&server->waiting_requests))
+    {
+        return;
     }
+
+    q = ngx_queue_last(&server->waiting_requests);
+    ctx = ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue);
+    ngx_http_auth_ldap_unqueue_request(ctx);
+    ngx_http_auth_ldap_wake_request(ctx->r);
 }
 
 /*
@@ -265,13 +337,30 @@ ngx_http_auth_ldap_reply_connection(ngx_http_auth_ldap_connection_t *c, int erro
     ngx_http_auth_ldap_wake_request(ctx->r);
 }
 
+/*
+ * An operation whose send got EAGAIN waits inside libldap, which sends the
+ * rest from ldap_result(): run the read handler, which calls it, once the
+ * socket is writable again. The event is handled first: the read handler
+ * may close the connection.
+ */
 void
 ngx_http_auth_ldap_dummy_write_handler(ngx_event_t *wev)
 {
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, wev->log, 0, "http_auth_ldap: Dummy write handler");
+    ngx_connection_t *conn;
+    ngx_http_auth_ldap_connection_t *c;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, wev->log, 0, "http_auth_ldap: Write handler");
+
+    conn = wev->data;
+    c = conn->data;
 
     if (ngx_handle_write_event(wev, 0) != NGX_OK) {
-        ngx_http_auth_ldap_close_connection(((ngx_connection_t *) wev->data)->data);
+        ngx_http_auth_ldap_close_connection(c);
+        return;
+    }
+
+    if (c->ld != NULL) {
+        ngx_http_auth_ldap_read_handler(conn->read);
     }
 }
 
@@ -429,11 +518,38 @@ ngx_http_auth_ldap_set_keepalive(ngx_http_auth_ldap_connection_t *c, ngx_socket_
     }
 }
 
+/* The pending error of a socket whose connect() was in progress. */
+static ngx_err_t
+ngx_http_auth_ldap_socket_error(ngx_connection_t *conn)
+{
+    int err;
+    socklen_t len;
+
+    err = 0;
+    len = sizeof(int);
+    if (getsockopt(conn->fd, SOL_SOCKET, SO_ERROR, (void *) &err, &len) == -1) {
+        err = ngx_socket_errno;
+    }
+
+    return err;
+}
+
+static void
+ngx_http_auth_ldap_connect_failed(ngx_http_auth_ldap_connection_t *c, ngx_err_t err)
+{
+    /* The address too: with "resolve on" it may change (kvspb#63). */
+    ngx_log_error(NGX_LOG_ERR, c->log, err,
+        "http_auth_ldap: Could not connect to \"%V\" of ldap_server \"%V\"",
+        c->conn.name, &c->server->alias);
+    ngx_http_auth_ldap_close_connection(c);
+}
+
 static void
 ngx_http_auth_ldap_connect_handler(ngx_event_t *wev)
 {
     ngx_connection_t *conn;
     ngx_http_auth_ldap_connection_t *c;
+    ngx_err_t err;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, wev->log, 0, "http_auth_ldap: Connect handler");
 
@@ -442,6 +558,13 @@ ngx_http_auth_ldap_connect_handler(ngx_event_t *wev)
 
     if (ngx_handle_write_event(wev, 0) != NGX_OK) {
         ngx_http_auth_ldap_close_connection(c);
+        return;
+    }
+
+    /* As ngx_http_upstream_test_connect(): writable says nothing more. */
+    err = ngx_http_auth_ldap_socket_error(conn);
+    if (err != 0) {
+        ngx_http_auth_ldap_connect_failed(c, err);
         return;
     }
 
@@ -528,12 +651,21 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
     conn = rev->data;
     c = conn->data;
 
-    if (c->ld == NULL) {
-        /* The address too: with "resolve on" it may change (kvspb#63). */
-        ngx_log_error(NGX_LOG_ERR, c->log, 0,
-            "http_auth_ldap: Could not connect to \"%V\" of ldap_server \"%V\"",
-            c->conn.name, &c->server->alias);
+    /*
+     * worker_shutdown_timeout: nginx marks every connection and calls its
+     * read handler to have it closed. Waiting for the answer would keep
+     * the worker until the bind_timeout or the request_timeout.
+     */
+    if (conn->close) {
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0,
+            "http_auth_ldap: Closing the connection, the worker shuts down");
         ngx_http_auth_ldap_close_connection(c);
+        return;
+    }
+
+    if (c->ld == NULL) {
+        ngx_http_auth_ldap_connect_failed(c,
+            rev->timedout ? NGX_ETIMEDOUT : ngx_http_auth_ldap_socket_error(conn));
         return;
     }
 
@@ -609,8 +741,11 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 if (ldap_msgtype(result) != LDAP_RES_EXTENDED) {
                     break;
                 }
-                ngx_del_timer(conn->read);
+                if (conn->read->timer_set) {
+                    ngx_del_timer(conn->read);
+                }
                 ldap_msgfree(result);
+                ldap_memvfree((void **) refs);
                 if (error_code != LDAP_SUCCESS) {
                     /* Never fall back to plain LDAP. */
                     ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: StartTLS refused (%d: %s [%s])",
@@ -634,7 +769,9 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 if (ldap_msgtype(result) != LDAP_RES_BIND) {
                     break;
                 }
-                ngx_del_timer(conn->read);
+                if (conn->read->timer_set) {
+                    ngx_del_timer(conn->read);
+                }
                 if (error_code == LDAP_SUCCESS) {
                     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Initial bind successful");
                     c->state = STATE_READY;
@@ -646,6 +783,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                     ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Initial bind failed (%d: %s [%s])",
                         error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
                     ldap_memfree(error_msg);
+                    ldap_memvfree((void **) refs);
                     ldap_msgfree(result);
                     ngx_http_auth_ldap_close_connection(c);
                     return;
@@ -768,7 +906,7 @@ ngx_http_auth_ldap_resolve_failed(ngx_http_auth_ldap_connection_t *c)
     ngx_log_error(NGX_LOG_ERR, c->log, 0,
         "http_auth_ldap: Unable to resolve \"%V\" of ldap_server \"%V\"",
         &c->server->parsed_url.host, &c->server->alias);
-    c->server->failing = 1;
+    ngx_http_auth_ldap_server_failing(c->server);
     ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
 }
 
@@ -787,7 +925,7 @@ ngx_http_auth_ldap_resolve_handler(ngx_resolver_ctx_t *ctx)
             &ctx->name, &c->server->alias, ctx->state, ngx_resolver_strerror(ctx->state));
         ngx_resolve_name_done(ctx);
         /* Like an address that refuses: the next server is asked. */
-        c->server->failing = 1;
+        ngx_http_auth_ldap_server_failing(c->server);
         ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
         return;
     }
@@ -831,7 +969,7 @@ ngx_http_auth_ldap_connect_peer(ngx_http_auth_ldap_connection_t *c, struct socka
     if (rc == NGX_ERROR || rc == NGX_BUSY || rc == NGX_DECLINED) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Unable to connect to LDAP server \"%V\".",
             name);
-        c->server->failing = 1;
+        ngx_http_auth_ldap_server_failing(c->server);
         ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
         return;
     }
@@ -840,6 +978,12 @@ ngx_http_auth_ldap_connect_peer(ngx_http_auth_ldap_connection_t *c, struct socka
     conn->data = c;
     conn->write->handler = ngx_http_auth_ldap_connect_handler;
     conn->read->handler = ngx_http_auth_ldap_read_handler;
+    /*
+     * Its timers (connect_timeout, bind_timeout) guard the pool connection,
+     * never a request: a worker shutting down need not wait for them, and
+     * exit_process closes the connection.
+     */
+    conn->read->cancelable = 1;
     ngx_add_timer(conn->read, c->server->connect_timeout);
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: connect_timeout=%d.", c->server->connect_timeout);
 

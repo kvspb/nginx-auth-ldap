@@ -82,6 +82,7 @@ class Nginx:
     prefix: Path
     port: int = field(default_factory=_free_port)
     env: dict[str, str] = field(default_factory=dict)
+    worker_connections: int = 64
     process: subprocess.Popen | None = None
     # Worker PIDs right after start(); a different set later means a worker
     # died and the master replaced it.
@@ -124,7 +125,7 @@ class Nginx:
             pid {prefix}/logs/nginx.pid;
 
             events {{
-                worker_connections 64;
+                worker_connections {worker_connections};
                 {events}
             }}
 
@@ -152,6 +153,7 @@ class Nginx:
             events=events,
             error_log=self.error_log,
             level=level,
+            worker_connections=self.worker_connections,
             prefix=self.prefix,
             port=self.port,
             http=textwrap.indent(textwrap.dedent(http), "    "),

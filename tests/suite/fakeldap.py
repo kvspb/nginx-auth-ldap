@@ -57,13 +57,14 @@ def read_element(sock: socket.socket) -> bytes | None:
     """One BER element, or None when the peer closed the connection."""
 
     def read(count: int) -> bytes | None:
-        data = b""
+        # bytearray: a large request arrives in many small chunks.
+        data = bytearray()
         while len(data) < count:
             chunk = sock.recv(count - len(data))
             if not chunk:
                 return None
             data += chunk
-        return data
+        return bytes(data)
 
     head = read(2)
     if head is None:
@@ -73,6 +74,8 @@ def read_element(sock: socket.socket) -> bytes | None:
         raw = read(length & 0x7F)
         if raw is None:
             return None
+        # parse_message() expects the length octets in place.
+        head += raw
         length = int.from_bytes(raw, "big")
     body = read(length)
     return None if body is None else head + body

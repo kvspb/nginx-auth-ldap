@@ -66,6 +66,7 @@ class LdapProxy:
         self._released = threading.Condition()
         self._stopping = threading.Event()
         self._refusing = threading.Event()
+        self._refuse_after_request = False
         self._threads: list[threading.Thread] = []
         self._sockets: list[socket.socket] = []
         self.connections = 0
@@ -128,8 +129,13 @@ class LdapProxy:
                 pass
             sock.close()
 
-    def refuse(self) -> None:
-        """Close every new connection right after accepting it."""
+    def refuse(self, after_request: bool = False) -> None:
+        """Close new connections, optionally after the first request starts.
+
+        Waiting for a request makes the failure occur in LDAP I/O rather
+        than racing the nginx connect handler.
+        """
+        self._refuse_after_request = after_request
         self._refusing.set()
 
     def __enter__(self) -> Self:
@@ -165,6 +171,12 @@ class LdapProxy:
                 return
             if self._refusing.is_set():
                 self.connections += 1
+                if self._refuse_after_request:
+                    client.settimeout(2)
+                    try:
+                        client.recv(65536)
+                    except OSError:
+                        pass
                 client.close()
                 continue
             try:

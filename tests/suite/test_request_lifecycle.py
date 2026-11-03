@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import base64
 import os
+import resource
 import signal
 import socket
 import subprocess
+import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -112,6 +114,41 @@ def test_pool_stays_consistent_after_a_connection_died_under_a_request(nginx, pr
     assert results == [200] * 12
 
 
+def test_queued_local_failures_do_not_recurse_through_the_waiting_queue(nginx, proxy):
+    # Every search fails locally before sending, then returns the connection
+    # to the next waiter. An inline wake nests the entire queue on the C
+    # stack. Bound the stack rather than needing thousands of clients.
+    nginx.worker_connections = 1024
+    proxy.hold()
+    url = url_for("127.0.0.1", proxy.port).replace("?uid?", "?%29?")
+    server = nginx.start(
+        http=ldap_server(
+            "bad_filter", "require valid_user; connections 1; bind_timeout 30s; request_timeout 30s;", url=url
+        ),
+        server=protected_location("bad_filter"),
+    )
+    (worker,) = server.worker_pids()
+    _, hard = resource.prlimit(worker, resource.RLIMIT_STACK)
+    resource.prlimit(worker, resource.RLIMIT_STACK, (256 * 1024, hard))
+    clients = []
+    token = base64.b64encode(b"alice:alice-secret").decode()
+    request = f"GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic {token}\r\nConnection: close\r\n\r\n"
+    try:
+        for _ in range(512):
+            client = socket.create_connection(("127.0.0.1", server.port), timeout=10)
+            clients.append(client)
+            client.sendall(request.encode())
+        time.sleep(0.5)
+        proxy.release()
+        for client in clients:
+            assert client.recv(4096).startswith(b"HTTP/1.1 401 ")
+        assert "Bad search filter" in server.log()
+    finally:
+        proxy.release()
+        for client in clients:
+            client.close()
+
+
 def test_waiting_requests_are_served_after_one_timed_out(nginx, proxy):
     server = start(nginx, proxy)
 
@@ -129,6 +166,111 @@ def test_waiting_requests_are_served_after_one_timed_out(nginx, proxy):
         assert [w.result() for w in waiting] == [200, 200, 200]
 
     assert status(server) == 200
+
+
+def test_waiter_that_leaves_before_it_runs_passes_the_connection_on(nginx, proxy):
+    # The service bind answers while two requests wait for the connection.
+    # The first waiter is woken through a posted event, and its client goes
+    # away in the same batch of events, before that event runs: closing it
+    # drops the event. The second waiter used to stay in the queue with the
+    # connection free until its request_timeout.
+    body = "require valid_user;\nconnections 1;\nbind_timeout 30s;\nrequest_timeout 5s;"
+    proxy.hold()
+    server = nginx.start(
+        http=ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)),
+        server=protected_location("proxied"),
+    )
+    end = time.monotonic() + 3
+    while not proxy.sent and time.monotonic() < end:
+        time.sleep(0.01)
+    assert proxy.sent, "the service bind never arrived"
+    (worker,) = server.worker_pids()
+
+    token = base64.b64encode(f"alice:{password('alice')}".encode()).decode()
+    first = socket.create_connection(("127.0.0.1", server.port))
+    first.sendall(f"GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic {token}\r\n\r\n".encode())
+    time.sleep(0.2)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        second = pool.submit(status, server, "bob", 10)
+        time.sleep(0.2)
+        started = time.monotonic()
+        os.kill(worker, signal.SIGSTOP)
+        try:
+            proxy.release()
+            time.sleep(0.2)
+            first.close()
+            time.sleep(0.2)
+        finally:
+            os.kill(worker, signal.SIGCONT)
+        result = second.result()
+        elapsed = time.monotonic() - started
+
+    assert result == 200
+    assert elapsed < 2, f"the second waiter got the free connection after {elapsed:.1f} s"
+
+
+def test_request_queued_on_a_server_that_fails_to_come_up_fails_over(nginx, proxy):
+    # The request arrives while the only connection of the first server is
+    # still binding as binddn: it waits for it. The bind then times out and
+    # the server has no connection left, so the next server decides at once
+    # instead of after the request_timeout of the first one.
+    body = (
+        "require valid_user;\nconnections 1;\nbind_timeout 1s;\nrequest_timeout 5s;\nreconnect_timeout 30s;"
+    )
+    proxy.hold()
+    http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)) + ldap_server("direct")
+    server = nginx.start(http=http, server=protected_location("proxied direct"))
+    end = time.monotonic() + 3
+    while not proxy.sent and time.monotonic() < end:
+        time.sleep(0.01)
+    assert proxy.sent, "the service bind never arrived"
+
+    started = time.monotonic()
+    result = status(server, "alice", 10)
+    elapsed = time.monotonic() - started
+
+    assert result == 200
+    assert elapsed < 2, f"the next server was asked after {elapsed:.1f} s"
+    assert "Authentication timed out" not in server.log()
+
+
+def test_request_sent_on_by_a_failing_server_leaves_its_queue(nginx, proxy):
+    # A request with a next server leaves the queue of the failing one; a
+    # request of a location with that server only stays. Once the server is
+    # up again, its connection goes to the request that stayed, not to the
+    # one that left and waits on the next server.
+    body = (
+        "require valid_user;\nconnections 1;\nbind_timeout 1s;\nreconnect_timeout 300ms;\nrequest_timeout 5s;"
+    )
+    with LdapProxy() as held:
+        held.hold_at(0x61, skip=1)
+        proxy.hold()
+        http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)) + ldap_server(
+            "held", body, url=url_for("127.0.0.1", held.port)
+        )
+        locations = protected_location("proxied held", "/both/") + protected_location("proxied", "/only/")
+        server = nginx.start(http=http, server=locations)
+        end = time.monotonic() + 3
+        while not proxy.sent and time.monotonic() < end:
+            time.sleep(0.01)
+        assert proxy.sent, "the service bind never arrived"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            moved = pool.submit(server.get, "/both/", auth=creds("alice"), timeout=10)
+            time.sleep(0.2)
+            started = time.monotonic()
+            stayed = pool.submit(server.get, "/only/", auth=creds("bob"), timeout=10)
+            # After the bind_timeout of the first connection: the next
+            # connection binds.
+            time.sleep(1.2)
+            proxy.release()
+            result = stayed.result().status_code
+            elapsed = time.monotonic() - started
+            held.release()
+            moved.result()
+
+    assert result == 200
+    assert elapsed < 3, f"the request that stayed was served after {elapsed:.1f} s"
 
 
 def test_requests_taken_from_the_queue_time_out_cleanly(nginx, proxy):
@@ -197,10 +339,8 @@ def abort_http2(server, uid: str, after: float) -> None:
 @pytest.mark.parametrize("abort", [abort_http1, abort_http2], ids=["http1", "http2"])
 @pytest.mark.parametrize("where", ["in-flight", "queued"])
 def test_client_that_goes_away_leaves_the_pool_usable(nginx, proxy, abort, where):
-    # nginx does not notice a client that leaves during the access phase
-    # (HTTP/1 reading is blocked; an HTTP/2 reset or close only marks the
-    # stream), so the request lives on until its LDAP operation or its
-    # request_timeout ends. Afterwards the pool must work as before.
+    # A client that leaves during LDAP I/O or while queued must not leave
+    # stale pointers behind when the delayed answers finally arrive.
     if abort is abort_http2 and nginx_version() < (1, 25, 1):
         pytest.skip('"http2 on" needs nginx 1.25.1')
     body = f"require valid_user;\nconnections 1;{TIMEOUTS}"
@@ -224,6 +364,61 @@ def test_client_that_goes_away_leaves_the_pool_usable(nginx, proxy, abort, where
     time.sleep(1.2)
     with ThreadPoolExecutor(max_workers=4) as pool:
         assert list(pool.map(lambda uid: status(server, uid), ["alice", "bob", "carol", "dave"])) == [200] * 4
+
+
+@pytest.mark.parametrize("abort", [abort_http1, abort_http2], ids=["http1", "http2"])
+@pytest.mark.parametrize("where", ["in-flight", "queued"])
+@pytest.mark.parametrize(
+    ("events", "unwatch"), [("epoll", False), ("poll", False), ("epoll", True), ("poll", True)]
+)
+def test_client_abort_is_cleaned_up_before_the_ldap_timeout(nginx, proxy, abort, where, events, unwatch):
+    if abort is abort_http2 and nginx_version() < (1, 25, 1):
+        pytest.skip('"http2 on" needs nginx 1.25.1')
+    body = (
+        f'require valid_user "uid=$remote_user,{PEOPLE_DN}";\nconnections 1;\n'
+        "request_timeout 10s;\nbind_timeout 10s;"
+    )
+    extra = "http2 on;\n" if abort is abort_http2 else ""
+    if unwatch:
+        if abort is abort_http2:
+            pytest.skip("HTTP/2 stream events are not registered with the socket event backend")
+        extra += "test_unwatch_read on;\n"
+    server = nginx.start(
+        http=ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)),
+        server=extra + protected_location("proxied"),
+        events=f"use {events};",
+    )
+    wait_until_ready(server)
+    since = server.log_size()
+    proxy.sent.clear()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        proxy.hold()
+        try:
+            blocker = pool.submit(status, server, "bob", 15) if where == "queued" else None
+            if blocker is not None:
+                end = time.monotonic() + 2
+                while b"uid=bob," not in proxy.sent and time.monotonic() < end:
+                    time.sleep(0.01)
+                assert b"uid=bob," in proxy.sent
+            abort(server, "alice", 0.3)
+            end = time.monotonic() + 2
+            while "client prematurely closed connection" not in server.log(since) and time.monotonic() < end:
+                time.sleep(0.01)
+            assert "client prematurely closed connection" in server.log(since)
+            if where == "in-flight":
+                end = time.monotonic() + 2
+                while proxy.connections == 1 and time.monotonic() < end:
+                    time.sleep(0.01)
+                assert proxy.connections == 2, "the aborted request still owns its LDAP connection"
+        finally:
+            proxy.release()
+        if blocker is not None:
+            assert blocker.result() == 200
+            assert b"uid=alice," not in proxy.sent, "the aborted request was left in the queue"
+
+    assert "Authentication timed out" not in server.log(since)
+    wait_until_ready(server)
 
 
 @pytest.mark.parametrize("retries", [0, 2])
@@ -276,19 +471,20 @@ def test_max_down_retries_reconnects_without_waiting(nginx, proxy, retries, reco
 def test_max_down_retries_does_not_loop_against_a_server_that_closes_at_once(nginx, proxy, retries):
     # The retry counter was reset on every connect, before the bind, so a
     # server that accepts and closes at once was reconnected in a busy loop.
-    # Now it makes exactly max_down_retries immediate attempts, then waits
-    # for reconnect_timeout.
+    # Wait for the first bind bytes before closing so every retry fails in
+    # LDAP I/O, not in connect() before the LDAP handle exists. It must make
+    # exactly max_down_retries immediate attempts, then wait for reconnect_timeout.
     body = f"require valid_user;\nconnections 1;\nmax_down_retries {retries};\nreconnect_timeout 5s;"
     url = url_for("127.0.0.1", proxy.port)
     server = nginx.start(http=ldap_server("proxied", body, url=url), server=protected_location("proxied"))
     wait_until_ready(server)
     connections = proxy.connections
 
-    proxy.refuse()
+    proxy.refuse(after_request=True)
     drop_under_a_request(server, proxy)
     time.sleep(1)
 
-    assert proxy.connections - connections == retries
+    assert proxy.connections - connections == retries, server.log()
 
 
 def test_keepalive_connection_works_after_a_timed_out_request(nginx, proxy):
@@ -374,42 +570,70 @@ def test_dead_connection_is_not_handed_out_after_a_timeout(nginx, proxy):
     wait_until_ready(server)
 
 
+def test_connection_lost_under_the_user_bind_fails_over_at_once(nginx, proxy):
+    # The connection dies while the user bind is in flight: the server said
+    # nothing about the password, so the next server decides. The request
+    # used to go on to the rebind as binddn with no connection left and
+    # wait in the queue for the reconnect (30 s here), until its
+    # request_timeout gave up on the server.
+    body = (
+        f'require valid_user "uid=$remote_user,{PEOPLE_DN}";\nconnections 1;\n'
+        "reconnect_timeout 30s;\nrequest_timeout 1s;"
+    )
+    http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)) + ldap_server("direct")
+    server = nginx.start(http=http, server=protected_location("proxied direct"))
+    wait_until_ready(server)
+    since = server.log_size()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        proxy.hold()
+        future = pool.submit(status, server)
+        time.sleep(0.3)
+        started = time.monotonic()
+        proxy.drop()
+        proxy.release()
+        result = future.result()
+        elapsed = time.monotonic() - started
+
+    assert result == 200
+    assert elapsed < 0.5, f"the request waited {elapsed:.1f} s before trying the next server"
+    assert "Authentication timed out" not in server.log(since)
+
+
 def test_request_freed_while_it_waits_is_forgotten(nginx, proxy):
     # A reload makes the old worker shut down; worker_shutdown_timeout then
-    # terminates the requests still in the access phase and frees them
-    # without going through the module. A in flight on the only connection
-    # and B in the waiting queue must not be left behind: the answer that
-    # arrives later on A's connection must not wake a freed request. The
-    # second server never answers the service bind, so the bind_timeout of
-    # its connection keeps the old worker alive until that answer comes.
+    # closes every connection in one pass: the client connections, which
+    # terminates the requests still in the access phase without going
+    # through the module, and the LDAP connections. A in flight on the only
+    # connection and B in the waiting queue must not be left behind,
+    # whichever of the connections is closed first: closing A's LDAP
+    # connection must not wake a freed request, and the worker must exit
+    # without a socket left open.
     body = f"require valid_user;\nconnections 1;{TIMEOUTS}"
-    with LdapProxy() as silent:
-        silent.hold()
-        http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)) + ldap_server(
-            "silent",
-            "require valid_user;\nconnections 1;\nbind_timeout 30s;",
-            url=url_for("127.0.0.1", silent.port),
-        )
-        server = nginx.start(
-            http=http, server=protected_location("proxied"), main="worker_shutdown_timeout 300ms;"
-        )
-        wait_until_ready(server)
-        (old_worker,) = server.worker_pids()
+    http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port))
+    server = nginx.start(
+        http=http, server=protected_location("proxied"), main="worker_shutdown_timeout 300ms;"
+    )
+    wait_until_ready(server)
+    (old_worker,) = server.worker_pids()
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            proxy.hold()
-            pending = [pool.submit(status, server, uid) for uid in ["alice", "bob"]]
-            time.sleep(0.3)
-            server.reload()
-            time.sleep(0.6)
-            proxy.release()
-            time.sleep(0.5)
-            results = [p.result() for p in pending]
+    with ThreadPoolExecutor(max_workers=2) as pool, proxy.holding():
+        pending = [pool.submit(status, server, uid) for uid in ["alice", "bob"]]
+        time.sleep(0.3)
+        server.reload()
+        results = [p.result() for p in pending]
+        end = time.monotonic() + 3
+        while old_worker in server.worker_pids() and time.monotonic() < end:
+            time.sleep(0.05)
 
-        assert old_worker in server.worker_pids(), "the old worker exited before the answer came"
-        # Terminated by the shutdown: closed without an answer.
-        assert results == [None, None]
-        wait_until_ready(server)
+    assert old_worker not in server.worker_pids(), "the old worker did not exit"
+    # The request in flight (either one: they race for the connection) may
+    # get the 503 of its closed LDAP connection before its client
+    # connection is closed; the queued one is terminated without an answer.
+    assert set(results) <= {None, 503}
+    assert results.count(503) <= 1
+    assert "open socket" not in server.log()
+    wait_until_ready(server)
 
 
 def start_with_reruns(nginx, proxy: LdapProxy):
@@ -493,33 +717,69 @@ def keepalive_requests_while_the_connection_is_reset(
 
 
 @pytest.mark.parametrize("starter", [start, start_with_user_bind], ids=["search", "user-bind"])
-def test_operation_sent_on_a_reset_connection_is_503(nginx, proxy, starter):
+def test_operation_sent_on_a_reset_connection_is_sent_again(nginx, proxy, starter):
     # The failed send made OpenLDAP close its sockbuf inside
     # ldap_search_ext(); shutdown() of the reset socket failed, and the
     # sockbuf close called close_connection(), which unbound the same LDAP
     # handle again from inside the library: the worker hung for good
     # (PR #250 a02deb2, PR #251 3bdf4bc). Then the failed call was taken
     # for an answer about the credentials (401), and the dead connection
-    # went back to the pool.
+    # went back to the pool. The server never got the operation, and a
+    # reset of an idle connection says nothing about the server: the
+    # operation is sent again, once, on a new connection.
     server = starter(nginx, proxy)
 
     (result,) = keepalive_requests_while_the_connection_is_reset(server, proxy, 1)
 
     assert result is not None, "the request was never answered"
+    assert result == 200
+    log = server.log()
+    assert "failed (-1: Can't contact LDAP server)" in log
+    assert "sending it again" in log
+    wait_until_ready(server)
+
+
+@pytest.mark.parametrize("starter", [start, start_with_user_bind], ids=["search", "user-bind"])
+def test_operation_sent_on_a_reset_connection_of_a_server_that_is_down_is_503(nginx, proxy, starter):
+    # The new connection is refused too: the request does not wait for
+    # its request_timeout once the one retry failed.
+    server = starter(nginx, proxy)
+    proxy.refuse()
+
+    started = time.monotonic()
+    (result,) = keepalive_requests_while_the_connection_is_reset(server, proxy, 1)
+    elapsed = time.monotonic() - started
+
     assert result == 503
-    assert "failed (-1: Can't contact LDAP server)" in server.log()
+    assert elapsed < 1.5, f"answered after {elapsed:.1f} s"
+    assert "Authentication timed out" not in server.log()
+
+
+def test_operation_is_sent_again_only_once(nginx, proxy):
+    # Both connections of the pool were reset: the operation fails on the
+    # first, is sent again on the second, fails there too, and the request
+    # answers 503 instead of trying on.
+    server = start(nginx, proxy, connections=2)
+
+    (result,) = keepalive_requests_while_the_connection_is_reset(server, proxy, 1)
+
+    assert result == 503
+    log = server.log()
+    assert log.count("failed (-1: Can't contact LDAP server)") == 2
+    assert log.count("sending it again") == 1
     wait_until_ready(server)
 
 
 def test_connection_reset_under_a_send_is_not_handed_to_the_next_request(nginx, proxy):
     # The connection whose send failed has lost its socket inside OpenLDAP.
     # Given back to the pool, it went to the next request, which failed on
-    # it too instead of waiting for the reconnect.
+    # it too instead of waiting for the reconnect: one failed send only.
     server = start(nginx, proxy)
 
     results = keepalive_requests_while_the_connection_is_reset(server, proxy, 2)
 
-    assert sorted(results, key=str) == [200, 503]
+    assert results == [200, 200]
+    assert server.log().count("failed (-1: Can't contact LDAP server)") == 1
 
 
 def test_connection_closed_after_a_request_timeout_is_reconnected_at_once(nginx, proxy):
@@ -559,6 +819,51 @@ def test_idle_connection_closed_by_the_server_is_replaced_at_once(nginx, proxy, 
     log = server.log(since)
     assert "[error]" not in log, log
     assert "closed the idle connection" in log
+
+
+class StopsReadingAfterTheBind(FakeLdapServer):
+    """Answers the service bind, then reads nothing for a while: a large
+    request fills the socket buffers and nginx gets EAGAIN under its send."""
+
+    def __init__(self, pause: float) -> None:
+        super().__init__()
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        self.pause = pause
+        self.bound = threading.Event()
+
+    def close_after(self, op: int) -> bool:
+        if op == BIND_REQUEST and not self.bound.is_set():
+            self.bound.set()
+            time.sleep(self.pause)
+        return False
+
+
+@pytest.mark.parametrize("events", ["epoll", "poll"])
+def test_operation_that_fills_the_send_buffer_is_sent_in_full(nginx, events):
+    # libldap leaves an operation whose send got EAGAIN in the "writing"
+    # state and sends the rest only from ldap_result() once the socket is
+    # writable. The write handler of the connection did nothing, so the
+    # search waited for the request_timeout although the server read again.
+    fake = StopsReadingAfterTheBind(pause=1)
+    try:
+        body = "require valid_user;\nconnections 1;\nrequest_timeout 5s;"
+        nginx.start(
+            http=ldap_server("slow", body, url=fake.url()),
+            server="large_client_header_buffers 2 8m;\n" + protected_location("slow"),
+            events=f"use {events};",
+        )
+        assert fake.bound.wait(5), "the service bind never arrived"
+        # Larger than the socket buffers of both ends together.
+        login = "x" * (5 * 1024 * 1024)
+        started = time.monotonic()
+        response = requests.get(nginx.url(), auth=(login, "secret"), timeout=10)
+        elapsed = time.monotonic() - started
+
+        assert response.status_code == 401, nginx.log()
+        assert elapsed < 4, f"the search was sent in full only after {elapsed:.1f} s"
+        assert "Authentication timed out" not in nginx.log()
+    finally:
+        fake.close()
 
 
 class DropsAfterTheBind(FakeLdapServer):

@@ -7,6 +7,7 @@ Failover to another server is tested in test_multiple_servers.py.
 
 from __future__ import annotations
 
+import errno
 import socket
 import time
 from collections.abc import Iterator
@@ -51,6 +52,48 @@ def test_refused_connection(nginx, closed_port):
     server = down_server(nginx, closed_port)
 
     assert_times_out(server, "http_auth_ldap: Could not connect")
+
+
+@pytest.mark.parametrize("events", ["epoll", "poll"])
+def test_refused_connection_is_logged_with_its_error(nginx, closed_port, events):
+    # The connect handler never read SO_ERROR: the log did not say why the
+    # connect failed.
+    url = url_for("127.0.0.1", closed_port)
+    server = nginx.start(
+        http=ldap_server("down", "require valid_user;" + TIMEOUTS, url=url),
+        server=protected_location("down"),
+        events=f"use {events};",
+    )
+    end = time.monotonic() + 3
+    while "Could not connect" not in server.log() and time.monotonic() < end:
+        time.sleep(0.05)
+
+    line = next(line for line in server.log().splitlines() if "Could not connect" in line)
+    assert f'"127.0.0.1:{closed_port}" of ldap_server "down"' in line
+    assert f"({errno.ECONNREFUSED}: " in line
+
+
+def test_connect_that_times_out_is_closed_and_retried(nginx):
+    # 192.0.2.1 (TEST-NET-1) never answers the SYN: the connect_timeout
+    # ends the attempt, which is logged with its error, and the connection
+    # is closed and tried again every reconnect_timeout.
+    body = "require valid_user;\nconnect_timeout 300ms;\nreconnect_timeout 200ms;"
+    server = nginx.start(
+        http=ldap_server("blackhole", body, url=url_for("192.0.2.1", 389)),
+        server=protected_location("blackhole"),
+    )
+
+    def attempts() -> list[str]:
+        return [line for line in server.log().splitlines() if "Could not connect" in line]
+
+    end = time.monotonic() + 3
+    while len(attempts()) < 2 and time.monotonic() < end:
+        time.sleep(0.05)
+
+    lines = attempts()
+    assert len(lines) >= 2, server.log()
+    # By number: musl says "Operation timed out", glibc "Connection timed out".
+    assert all(f"({errno.ETIMEDOUT}: " in line for line in lines), lines
 
 
 def test_timeout_is_answered_with_503(nginx, closed_port):
