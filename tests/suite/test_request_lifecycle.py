@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import os
+import resource
 import signal
 import socket
 import subprocess
@@ -110,6 +111,41 @@ def test_pool_stays_consistent_after_a_connection_died_under_a_request(nginx, pr
         results = list(pool.map(lambda uid: status(server, uid), ["alice", "bob", "carol", "dave"] * 3))
 
     assert results == [200] * 12
+
+
+def test_queued_local_failures_do_not_recurse_through_the_waiting_queue(nginx, proxy):
+    # Every search fails locally before sending, then returns the connection
+    # to the next waiter. An inline wake nests the entire queue on the C
+    # stack. Bound the stack rather than needing thousands of clients.
+    nginx.worker_connections = 1024
+    proxy.hold()
+    url = url_for("127.0.0.1", proxy.port).replace("?uid?", "?%29?")
+    server = nginx.start(
+        http=ldap_server(
+            "bad_filter", "require valid_user; connections 1; bind_timeout 30s; request_timeout 30s;", url=url
+        ),
+        server=protected_location("bad_filter"),
+    )
+    (worker,) = server.worker_pids()
+    _, hard = resource.prlimit(worker, resource.RLIMIT_STACK)
+    resource.prlimit(worker, resource.RLIMIT_STACK, (256 * 1024, hard))
+    clients = []
+    token = base64.b64encode(b"alice:alice-secret").decode()
+    request = f"GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic {token}\r\nConnection: close\r\n\r\n"
+    try:
+        for _ in range(512):
+            client = socket.create_connection(("127.0.0.1", server.port), timeout=10)
+            clients.append(client)
+            client.sendall(request.encode())
+        time.sleep(0.5)
+        proxy.release()
+        for client in clients:
+            assert client.recv(4096).startswith(b"HTTP/1.1 401 ")
+        assert "Bad search filter" in server.log()
+    finally:
+        proxy.release()
+        for client in clients:
+            client.close()
 
 
 def test_waiting_requests_are_served_after_one_timed_out(nginx, proxy):
@@ -329,19 +365,20 @@ def test_max_down_retries_reconnects_without_waiting(nginx, proxy, retries, reco
 def test_max_down_retries_does_not_loop_against_a_server_that_closes_at_once(nginx, proxy, retries):
     # The retry counter was reset on every connect, before the bind, so a
     # server that accepts and closes at once was reconnected in a busy loop.
-    # Now it makes exactly max_down_retries immediate attempts, then waits
-    # for reconnect_timeout.
+    # Wait for the first bind bytes before closing so every retry fails in
+    # LDAP I/O, not in connect() before the LDAP handle exists. It must make
+    # exactly max_down_retries immediate attempts, then wait for reconnect_timeout.
     body = f"require valid_user;\nconnections 1;\nmax_down_retries {retries};\nreconnect_timeout 5s;"
     url = url_for("127.0.0.1", proxy.port)
     server = nginx.start(http=ldap_server("proxied", body, url=url), server=protected_location("proxied"))
     wait_until_ready(server)
     connections = proxy.connections
 
-    proxy.refuse()
+    proxy.refuse(after_request=True)
     drop_under_a_request(server, proxy)
     time.sleep(1)
 
-    assert proxy.connections - connections == retries
+    assert proxy.connections - connections == retries, server.log()
 
 
 def test_keepalive_connection_works_after_a_timed_out_request(nginx, proxy):
