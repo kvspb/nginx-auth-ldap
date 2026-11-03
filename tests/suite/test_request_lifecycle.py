@@ -197,10 +197,8 @@ def abort_http2(server, uid: str, after: float) -> None:
 @pytest.mark.parametrize("abort", [abort_http1, abort_http2], ids=["http1", "http2"])
 @pytest.mark.parametrize("where", ["in-flight", "queued"])
 def test_client_that_goes_away_leaves_the_pool_usable(nginx, proxy, abort, where):
-    # nginx does not notice a client that leaves during the access phase
-    # (HTTP/1 reading is blocked; an HTTP/2 reset or close only marks the
-    # stream), so the request lives on until its LDAP operation or its
-    # request_timeout ends. Afterwards the pool must work as before.
+    # A client that leaves during LDAP I/O or while queued must not leave
+    # stale pointers behind when the delayed answers finally arrive.
     if abort is abort_http2 and nginx_version() < (1, 25, 1):
         pytest.skip('"http2 on" needs nginx 1.25.1')
     body = f"require valid_user;\nconnections 1;{TIMEOUTS}"
@@ -224,6 +222,61 @@ def test_client_that_goes_away_leaves_the_pool_usable(nginx, proxy, abort, where
     time.sleep(1.2)
     with ThreadPoolExecutor(max_workers=4) as pool:
         assert list(pool.map(lambda uid: status(server, uid), ["alice", "bob", "carol", "dave"])) == [200] * 4
+
+
+@pytest.mark.parametrize("abort", [abort_http1, abort_http2], ids=["http1", "http2"])
+@pytest.mark.parametrize("where", ["in-flight", "queued"])
+@pytest.mark.parametrize(
+    ("events", "unwatch"), [("epoll", False), ("poll", False), ("epoll", True), ("poll", True)]
+)
+def test_client_abort_is_cleaned_up_before_the_ldap_timeout(nginx, proxy, abort, where, events, unwatch):
+    if abort is abort_http2 and nginx_version() < (1, 25, 1):
+        pytest.skip('"http2 on" needs nginx 1.25.1')
+    body = (
+        f'require valid_user "uid=$remote_user,{PEOPLE_DN}";\nconnections 1;\n'
+        "request_timeout 10s;\nbind_timeout 10s;"
+    )
+    extra = "http2 on;\n" if abort is abort_http2 else ""
+    if unwatch:
+        if abort is abort_http2:
+            pytest.skip("HTTP/2 stream events are not registered with the socket event backend")
+        extra += "test_unwatch_read on;\n"
+    server = nginx.start(
+        http=ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)),
+        server=extra + protected_location("proxied"),
+        events=f"use {events};",
+    )
+    wait_until_ready(server)
+    since = server.log_size()
+    proxy.sent.clear()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        proxy.hold()
+        try:
+            blocker = pool.submit(status, server, "bob", 15) if where == "queued" else None
+            if blocker is not None:
+                end = time.monotonic() + 2
+                while b"uid=bob," not in proxy.sent and time.monotonic() < end:
+                    time.sleep(0.01)
+                assert b"uid=bob," in proxy.sent
+            abort(server, "alice", 0.3)
+            end = time.monotonic() + 2
+            while "client prematurely closed connection" not in server.log(since) and time.monotonic() < end:
+                time.sleep(0.01)
+            assert "client prematurely closed connection" in server.log(since)
+            if where == "in-flight":
+                end = time.monotonic() + 2
+                while proxy.connections == 1 and time.monotonic() < end:
+                    time.sleep(0.01)
+                assert proxy.connections == 2, "the aborted request still owns its LDAP connection"
+        finally:
+            proxy.release()
+        if blocker is not None:
+            assert blocker.result() == 200
+            assert b"uid=alice," not in proxy.sent, "the aborted request was left in the queue"
+
+    assert "Authentication timed out" not in server.log(since)
+    wait_until_ready(server)
 
 
 @pytest.mark.parametrize("retries", [0, 2])

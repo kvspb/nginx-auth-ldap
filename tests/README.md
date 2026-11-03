@@ -179,6 +179,10 @@ test classes.
   while it is still in them, as HTTP/3 or other modules may do. Use it to
   check that the access handler copes with runs while an LDAP operation is in
   flight.
+- `test_unwatch_read on;` (from `modules/rerun_phases`, HTTP/1 only) removes
+  the client read event before the access phase, simulating a preceding
+  module that suspended client I/O. Use it to verify that an asynchronous
+  access handler re-arms the event before waiting for a client abort.
 - `test_connect_sync on;` (http level, from `modules/connect_sync`, built
   only into test binaries) makes every connect() of the process complete
   before it returns, as a loopback connect may on Solaris or the BSDs. Linux

@@ -432,7 +432,21 @@ ngx_http_auth_ldap_handler(ngx_http_request_t *r)
         ngx_http_set_ctx(r, ctx, ngx_http_auth_ldap_module);
     }
 
-    return ngx_http_auth_ldap_authenticate(r, ctx, alcf);
+    rc = ngx_http_auth_ldap_authenticate(r, ctx, alcf);
+
+    /* Watch for client aborts without replacing another module's reader. */
+    if (rc == NGX_AGAIN) {
+        if (r->read_event_handler == ngx_http_block_reading) {
+            r->read_event_handler = ngx_http_test_reading;
+            if (r->connection->read->ready) {
+                ngx_post_event(r->connection->read, &ngx_posted_events);
+            } else if (ngx_handle_read_event(r->connection->read, 0) != NGX_OK) {
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+        }
+    }
+
+    return rc;
 }
 
 /*
