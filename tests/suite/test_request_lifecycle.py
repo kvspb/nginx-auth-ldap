@@ -209,6 +209,31 @@ def test_waiter_that_leaves_before_it_runs_passes_the_connection_on(nginx, proxy
     assert elapsed < 2, f"the second waiter got the free connection after {elapsed:.1f} s"
 
 
+def test_request_queued_on_a_server_that_fails_to_come_up_fails_over(nginx, proxy):
+    # The request arrives while the only connection of the first server is
+    # still binding as binddn: it waits for it. The bind then times out and
+    # the server has no connection left, so the next server decides at once
+    # instead of after the request_timeout of the first one.
+    body = (
+        "require valid_user;\nconnections 1;\nbind_timeout 1s;\nrequest_timeout 5s;\nreconnect_timeout 30s;"
+    )
+    proxy.hold()
+    http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)) + ldap_server("direct")
+    server = nginx.start(http=http, server=protected_location("proxied direct"))
+    end = time.monotonic() + 3
+    while not proxy.sent and time.monotonic() < end:
+        time.sleep(0.01)
+    assert proxy.sent, "the service bind never arrived"
+
+    started = time.monotonic()
+    result = status(server, "alice", 10)
+    elapsed = time.monotonic() - started
+
+    assert result == 200
+    assert elapsed < 2, f"the next server was asked after {elapsed:.1f} s"
+    assert "Authentication timed out" not in server.log()
+
+
 def test_requests_taken_from_the_queue_time_out_cleanly(nginx, proxy):
     # The server never answers and request_timeout is 1 s. A takes the only
     # connection; B and C wait. A's timeout hands the connection to B, D

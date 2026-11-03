@@ -32,6 +32,7 @@
 
 static void ngx_http_auth_ldap_reconnect_handler(ngx_event_t *);
 static void ngx_http_auth_ldap_wake_request(ngx_http_request_t *r);
+static void ngx_http_auth_ldap_server_failing(ngx_http_auth_ldap_server_t *server);
 static void ngx_http_auth_ldap_initial_bind(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_idle_closed(ngx_http_auth_ldap_connection_t *c);
 static void ngx_http_auth_ldap_note_referral(ngx_http_auth_ldap_connection_t *c, char **refs);
@@ -103,7 +104,7 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
             c->server->established--;
         } else {
             /* It never came up: the server is unreachable or refuses. */
-            c->server->failing = 1;
+            ngx_http_auth_ldap_server_failing(c->server);
         }
         c->state = STATE_DISCONNECTED;
         ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
@@ -120,6 +121,46 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
         ctx->c = NULL;
         ctx->replied = 1;
         ctx->error_code = LDAP_SERVER_DOWN;
+        ngx_http_auth_ldap_wake_request(ctx->r);
+    }
+}
+
+/*
+ * A connection of the server failed to come up. If none is up, the
+ * requests waiting for one would wait for their request_timeout: send
+ * those that have a next server on to it, as PHASE_START does for new
+ * requests. The last server is waited for.
+ */
+static void
+ngx_http_auth_ldap_server_failing(ngx_http_auth_ldap_server_t *server)
+{
+    ngx_queue_t *q, *next;
+    ngx_http_auth_ldap_ctx_t *ctx;
+    ngx_http_auth_ldap_loc_conf_t *conf;
+
+    server->failing = 1;
+    if (server->established != 0) {
+        return;
+    }
+
+    for (q = ngx_queue_head(&server->waiting_requests);
+         q != ngx_queue_sentinel(&server->waiting_requests);
+         q = next)
+    {
+        next = ngx_queue_next(q);
+        ctx = ngx_queue_data(q, ngx_http_auth_ldap_ctx_t, queue);
+        conf = ngx_http_get_module_loc_conf(ctx->r, ngx_http_auth_ldap_module);
+        if (ctx->server_index + 1 >= conf->servers->nelts) {
+            continue;
+        }
+
+        ngx_log_error(NGX_LOG_WARN, ctx->r->connection->log, 0,
+            "http_auth_ldap: Server \"%V\" has no connection, trying the next server",
+            &server->alias);
+        ngx_http_auth_ldap_unqueue_request(ctx);
+        ctx->outcome = OUTCOME_UNAVAILABLE;
+        ctx->phase = PHASE_NEXT;
+        ctx->iteration = 0;
         ngx_http_auth_ldap_wake_request(ctx->r);
     }
 }
@@ -813,7 +854,7 @@ ngx_http_auth_ldap_resolve_failed(ngx_http_auth_ldap_connection_t *c)
     ngx_log_error(NGX_LOG_ERR, c->log, 0,
         "http_auth_ldap: Unable to resolve \"%V\" of ldap_server \"%V\"",
         &c->server->parsed_url.host, &c->server->alias);
-    c->server->failing = 1;
+    ngx_http_auth_ldap_server_failing(c->server);
     ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
 }
 
@@ -832,7 +873,7 @@ ngx_http_auth_ldap_resolve_handler(ngx_resolver_ctx_t *ctx)
             &ctx->name, &c->server->alias, ctx->state, ngx_resolver_strerror(ctx->state));
         ngx_resolve_name_done(ctx);
         /* Like an address that refuses: the next server is asked. */
-        c->server->failing = 1;
+        ngx_http_auth_ldap_server_failing(c->server);
         ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
         return;
     }
@@ -876,7 +917,7 @@ ngx_http_auth_ldap_connect_peer(ngx_http_auth_ldap_connection_t *c, struct socka
     if (rc == NGX_ERROR || rc == NGX_BUSY || rc == NGX_DECLINED) {
         ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Unable to connect to LDAP server \"%V\".",
             name);
-        c->server->failing = 1;
+        ngx_http_auth_ldap_server_failing(c->server);
         ngx_add_timer(&c->reconnect_event, c->server->reconnect_timeout);
         return;
     }
