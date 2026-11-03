@@ -13,6 +13,7 @@ A fake LDAP server gives the answers slapd cannot be made to give.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 
 import pytest
@@ -20,12 +21,16 @@ import pytest
 from conftest import ldap_server, protected_location
 from fakeldap import (
     BIND_RESPONSE,
+    EXTENDED_RESPONSE,
     SEARCH_DONE,
     FakeLdapServer,
+    ber,
     message,
     result,
     search_entry,
+    string,
 )
+from harness import Nginx
 from ldapdata import BIND_DN, GROUPS_DN, PEOPLE_DN, creds
 
 CACHE = """
@@ -203,6 +208,50 @@ def test_unavailable_server_is_not_hidden_by_a_deny_of_another(nginx):
     finally:
         first.close()
         second.close()
+
+
+REFERRAL = 10
+
+
+class ReferringConnectionSetup(FakeLdapServer):
+    """Answers the service bind and StartTLS with a referral."""
+
+    def answer_bind(self, msgid: int, dn: str) -> bytes | None:
+        return message(msgid, result(BIND_RESPONSE, REFERRAL, ber(0xA3, string("ldap://elsewhere.example/"))))
+
+    def answer_extended(self, msgid: int) -> bytes | None:
+        return message(
+            msgid, result(EXTENDED_RESPONSE, REFERRAL, ber(0xA3, string("ldap://elsewhere.example/")))
+        )
+
+
+@pytest.mark.skipif(
+    "-fsanitize=address" not in Nginx._configure_args(), reason="needs an AddressSanitizer build (SANITIZE=1)"
+)
+@pytest.mark.parametrize("starttls", [False, True], ids=["service-bind", "starttls"])
+def test_referral_in_a_connection_setup_answer_is_freed(nginx, starttls):
+    # The read handler returned from the StartTLS and the failed service
+    # bind answers without freeing the referrals ldap_parse_result() gave
+    # it: one leak per reconnect while the server refers elsewhere.
+    fake = ReferringConnectionSetup()
+    try:
+        body = "require valid_user;\nreconnect_timeout 100ms;"
+        if starttls:
+            body += "\nstarttls on;\nssl_check_cert off;"
+        nginx.env["ASAN_OPTIONS"] = f"detect_leaks=1:fast_unwind_on_malloc=0:log_path={nginx.prefix}/lsan"
+        nginx.start(
+            http=ldap_server("referring", body, url=fake.url()), server=protected_location("referring")
+        )
+        end = time.monotonic() + 3
+        while fake.connections < 3 and time.monotonic() < end:
+            time.sleep(0.05)
+        assert fake.connections >= 3
+        assert nginx.quit(timeout=10)
+    finally:
+        fake.close()
+
+    reports = "".join(path.read_text() for path in nginx.prefix.glob("lsan*"))
+    assert "ldap_parse_result" not in reports, reports
 
 
 def test_server_failure_during_a_group_search_is_503(nginx, directory):

@@ -730,6 +730,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 }
                 ngx_del_timer(conn->read);
                 ldap_msgfree(result);
+                ldap_memvfree((void **) refs);
                 if (error_code != LDAP_SUCCESS) {
                     /* Never fall back to plain LDAP. */
                     ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: StartTLS refused (%d: %s [%s])",
@@ -765,6 +766,7 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                     ngx_log_error(NGX_LOG_ERR, c->log, 0, "http_auth_ldap: Initial bind failed (%d: %s [%s])",
                         error_code, ldap_err2string(error_code), error_msg ? error_msg : "-");
                     ldap_memfree(error_msg);
+                    ldap_memvfree((void **) refs);
                     ldap_msgfree(result);
                     ngx_http_auth_ldap_close_connection(c);
                     return;
