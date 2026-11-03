@@ -92,6 +92,7 @@ ngx_http_auth_ldap_close_connection(ngx_http_auth_ldap_connection_t *c)
     while (q != ngx_queue_sentinel(&c->server->free_connections)) {
         if (q == &c->queue) {
             ngx_queue_remove(q);
+            ngx_queue_init(q);
             break;
         }
         q = ngx_queue_next(q);
@@ -235,6 +236,7 @@ ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx)
     if (!ngx_queue_empty(&server->free_connections)) {
         q = ngx_queue_last(&server->free_connections);
         ngx_queue_remove(q);
+        ngx_queue_init(q);
         c = ngx_queue_data(q, ngx_http_auth_ldap_connection_t, queue);
         c->rctx = ctx;
         ctx->c = c;
@@ -728,7 +730,9 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 if (ldap_msgtype(result) != LDAP_RES_EXTENDED) {
                     break;
                 }
-                ngx_del_timer(conn->read);
+                if (conn->read->timer_set) {
+                    ngx_del_timer(conn->read);
+                }
                 ldap_msgfree(result);
                 ldap_memvfree((void **) refs);
                 if (error_code != LDAP_SUCCESS) {
@@ -754,7 +758,9 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
                 if (ldap_msgtype(result) != LDAP_RES_BIND) {
                     break;
                 }
-                ngx_del_timer(conn->read);
+                if (conn->read->timer_set) {
+                    ngx_del_timer(conn->read);
+                }
                 if (error_code == LDAP_SUCCESS) {
                     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http_auth_ldap: Initial bind successful");
                     c->state = STATE_READY;

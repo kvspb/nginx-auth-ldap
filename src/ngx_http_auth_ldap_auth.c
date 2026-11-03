@@ -570,7 +570,9 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                         break;
                     }
                     if (rc != NGX_OK) {
-                        ngx_del_timer(r->connection->write);
+                        if (r->connection->write->timer_set) {
+                            ngx_del_timer(r->connection->write);
+                        }
                         return NGX_ERROR;
                     }
                     ctx->phase = PHASE_CHECK_USER;
