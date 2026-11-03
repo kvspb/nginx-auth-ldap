@@ -406,40 +406,38 @@ def test_connection_lost_under_the_user_bind_fails_over_at_once(nginx, proxy):
 
 def test_request_freed_while_it_waits_is_forgotten(nginx, proxy):
     # A reload makes the old worker shut down; worker_shutdown_timeout then
-    # terminates the requests still in the access phase and frees them
-    # without going through the module. A in flight on the only connection
-    # and B in the waiting queue must not be left behind: the answer that
-    # arrives later on A's connection must not wake a freed request. The
-    # second server never answers the service bind, so the bind_timeout of
-    # its connection keeps the old worker alive until that answer comes.
+    # closes every connection in one pass: the client connections, which
+    # terminates the requests still in the access phase without going
+    # through the module, and the LDAP connections. A in flight on the only
+    # connection and B in the waiting queue must not be left behind,
+    # whichever of the connections is closed first: closing A's LDAP
+    # connection must not wake a freed request, and the worker must exit
+    # without a socket left open.
     body = f"require valid_user;\nconnections 1;{TIMEOUTS}"
-    with LdapProxy() as silent:
-        silent.hold()
-        http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port)) + ldap_server(
-            "silent",
-            "require valid_user;\nconnections 1;\nbind_timeout 30s;",
-            url=url_for("127.0.0.1", silent.port),
-        )
-        server = nginx.start(
-            http=http, server=protected_location("proxied"), main="worker_shutdown_timeout 300ms;"
-        )
-        wait_until_ready(server)
-        (old_worker,) = server.worker_pids()
+    http = ldap_server("proxied", body, url=url_for("127.0.0.1", proxy.port))
+    server = nginx.start(
+        http=http, server=protected_location("proxied"), main="worker_shutdown_timeout 300ms;"
+    )
+    wait_until_ready(server)
+    (old_worker,) = server.worker_pids()
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            proxy.hold()
-            pending = [pool.submit(status, server, uid) for uid in ["alice", "bob"]]
-            time.sleep(0.3)
-            server.reload()
-            time.sleep(0.6)
-            proxy.release()
-            time.sleep(0.5)
-            results = [p.result() for p in pending]
+    with ThreadPoolExecutor(max_workers=2) as pool, proxy.holding():
+        pending = [pool.submit(status, server, uid) for uid in ["alice", "bob"]]
+        time.sleep(0.3)
+        server.reload()
+        results = [p.result() for p in pending]
+        end = time.monotonic() + 3
+        while old_worker in server.worker_pids() and time.monotonic() < end:
+            time.sleep(0.05)
 
-        assert old_worker in server.worker_pids(), "the old worker exited before the answer came"
-        # Terminated by the shutdown: closed without an answer.
-        assert results == [None, None]
-        wait_until_ready(server)
+    assert old_worker not in server.worker_pids(), "the old worker did not exit"
+    # The request in flight (either one: they race for the connection) may
+    # get the 503 of its closed LDAP connection before its client
+    # connection is closed; the queued one is terminated without an answer.
+    assert set(results) <= {None, 503}
+    assert results.count(503) <= 1
+    assert "open socket" not in server.log()
+    wait_until_ready(server)
 
 
 def start_with_reruns(nginx, proxy: LdapProxy):

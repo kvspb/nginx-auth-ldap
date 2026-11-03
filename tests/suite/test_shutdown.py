@@ -10,8 +10,11 @@ F03).
 
 from __future__ import annotations
 
+import time
+
 from conftest import ldap_server, protected_location, url_for
 from ldapdata import creds
+from ldapproxy import LdapProxy
 
 
 def test_quit_while_the_server_is_down(nginx, closed_port):
@@ -33,3 +36,26 @@ def test_quit_closes_the_ldap_connections(nginx):
 
     assert server.quit(timeout=5)
     assert "open socket" not in server.log()
+
+
+def test_shutdown_timeout_closes_a_connection_that_is_still_binding(nginx):
+    # worker_shutdown_timeout marks every connection "close" and calls its
+    # read handler. The LDAP read handler found nothing to read and kept
+    # the connection, so its bind_timeout held the worker until it fired.
+    with LdapProxy() as silent:
+        silent.hold()
+        body = "require valid_user;\nconnections 1;\nbind_timeout 30s;"
+        server = nginx.start(
+            http=ldap_server("silent", body, url=url_for("127.0.0.1", silent.port)),
+            server=protected_location("silent"),
+            main="worker_shutdown_timeout 300ms;",
+        )
+        end = time.monotonic() + 3
+        while silent.connections == 0 and time.monotonic() < end:
+            time.sleep(0.05)
+        assert silent.connections == 1
+        # Let the service bind reach the server.
+        time.sleep(0.2)
+
+        assert server.quit(timeout=5), "the worker waited for the bind_timeout"
+        assert "open socket" not in server.log()

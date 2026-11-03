@@ -528,6 +528,18 @@ ngx_http_auth_ldap_read_handler(ngx_event_t *rev)
     conn = rev->data;
     c = conn->data;
 
+    /*
+     * worker_shutdown_timeout: nginx marks every connection and calls its
+     * read handler to have it closed. Waiting for the answer would keep
+     * the worker until the bind_timeout or the request_timeout.
+     */
+    if (conn->close) {
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0,
+            "http_auth_ldap: Closing the connection, the worker shuts down");
+        ngx_http_auth_ldap_close_connection(c);
+        return;
+    }
+
     if (c->ld == NULL) {
         /* The address too: with "resolve on" it may change (kvspb#63). */
         ngx_log_error(NGX_LOG_ERR, c->log, 0,
