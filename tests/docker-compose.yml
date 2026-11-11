@@ -75,6 +75,20 @@ services:
       - build-cache:/build
       - ./reports:/reports
 
+  # A built package installed into a clean container of its distribution
+  # (make package-smoke, packaging/smoke.sh).
+  package-smoke:
+    image: "${PACKAGE_IMAGE:-debian:bookworm}"
+    depends_on:
+      ldap:
+        condition: service_healthy
+    environment:
+      LDAP_HOST: ldap
+    entrypoint: ["/src/packaging/smoke.sh"]
+    volumes:
+      - ..:/src:ro
+      - "${PACKAGE_DIR:-../dist/debian-bookworm}:/dist:ro"
+
 networks:
   default:
     enable_ipv6: true

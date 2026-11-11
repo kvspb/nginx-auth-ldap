@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>nginx-auth-ldap APT repository</title>
+</head>
+<body>
+<h1>nginx-auth-ldap APT repository</h1>
+<p>The LDAP authentication module for the <code>nginx</code> package of
+Debian 12 (bookworm), Debian 13 (trixie) and Ubuntu 24.04 (noble), amd64
+and arm64.</p>
+<pre>
+curl -fsSL https://kvspb.github.io/nginx-auth-ldap/nginx-auth-ldap.asc \
+    | sudo tee /etc/apt/keyrings/nginx-auth-ldap.asc &gt;/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/nginx-auth-ldap.asc] https://kvspb.github.io/nginx-auth-ldap $(. /etc/os-release &amp;&amp; echo "$VERSION_CODENAME") main" \
+    | sudo tee /etc/apt/sources.list.d/nginx-auth-ldap.list
+sudo apt-get update
+sudo apt-get install libnginx-mod-http-auth-ldap
+</pre>
+<p>Documentation: <a href="https://github.com/kvspb/nginx-auth-ldap">github.com/kvspb/nginx-auth-ldap</a>.</p>
+</body>
+</html>
