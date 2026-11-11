@@ -12,6 +12,13 @@ Entries refer to issues of the original repository as kvspb#N
 
 - README: how to build the module for the `nginx` package of Debian and
   Ubuntu.
+- Packages for the `nginx` package of Debian 12 and 13, Ubuntu 24.04,
+  Fedora 43 and 44 and Enterprise Linux 10, amd64 and arm64, on the
+  release page, and an APT repository for Debian and Ubuntu.
+- Docker images on GHCR: the official nginx image with the module loaded,
+  stable and mainline, amd64 and arm64.
+- Releases carry the source archive, `SHA256SUMS` and GitHub build
+  provenance attestations of every file.
 
 ### Fixed
 

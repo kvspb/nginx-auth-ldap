@@ -74,6 +74,55 @@ finds every connection of a server busy waits for one.
 
 ## Build and install
 
+### Packages
+
+Every release carries packages for the `nginx` package of these
+distributions, for amd64 and arm64, on its
+[release page](https://github.com/kvspb/nginx-auth-ldap/releases):
+
+| Distribution | Its nginx | Package |
+|---|---|---|
+| Debian 12 (bookworm) | 1.22.1 | `libnginx-mod-http-auth-ldap` |
+| Debian 13 (trixie) | 1.26.3 | `libnginx-mod-http-auth-ldap` |
+| Ubuntu 24.04 (noble) | 1.24.0 | `libnginx-mod-http-auth-ldap` |
+| Fedora 43, 44 | 1.30.6 | `nginx-mod-http-auth-ldap` |
+| AlmaLinux, Rocky Linux, RHEL 10 | 1.26.3 | `nginx-mod-http-auth-ldap` |
+
+The package enables the module (`/etc/nginx/modules-enabled` on Debian and
+Ubuntu, `/usr/share/nginx/modules` on the others); reload nginx after
+installing it:
+
+```sh
+apt install ./libnginx-mod-http-auth-ldap_1.2.1-1+deb12_amd64.deb
+dnf install ./nginx-mod-http-auth-ldap-1.2.1-1.fc44.x86_64.rpm
+```
+
+A package depends on the exact build of nginx it was made for
+(`nginx-abi-1.22.1-7`, `nginx(abi) = 1.30.6`), so the package manager
+refuses a module that nginx would not load. When the distribution moves
+`nginx` to another version, take the package of a newer release of this
+module, or build it as below. Ubuntu 22.04 (nginx 1.18) and Enterprise
+Linux 9 (nginx 1.20 by default) are older than this module supports.
+
+For Debian and Ubuntu there is also an APT repository, which brings the
+updates with the system:
+
+```sh
+curl -fsSL https://kvspb.github.io/nginx-auth-ldap/nginx-auth-ldap.asc \
+    | sudo tee /etc/apt/keyrings/nginx-auth-ldap.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/nginx-auth-ldap.asc] https://kvspb.github.io/nginx-auth-ldap $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
+    | sudo tee /etc/apt/sources.list.d/nginx-auth-ldap.list
+sudo apt-get update
+sudo apt-get install libnginx-mod-http-auth-ldap
+```
+
+The release also has the source archive and `SHA256SUMS`. Every file is
+attested by the GitHub build that made it; check one with
+`sha256sum -c SHA256SUMS --ignore-missing` or
+`gh attestation verify <file> --repo kvspb/nginx-auth-ldap`.
+
+### From source
+
 Requirements:
 
 - nginx 1.22 or newer, built from source.
@@ -170,7 +219,19 @@ and Ubuntu 24.04.
 
 ### Docker
 
-The official nginx image with the module added as a dynamic module, built
+Ready images, the official nginx image with the module loaded, for amd64
+and arm64:
+
+| Image | nginx |
+|---|---|
+| `ghcr.io/kvspb/nginx-auth-ldap:latest`, `:1.2.1` | current stable |
+| `ghcr.io/kvspb/nginx-auth-ldap:mainline` | current mainline |
+| `ghcr.io/kvspb/nginx-auth-ldap:1.2.1-nginx1.30.6` | that version |
+
+Check one with
+`gh attestation verify oci://ghcr.io/kvspb/nginx-auth-ldap:1.2.1 --repo kvspb/nginx-auth-ldap`.
+
+To build such an image yourself, add the module as a dynamic module built
 against the nginx source of the same version. Run it from a directory that
 holds this repository as `nginx-auth-ldap/`:
 
