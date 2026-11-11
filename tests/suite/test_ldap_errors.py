@@ -13,19 +13,30 @@ A fake LDAP server gives the answers slapd cannot be made to give.
 
 from __future__ import annotations
 
+import os
+import re
+import signal
+import threading
+import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from conftest import ldap_server, protected_location
 from fakeldap import (
+    BIND_REQUEST,
     BIND_RESPONSE,
+    EXTENDED_RESPONSE,
     SEARCH_DONE,
     FakeLdapServer,
+    ber,
     message,
     result,
     search_entry,
+    string,
 )
+from harness import Nginx
 from ldapdata import BIND_DN, GROUPS_DN, PEOPLE_DN, creds
 
 CACHE = """
@@ -171,6 +182,55 @@ def test_server_failure_during_the_user_search_is_503(nginx, directory, code):
     assert status(server) == 200
 
 
+class ClosesAfterTheUserBind(Directory):
+    """Answers the user bind when told to, then closes the connection."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.got_user_bind = threading.Event()
+        self.answer = threading.Event()
+
+    def answer_bind(self, msgid: int, dn: str) -> bytes | None:
+        self.last_bind = dn
+        if dn != BIND_DN:
+            self.got_user_bind.set()
+            self.answer.wait(5)
+        return super().answer_bind(msgid, dn)
+
+    def close_after(self, op: int) -> bool:
+        return op == BIND_REQUEST and self.last_bind != BIND_DN
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"), [(SUCCESS, 200), (INVALID_CREDENTIALS, 401)], ids=["ok", "denied"]
+)
+def test_answer_stands_when_the_connection_closes_right_after_it(nginx, code, expected):
+    # The read handler reads the BindResponse and, in the same pass, the
+    # close of the connection: the worker is stopped while both arrive. The
+    # request has its answer; the close must not turn it into "Can't
+    # contact LDAP server" (503).
+    directory = ClosesAfterTheUserBind()
+    try:
+        server = start(nginx, directory, cache=False)
+        directory.user_bind = code
+        (worker,) = server.worker_pids()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(status, server)
+            assert directory.got_user_bind.wait(5), "the user bind never arrived"
+            os.kill(worker, signal.SIGSTOP)
+            try:
+                directory.answer.set()
+                time.sleep(0.3)
+            finally:
+                os.kill(worker, signal.SIGCONT)
+            result = future.result()
+
+        assert result == expected, server.log()
+    finally:
+        directory.answer.set()
+        directory.close()
+
+
 def test_search_that_finds_nobody_still_denies(nginx, directory):
     server = start(nginx, directory, cache=False)
     directory.search = NO_SUCH_OBJECT
@@ -203,6 +263,52 @@ def test_unavailable_server_is_not_hidden_by_a_deny_of_another(nginx):
     finally:
         first.close()
         second.close()
+
+
+REFERRAL = 10
+
+
+class ReferringConnectionSetup(FakeLdapServer):
+    """Answers the service bind and StartTLS with a referral."""
+
+    def answer_bind(self, msgid: int, dn: str) -> bytes | None:
+        return message(msgid, result(BIND_RESPONSE, REFERRAL, ber(0xA3, string("ldap://elsewhere.example/"))))
+
+    def answer_extended(self, msgid: int) -> bytes | None:
+        return message(
+            msgid, result(EXTENDED_RESPONSE, REFERRAL, ber(0xA3, string("ldap://elsewhere.example/")))
+        )
+
+
+@pytest.mark.skipif(
+    "-fsanitize=address" not in Nginx._configure_args(), reason="needs an AddressSanitizer build (SANITIZE=1)"
+)
+@pytest.mark.parametrize("starttls", [False, True], ids=["service-bind", "starttls"])
+def test_referral_in_a_connection_setup_answer_is_freed(nginx, starttls):
+    # The read handler returned from the StartTLS and the failed service
+    # bind answers without freeing the referrals ldap_parse_result() gave
+    # it: one leak per reconnect while the server refers elsewhere.
+    fake = ReferringConnectionSetup()
+    try:
+        body = "require valid_user;\nreconnect_timeout 100ms;"
+        if starttls:
+            body += "\nstarttls on;\nssl_check_cert off;"
+        nginx.env["ASAN_OPTIONS"] = f"detect_leaks=1:fast_unwind_on_malloc=0:log_path={nginx.prefix}/lsan"
+        nginx.start(
+            http=ldap_server("referring", body, url=fake.url()), server=protected_location("referring")
+        )
+        end = time.monotonic() + 3
+        while fake.connections < 3 and time.monotonic() < end:
+            time.sleep(0.05)
+        assert fake.connections >= 3
+        assert nginx.quit(timeout=10)
+    finally:
+        fake.close()
+
+    reports = "".join(path.read_text() for path in nginx.prefix.glob("lsan*"))
+    # By library path: builds without llvm-symbolizer (make mutate) print
+    # frames as module+offset only, without the function name.
+    assert not re.search(r"/lib(ldap|lber)[-.]", reports), reports
 
 
 def test_server_failure_during_a_group_search_is_503(nginx, directory):

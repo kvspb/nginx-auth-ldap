@@ -16,6 +16,7 @@
 
 typedef struct {
     ngx_msec_t           interval;
+    ngx_flag_t           unwatch_read;
 } ngx_http_test_rerun_phases_loc_conf_t;
 
 
@@ -41,6 +42,13 @@ static ngx_command_t ngx_http_test_rerun_phases_commands[] = {
       ngx_conf_set_msec_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_test_rerun_phases_loc_conf_t, interval),
+      NULL },
+
+    { ngx_string("test_unwatch_read"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_test_rerun_phases_loc_conf_t, unwatch_read),
       NULL },
 
       ngx_null_command
@@ -77,6 +85,16 @@ ngx_http_test_rerun_phases_handler(ngx_http_request_t *r)
     ngx_http_test_rerun_phases_loc_conf_t  *conf;
 
     conf = ngx_http_get_module_loc_conf(r, ngx_http_test_rerun_phases_module);
+    if (conf->unwatch_read && r == r->main) {
+        /* Simulate a preceding module that suspended client I/O. */
+        if (r->connection->read->active
+            && ngx_del_event(r->connection->read, NGX_READ_EVENT, 0) != NGX_OK)
+        {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        r->connection->read->ready = 0;
+    }
+
     if (conf->interval == 0 || r != r->main
         || ngx_http_get_module_ctx(r, ngx_http_test_rerun_phases_module))
     {
@@ -153,6 +171,7 @@ ngx_http_test_rerun_phases_create_loc_conf(ngx_conf_t *cf)
     }
 
     conf->interval = NGX_CONF_UNSET_MSEC;
+    conf->unwatch_read = NGX_CONF_UNSET;
     return conf;
 }
 
@@ -165,6 +184,7 @@ ngx_http_test_rerun_phases_merge_loc_conf(ngx_conf_t *cf, void *parent,
     ngx_http_test_rerun_phases_loc_conf_t  *conf = child;
 
     ngx_conf_merge_msec_value(conf->interval, prev->interval, 0);
+    ngx_conf_merge_value(conf->unwatch_read, prev->unwatch_read, 0);
     return NGX_CONF_OK;
 }
 

@@ -8,6 +8,44 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-11
+
+### Changed
+
+- A failed connect to an LDAP server is logged with its socket error, for
+  example `(111: Connection refused)`.
+
+### Fixed
+
+- A request whose first operation went out on a connection the LDAP server
+  or a firewall had already closed as idle answered `503`; the operation is
+  now sent again, once, on another or a reconnected connection.
+- An answer that arrived together with the close of its connection was
+  lost: a correct password got `503`, a wrong one `503` instead of `401`.
+- When the connection died under the user bind, the request waited for
+  `request_timeout` before the next server was asked; it now fails over at
+  once.
+- Requests queued on a server whose connections failed to come up waited
+  for `request_timeout` before the next server was asked; they now fail
+  over at once. The last server is still waited for.
+- Requests waiting for a free connection could wait for `request_timeout`
+  while a connection was free, when the request woken before them went
+  away or left the server without it.
+- An LDAP operation that could not be sent at once waited for
+  `request_timeout` instead of being finished when the socket became
+  writable.
+- A long queue of requests that failed at once could overflow the stack
+  of the worker.
+- A client that closed its connection while its request waited for LDAP
+  went unnoticed until the LDAP answer or the timeout, and kept its LDAP
+  connection busy.
+- A worker shutting down kept running until the bind timeout of its LDAP
+  connections after `worker_shutdown_timeout`, and a gracefully exiting
+  worker waited for `connect_timeout` and `bind_timeout` of connections
+  that were still coming up.
+- Referrals in a StartTLS or failed service bind answer leaked memory on
+  every reconnect.
+
 ## [1.2.0] - 2026-11-02
 
 ### Added
@@ -323,7 +361,8 @@ Known before this release:
 First tagged version by Valery Komarov. Later upstream changes until 2024
 were not released under a version number.
 
-[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.0...v1.0.1

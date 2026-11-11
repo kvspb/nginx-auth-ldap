@@ -120,8 +120,20 @@ ngx_http_auth_ldap_sb_write(Sockbuf_IO_Desc *sbiod, void *buf, ber_len_t len)
 
     ret = c->conn.connection->send(c->conn.connection, buf, len);
     if (ret < 0) {
-        errno = (ret == NGX_AGAIN) ? NGX_EAGAIN : NGX_ECONNRESET;
-        return 0;
+        if (ret == NGX_AGAIN) {
+            /*
+             * libldap keeps the rest of the operation and sends it from
+             * ldap_result(): have the write handler call it once the
+             * socket is writable. Only nginx event state is touched here.
+             */
+            errno = NGX_EAGAIN;
+            if (ngx_handle_write_event(c->conn.connection->write, 0) != NGX_OK) {
+                errno = NGX_ECONNRESET;
+            }
+        } else {
+            errno = NGX_ECONNRESET;
+        }
+        return -1;
     }
 
     return ret;

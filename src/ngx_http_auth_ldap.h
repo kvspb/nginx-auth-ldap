@@ -168,6 +168,7 @@ typedef struct {
     int replied;
     int error_code;
     ngx_flag_t unavailable;  /* a server could not decide: answer 503 */
+    ngx_flag_t resent;       /* an operation was sent again on this server */
     ngx_str_t dn;
     ngx_uint_t search_entries;
     ngx_str_t referral;      /* first referral of the user search, if any */
@@ -247,6 +248,7 @@ void ngx_http_auth_ldap_close_request_connection(ngx_http_auth_ldap_ctx_t *ctx);
 int ngx_http_auth_ldap_get_connection(ngx_http_auth_ldap_ctx_t *ctx);
 void ngx_http_auth_ldap_return_connection(ngx_http_auth_ldap_connection_t *c);
 void ngx_http_auth_ldap_unqueue_request(ngx_http_auth_ldap_ctx_t *ctx);
+void ngx_http_auth_ldap_wake_next(ngx_http_auth_ldap_server_t *server);
 void ngx_http_auth_ldap_dummy_write_handler(ngx_event_t *wev);
 void ngx_http_auth_ldap_connection_established(ngx_http_auth_ldap_connection_t *c);
 void ngx_http_auth_ldap_read_handler(ngx_event_t *rev);
