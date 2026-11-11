@@ -166,7 +166,8 @@ jobs:
           TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
         run: |
-          tag="${IMAGE}:${VERSION}-nginx${NGINX_VERSION}-${ARCH}"
+          # A tag has no "+": 1.2.1+git20261111.dce534a between releases.
+          tag="${IMAGE}:${VERSION//+/-}-nginx${NGINX_VERSION}-${ARCH}"
           make image IMAGE="${tag}"
           make image-smoke IMAGE="${tag}"
           if [ "${PUBLISH}" = true ]; then
