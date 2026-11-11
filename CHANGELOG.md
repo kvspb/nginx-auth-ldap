@@ -8,6 +8,17 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+### Added
+
+- README: how to build the module for the `nginx` package of Debian and
+  Ubuntu.
+
+### Fixed
+
+- The Dockerfile in the README built the module without TLS: `ldaps://`
+  urls and `starttls` were rejected. It now configures nginx with
+  `--with-http_ssl_module`.
+
 ## [1.2.1] - 2026-11-11
 
 ### Changed

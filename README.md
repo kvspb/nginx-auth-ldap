@@ -110,7 +110,9 @@ make install
 
 Build it as a loadable module. It must be built against the same nginx
 version as the binary that loads it, with compatible configure arguments
-(`--with-compat`, or the arguments of that binary shown by `nginx -V`):
+(`--with-compat`, or the arguments of that binary shown by `nginx -V`).
+Keep `--with-http_ssl_module`: without it the module is built without TLS
+and rejects `ldaps://` urls and `starttls`.
 
 ```sh
 ./configure --with-compat --with-http_ssl_module \
@@ -138,6 +140,34 @@ The path is relative to the nginx prefix; use the directory where your
 distribution keeps modules. Without `load_module`, nginx rejects the
 configuration with `unknown directive "ldap_server"`.
 
+### Debian and Ubuntu
+
+A dynamic module for the `nginx` package of the distribution (Debian 12
+and 13, Ubuntu 24.04), built from the nginx.org source of the same
+version. The `nginx` of these distributions is configured with
+`--with-compat`, so its other arguments need not be repeated:
+
+```sh
+apt-get install nginx curl gcc make libc6-dev libldap-dev libssl-dev libpcre2-dev zlib1g-dev
+v=$(nginx -v 2>&1 | grep -o '[0-9]*\.[0-9]*\.[0-9]*')
+curl -fsSL "https://nginx.org/download/nginx-${v}.tar.gz" | tar -xz
+curl -fsSL https://github.com/kvspb/nginx-auth-ldap/archive/refs/tags/v1.2.1.tar.gz | tar -xz
+cd "nginx-${v}"
+./configure --with-compat --with-http_ssl_module \
+    --add-dynamic-module=../nginx-auth-ldap-1.2.1
+make modules
+install -m 644 objs/ngx_http_auth_ldap_module.so /usr/lib/nginx/modules/
+echo 'load_module modules/ngx_http_auth_ldap_module.so;' \
+    > /etc/nginx/modules-enabled/50-mod-http-auth-ldap.conf
+nginx -t && systemctl reload nginx
+```
+
+Rebuild the module whenever the `nginx` package moves to another nginx
+version: nginx refuses to load a module built for another version. On a
+machine that only runs the module, the build packages are not needed, only
+the OpenLDAP library: `libldap-2.5-0` on Debian 12, `libldap2` on Debian 13
+and Ubuntu 24.04.
+
 ### Docker
 
 The official nginx image with the module added as a dynamic module, built
@@ -154,7 +184,8 @@ RUN apt-get update \
 COPY nginx-auth-ldap /src/nginx-auth-ldap
 RUN curl -fsSL "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" | tar -xz -C /src \
     && cd "/src/nginx-${NGINX_VERSION}" \
-    && ./configure --with-compat --add-dynamic-module=/src/nginx-auth-ldap \
+    && ./configure --with-compat --with-http_ssl_module \
+        --add-dynamic-module=/src/nginx-auth-ldap \
     && make modules
 
 FROM nginx:${NGINX_VERSION}
