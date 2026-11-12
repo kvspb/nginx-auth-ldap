@@ -1,9 +1,9 @@
 # Built by packaging/build-rpm.sh, which defines upstream_version and
-# appends the %changelog entry.
+# pkg_release and appends the %changelog entry.
 
 Name:           nginx-mod-http-auth-ldap
 Version:        %{upstream_version}
-Release:        1%{?dist}
+Release:        %{pkg_release}%{?dist}
 Summary:        LDAP authentication module for nginx
 License:        BSD-2-Clause
 URL:            https://github.com/kvspb/nginx-auth-ldap

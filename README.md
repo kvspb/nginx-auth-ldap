@@ -101,7 +101,8 @@ A package depends on the exact build of nginx it was made for
 (`nginx-abi-1.22.1-7`, `nginx(abi) = 1.30.6`), so the package manager
 refuses a module that nginx would not load. When the distribution moves
 `nginx` to another version, take the package of a newer release of this
-module, or build it as below. Ubuntu 22.04 (nginx 1.18) and Enterprise
+module or a rebuilt one of the same release (a higher revision, `1.3.0-2`),
+or build it as below. Ubuntu 22.04 (nginx 1.18) and Enterprise
 Linux 9 (nginx 1.20 by default) are older than this module supports.
 
 The release also has the source archive and `SHA256SUMS`. Every file is

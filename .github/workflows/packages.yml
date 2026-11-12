@@ -24,6 +24,12 @@ on:
       tag:
         description: Release tag to build and publish again, e.g. v1.2.1
         required: true
+      revision:
+        description: >-
+          Package revision. Raise it to rebuild a release for a new nginx
+          of a distribution, so that apt and dnf see an update (1.2.1-2)
+        required: false
+        default: "1"
 
 permissions:
   contents: read
@@ -38,6 +44,7 @@ env:
   # Checked out and released: the tag of a manual run, else the event ref.
   REF: ${{ inputs.tag || github.ref }}
   IMAGE: ghcr.io/${{ github.repository }}
+  PACKAGE_REVISION: ${{ inputs.revision || '1' }}
 
 jobs:
   source:
@@ -58,6 +65,11 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
         run: |
+          case "${PACKAGE_REVISION}" in
+            "" | 0* | *[!0-9]*)
+              echo "::error::revision \"${PACKAGE_REVISION}\" is not a number"
+              exit 1 ;;
+          esac
           version=$(packaging/version.sh)
           publish=false
           case "${EVENT}:${REF}" in
