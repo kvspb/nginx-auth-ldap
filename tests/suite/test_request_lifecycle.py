@@ -560,9 +560,11 @@ def test_rebind_that_cannot_be_sent_keeps_the_answer_of_the_user_bind(nginx, pro
 
     assert "ldap_sasl_bind() failed (-1: Can't contact LDAP server)" in server.log()
     assert result == 200
-    # The connection, still bound as bob, is not used again.
+    # The connection, still bound as bob, is closed: the next request does
+    # not find it in the pool, where its send would fail as well.
     wait_until_ready(server)
     assert proxy.connections == 2
+    assert "sending it again" not in server.log()
 
 
 def start_with_user_bind(nginx, proxy: LdapProxy):

@@ -153,6 +153,14 @@ def test_certificate_is_not_checked_when_ssl_check_cert_is_off(nginx):
     assert server.get(auth=creds("alice")).status_code == 200
 
 
+def test_certificate_is_not_checked_by_default(nginx):
+    # Warned about (see above), but still the default.
+    http = ldap_server("tls", f"require valid_user;{TIMEOUTS}", url=ldaps_url(port=UNTRUSTED_PORT))
+    server = nginx.start(http=http, server=protected_location("tls"))
+
+    assert server.get(auth=creds("alice")).status_code == 200
+
+
 def test_untrusted_issuer_is_rejected(nginx):
     server = start(nginx, ldaps_url(port=UNTRUSTED_PORT))
 
