@@ -10,6 +10,8 @@
 # the source tarball, SHA256SUMS and build provenance attestations, the
 # GitHub release with the notes of CHANGELOG.md, the image on GHCR and the
 # APT repository on GitHub Pages (off until APT_REPOSITORY is set, see apt).
+# Only the newest release moves the image tags latest and mainline and
+# replaces the APT repository: a manual run for an older tag leaves them.
 name: packages
 
 on:
@@ -44,6 +46,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       publish: ${{ steps.version.outputs.publish }}
+      newest: ${{ steps.version.outputs.newest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,8 +69,15 @@ jobs:
             echo "::error::${REF} is not a release tag vX.Y.Z"
             exit 1
           fi
+          # Whether no release tag is newer than this one.
+          newest=false
+          last=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n 1)
+          if [ "v${version}" = "${last}" ]; then
+            newest=true
+          fi
           echo "version=${version}" >>"${GITHUB_OUTPUT}"
           echo "publish=${publish}" >>"${GITHUB_OUTPUT}"
+          echo "newest=${newest}" >>"${GITHUB_OUTPUT}"
       - name: Source tarball
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -180,7 +190,8 @@ jobs:
         run: make test-down
 
   image-manifest:
-    # One multi-arch tag per nginx version, and the moving tags.
+    # One multi-arch tag per nginx version, and the moving tags, which only
+    # the newest release takes.
     if: needs.source.outputs.publish == 'true'
     needs: [source, image, package]
     runs-on: ubuntu-24.04
@@ -192,6 +203,7 @@ jobs:
       attestations: write
     env:
       VERSION: ${{ needs.source.outputs.version }}
+      NEWEST: ${{ needs.source.outputs.newest }}
       STABLE: 1.30.6
       MAINLINE: 1.31.8
     steps:
@@ -214,9 +226,14 @@ jobs:
               --format '{{json .Manifest.Digest}}' | tr -d '"')
             echo "${output}=${digest}" >>"${GITHUB_OUTPUT}"
           }
-          manifest stable "${STABLE}" \
-            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest"
-          manifest mainline "${MAINLINE}" -t "${IMAGE}:mainline"
+          if [ "${NEWEST}" = true ]; then
+            manifest stable "${STABLE}" \
+              -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest"
+            manifest mainline "${MAINLINE}" -t "${IMAGE}:mainline"
+          else
+            manifest stable "${STABLE}" -t "${IMAGE}:${VERSION}"
+            manifest mainline "${MAINLINE}"
+          fi
       # actions/attest-build-provenance v4.2.2
       # yamllint disable-line rule:line-length
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
@@ -243,6 +260,7 @@ jobs:
       attestations: write
     env:
       VERSION: ${{ needs.source.outputs.version }}
+      NEWEST: ${{ needs.source.outputs.newest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -292,16 +310,20 @@ jobs:
             gh release upload "v${VERSION}" release/* --clobber
           else
             gh release create "v${VERSION}" --title "${VERSION}" \
-              --notes-file notes.md --verify-tag release/*
+              --notes-file notes.md --verify-tag --latest="${NEWEST}" \
+              release/*
           fi
 
   apt:
     # The APT repository on GitHub Pages, signed with the APT_SIGNING_KEY
     # secret. Off until the repository variable APT_REPOSITORY is "true";
     # to turn it on also allow tags v* to deploy to the github-pages
-    # environment (Settings, Environments), which allows master only.
+    # environment (Settings, Environments), which allows master only. Every
+    # run replaces the repository as a whole, so only the newest release
+    # may.
     if: >-
       needs.source.outputs.publish == 'true'
+      && needs.source.outputs.newest == 'true'
       && vars.APT_REPOSITORY == 'true'
     needs: [source, package, release]
     runs-on: ubuntu-24.04
