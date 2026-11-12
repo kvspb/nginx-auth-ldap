@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
 import random
 import re
@@ -301,3 +302,32 @@ class Nginx:
 
 def new_prefix() -> Path:
     return Path(tempfile.mkdtemp(prefix="nginx-"))
+
+
+SYS_PIDFD_GETFD = 438
+
+
+def ldap_sockets(pid: int, port: int) -> list[socket.socket]:
+    """Copies of the worker's established connections to port."""
+    inodes = set()
+    for line in Path("/proc/net/tcp").read_text().splitlines()[1:]:
+        fields = line.split()
+        if int(fields[2].split(":")[1], 16) == port and fields[3] == "01":
+            inodes.add(fields[9])
+    libc = ctypes.CDLL(None, use_errno=True)
+    pidfd = os.pidfd_open(pid)
+    try:
+        found = []
+        for fd in Path(f"/proc/{pid}/fd").iterdir():
+            try:
+                target = os.readlink(fd)
+            except FileNotFoundError:
+                # Another descriptor (the client connection) just closed.
+                continue
+            if target.removeprefix("socket:[").removesuffix("]") in inodes:
+                copy = libc.syscall(SYS_PIDFD_GETFD, pidfd, int(fd.name), 0)
+                assert copy >= 0, os.strerror(ctypes.get_errno())
+                found.append(socket.socket(fileno=copy))
+        return found
+    finally:
+        os.close(pidfd)
