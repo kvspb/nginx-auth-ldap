@@ -8,6 +8,13 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+### Fixed
+
+- A worker crashed when a server with `user_attributes` denied a user and a
+  later server of the same location, one with a `require valid_user`
+  template, allowed them, with the cache on or a `$ldap_attr_<name>`
+  variable in use.
+
 ## [1.3.0] - 2026-11-12
 
 ### Added

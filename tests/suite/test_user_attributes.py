@@ -199,6 +199,28 @@ def test_allow_pushed_out_of_the_cache(nginx):
     assert headers(server.get(auth=creds("frank")))["X-Mail"] == "frank@example.org"
 
 
+@pytest.mark.parametrize("cache", ["", CACHE], ids=["variable", "cache"])
+def test_attributes_of_a_denying_server_are_not_kept_for_a_dn_template(nginx, cache):
+    # only_alice finds frank and fetches his mail, then denies him; template
+    # allows him without a search and has no user_attributes. The values of
+    # only_alice stayed in the request, and both the variable and the cache
+    # entry of the allow read them by the attribute names of template: a
+    # NULL pointer, the worker crashed.
+    http = (
+        cache
+        + ldap_server(
+            "only_alice", f'satisfy all;\nrequire user "{user_dn("alice")}";\nuser_attributes mail;'
+        )
+        + ldap_server("template", f'require valid_user "uid=$remote_user,{PEOPLE_DN}";')
+    )
+    server = nginx.start(http=http, server=protected_location("only_alice template", extra=HEADERS))
+
+    for _ in range(2):
+        response = server.get(auth=creds("frank"))
+        assert response.status_code == 200
+        assert headers(response) == {"X-DN": user_dn("frank")}
+
+
 @pytest.mark.parametrize(
     ("body", "text"),
     [

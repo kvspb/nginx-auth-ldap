@@ -526,6 +526,8 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 ctx->server = ((ngx_http_auth_ldap_server_t **) conf->servers->elts)[ctx->server_index];
                 ctx->outcome = OUTCOME_UNCERTAIN;
                 ctx->resent = 0;
+                /* The attributes a previous server found are not this one's. */
+                ctx->search_attrs = NULL;
 
                 ngx_add_timer(r->connection->write, ctx->server->request_timeout);
                 ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: request_timeout=%d",ctx->server->request_timeout);
