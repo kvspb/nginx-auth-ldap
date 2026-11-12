@@ -8,6 +8,12 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+### Changed
+
+- nginx warns when it reads an `ldap_server` block with an `ldaps://` url
+  or `starttls on` and no `ssl_check_cert`: such a server accepts any
+  certificate.
+
 ### Fixed
 
 - A worker crashed when a server with `user_attributes` denied a user and a

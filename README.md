@@ -769,7 +769,8 @@ must lead to a trusted CA, and the certificate must name the host of the
 subjectAltName. An IP subjectAltName does not match a host name, even one
 that resolves to that address, and the subject CN is not used. With `off`
 any certificate is accepted, which exposes passwords to a man in the
-middle.
+middle; nginx warns about a server that uses TLS and leaves
+`ssl_check_cert` out when it reads the configuration.
 
 #### ssl_ca_file
 

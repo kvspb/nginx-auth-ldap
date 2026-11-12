@@ -30,6 +30,7 @@ from ldapdata import (
     TLS13_ONLY_PORT,
     TLS_DIR,
     UNTRUSTED_PORT,
+    USERS_URL,
     WRONG_HOST_PORT,
     creds,
     ldaps_url,
@@ -96,6 +97,31 @@ def test_ip_address_does_not_match_a_dns_san(nginx):
 
     assert_denied(server)
     assert "does not match address" in server.log()
+
+
+UNCHECKED_TEXT = 'accepts any certificate without "ssl_check_cert on"'
+
+
+@pytest.mark.parametrize(
+    ("url", "body", "warned"),
+    [
+        pytest.param(ldaps_url(), "", True, id="ldaps"),
+        pytest.param(USERS_URL, "starttls on;", True, id="starttls"),
+        pytest.param(ldaps_url(), "ssl_check_cert on;", False, id="checked"),
+        # Said on purpose: no need to say it again at every reload.
+        pytest.param(ldaps_url(), "ssl_check_cert off;", False, id="turned-off"),
+        pytest.param(USERS_URL, "", False, id="no-tls"),
+    ],
+)
+def test_tls_without_certificate_check_is_warned_about(nginx, url, body, warned):
+    # ssl_check_cert is off by default: whoever writes only ldaps:// gets
+    # encryption to anyone who answers, and should be told.
+    result = nginx.check_config(
+        http=ldap_server("tls", f"require valid_user;\n{body}", url=url), server=protected_location("tls")
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (f'ldap_server "tls" {UNCHECKED_TEXT}' in result.stderr) == warned, result.stderr
 
 
 def ca_directory(path, ca=CA):

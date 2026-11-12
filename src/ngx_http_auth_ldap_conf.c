@@ -143,6 +143,7 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     server->request_timeout = 10000;
     /* Find connections a firewall forgot long before the kernel would. */
     server->so_keepalive = 1;
+    server->ssl_check_cert = NGX_CONF_UNSET;
 #if (NGX_HAVE_KEEPALIVE_TUNABLE)
     server->keepidle = 60;
     server->keepintvl = 10;
@@ -243,6 +244,19 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
             "http_auth_ldap: \"starttls\" needs nginx built with OpenSSL");
         return NGX_CONF_ERROR;
+#endif
+    }
+
+    if (server->ssl_check_cert == NGX_CONF_UNSET) {
+        server->ssl_check_cert = 0;
+#if (NGX_OPENSSL)
+        /* Off by default: say what ldaps:// alone does not give. */
+        if (server->ssl.ctx != NULL) {
+            ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                "http_auth_ldap: ldap_server \"%V\" accepts any certificate "
+                "without \"ssl_check_cert on\", which exposes passwords to a "
+                "man in the middle", &server->alias);
+        }
 #endif
     }
 
