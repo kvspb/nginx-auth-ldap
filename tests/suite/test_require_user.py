@@ -178,6 +178,13 @@ class TestValidUserDnTemplateWithDerivedVariables:
         assert server.get(headers=basic(login, secret)).status_code == expected
         assert ("does not have the RDNs of the template" in server.log(since)) is rejected
 
+    def test_rejected_login_cannot_forge_a_log_line(self, server):
+        # This line had the login as the client sent it.
+        since = server.log_size()
+
+        assert server.get(headers=basic('eve\nforged "line",ou=x', "x")).status_code == 401
+        assert 'template for "eve\\x0aforged \\x22line\\x22,ou=x" does not have the RDNs' in server.log(since)
+
     def test_template_that_is_a_whole_variable_is_not_checked(self, nginx):
         # A DN taken whole from a variable has no shape to keep.
         http = ldap_server("whole", 'require valid_user "$dn";')

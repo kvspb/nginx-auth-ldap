@@ -28,6 +28,9 @@ Entries refer to issues of the original repository as kvspb#N
   variable in use.
 - A user with the right password got `503` when the connection broke
   between the answer to the user bind and the bind back as `binddn`.
+- The warning about a DN that does not have the RDNs of its
+  `require valid_user` template logged the login as the client sent it; it
+  is escaped now, as in every other message.
 - `auth_ldap_servers_size 0;` corrupted memory while the configuration was
   read. The directive no longer has an effect and is accepted only for old
   configurations.

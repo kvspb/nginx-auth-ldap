@@ -855,7 +855,7 @@ ngx_http_auth_ldap_expand_user_dn(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_
     {
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
             "http_auth_ldap: DN built from the template for \"%V\" "
-            "does not have the RDNs of the template", &r->headers_in.user);
+            "does not have the RDNs of the template", ngx_http_auth_ldap_login(r, ctx));
         return NGX_DECLINED;
     }
 
