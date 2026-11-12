@@ -28,7 +28,7 @@ import requests
 
 from conftest import ldap_server, protected_location, url_for
 from fakeldap import BIND_REQUEST, FakeLdapServer
-from harness import nginx_version
+from harness import ldap_sockets, nginx_version
 from ldapdata import PEOPLE_DN, ROTATING_DN, ROTATING_SECRET, creds, password, rotating_service_password
 from ldapproxy import LdapProxy
 
@@ -531,6 +531,38 @@ def test_connection_is_not_reused_when_the_rebind_fails(nginx):
         assert status(server, "carol") == 503
 
     wait_until_ready(server)
+
+
+def test_rebind_that_cannot_be_sent_keeps_the_answer_of_the_user_bind(nginx, proxy):
+    # The connection stops taking data between the answer to the user bind
+    # and the rebind as binddn: the send of the rebind fails. That used to
+    # replace the answer of the user bind by "unavailable": 503 for the
+    # right password (nal-k8u). The worker's sending side is shut down from
+    # here, through a copy of its socket, while the proxy holds the answer
+    # to the user bind; nginx learns of it only when it sends the rebind.
+    proxy.half_close = True
+    server = start(nginx, proxy)
+    (worker,) = server.worker_pids()
+    assert proxy.connections == 1
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        proxy.hold_at(0x61)
+        future = pool.submit(status, server, "bob")
+        end = time.monotonic() + 2
+        while not proxy.is_holding and time.monotonic() < end:
+            time.sleep(0.01)
+        assert proxy.is_holding, "the user bind never reached the server"
+        (ldap,) = ldap_sockets(worker, proxy.port)
+        ldap.shutdown(socket.SHUT_WR)
+        ldap.close()
+        proxy.release()
+        result = future.result()
+
+    assert "ldap_sasl_bind() failed (-1: Can't contact LDAP server)" in server.log()
+    assert result == 200
+    # The connection, still bound as bob, is not used again.
+    wait_until_ready(server)
+    assert proxy.connections == 2
 
 
 def start_with_user_bind(nginx, proxy: LdapProxy):

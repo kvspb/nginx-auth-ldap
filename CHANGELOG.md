@@ -20,6 +20,8 @@ Entries refer to issues of the original repository as kvspb#N
   later server of the same location, one with a `require valid_user`
   template, allowed them, with the cache on or a `$ldap_attr_<name>`
   variable in use.
+- A user with the right password got `503` when the connection broke
+  between the answer to the user bind and the bind back as `binddn`.
 - `auth_ldap_servers_size 0;` corrupted memory while the configuration was
   read. The directive no longer has an effect and is accepted only for old
   configurations.

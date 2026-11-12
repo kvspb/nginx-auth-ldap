@@ -67,6 +67,8 @@ class LdapProxy:
         self._stopping = threading.Event()
         self._refusing = threading.Event()
         self._refuse_after_request = False
+        # Go on delivering to a client that shut its sending side down.
+        self.half_close = False
         self._threads: list[threading.Thread] = []
         self._sockets: list[socket.socket] = []
         self.connections = 0
@@ -193,12 +195,15 @@ class LdapProxy:
 
     def _pump(self, client: socket.socket, server: socket.socket) -> None:
         pending = b""
+        sources = [client, server]
         try:
             while not self._stopping.is_set():
-                readable, _, _ = select.select([client, server], [], [], 0.05)
+                readable, _, _ = select.select(sources, [], [], 0.05)
                 if client in readable:
                     data = client.recv(65536)
-                    if not data:
+                    if not data and self.half_close:
+                        sources.remove(client)
+                    elif not data:
                         return
                     self.sent += data
                     server.sendall(data)

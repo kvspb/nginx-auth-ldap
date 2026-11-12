@@ -1300,7 +1300,8 @@ ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
 
 /*
  * Finish sending an LDAP operation on ctx->c. If "call" failed, the
- * request fails on this server. A failed send (LDAP_SERVER_DOWN) left the
+ * request fails on this server, except for the rebind, which comes after
+ * the decision. A failed send (LDAP_SERVER_DOWN) left the
  * connection without its socket inside OpenLDAP: close it, and since the
  * server was not asked, decide nothing about the credentials. Any other
  * error (a bad filter from the configuration) gives the connection back.
@@ -1313,17 +1314,25 @@ ngx_http_auth_ldap_wait_result(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
     if (rc != LDAP_SUCCESS) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: %s() failed (%d: %s)",
             call, rc, ldap_err2string(rc));
+        if (ctx->phase == PHASE_REBIND) {
+            /*
+             * The user bind has decided, and its outcome stands. The
+             * connection is still bound as the user: never hand it to the
+             * next request (nal-k8u).
+             */
+            ngx_http_auth_ldap_close_request_connection(ctx);
+            return NGX_ERROR;
+        }
         if (rc == LDAP_SERVER_DOWN) {
             ngx_http_auth_ldap_close_request_connection(ctx);
 
             /*
              * The server never got it: the connection was gone, as one the
              * server closed while idle before nginx read the close. Send
-             * it again, once, on another connection. Not the rebind: its
-             * connection, bound as the user, is closed now anyway. Nor a
-             * later group: the phase would take its state for an answer.
+             * it again, once, on another connection. Not a later group:
+             * the phase would take its state for an answer.
              */
-            if (!ctx->resent && ctx->iteration == 0 && ctx->phase != PHASE_REBIND) {
+            if (!ctx->resent && ctx->iteration == 0) {
                 ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
                     "http_auth_ldap: The connection to server \"%V\" was gone, sending it again",
                     &ctx->server->alias);
