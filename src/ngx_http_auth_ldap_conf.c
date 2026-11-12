@@ -39,7 +39,6 @@ static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf);
 static char * ngx_http_auth_ldap_parse_flag(ngx_conf_t *cf, ngx_flag_t *flag);
 static char * ngx_http_auth_ldap_read_passwd(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server, ngx_str_t *name);
 static char * ngx_http_auth_ldap_parse_keepalive(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
-static ngx_int_t ngx_http_auth_ldap_template_shape(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server, ngx_str_t *template);
 static ngx_int_t ngx_http_auth_ldap_check_filter(const char *filter);
 static char * ngx_http_auth_ldap_parse_ldapi(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_user_filter(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
@@ -1181,10 +1180,17 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
         return NGX_CONF_ERROR;
     }
 
-    if (target == &server->require_valid_user_dn
-        && ngx_http_auth_ldap_template_shape(cf, server, &value[2]) != NGX_OK)
-    {
-        return NGX_CONF_ERROR;
+    /*
+     * The shape of a "require valid_user" template. '$' is a plain
+     * character in a DN string, so the template as written parses into the
+     * RDNs a DN built from it must keep, whatever its variables hold:
+     * neither $remote_user, escaped by the module, nor a copy of the login
+     * made by "set" or "map" may add an RDN or an attribute-value pair
+     * (audit V-03). A template that is not a DN as written, such as a whole
+     * DN in one variable, has no shape (NULL) and is not checked.
+     */
+    if (target == &server->require_valid_user_dn) {
+        server->user_dn_shape = ngx_http_auth_ldap_dn_shape(cf->pool, &value[2]);
     }
 
     return NGX_CONF_OK;
@@ -1194,22 +1200,6 @@ invalid_args:
     ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
         "http_auth_ldap: invalid number of arguments in \"require\"");
     return NGX_CONF_ERROR;
-}
-
-/*
- * Record the shape of a "require valid_user" template. '$' is a plain
- * character in a DN string, so the template as written parses into the
- * RDNs a DN built from it must keep, whatever its variables hold: neither
- * $remote_user, escaped by the module, nor a copy of the login made by
- * "set" or "map" may add an RDN or an attribute-value pair (audit V-03).
- * A template that is not a DN as written, such as a whole DN in one
- * variable, is not checked.
- */
-static ngx_int_t
-ngx_http_auth_ldap_template_shape(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server, ngx_str_t *template)
-{
-    server->user_dn_shape = ngx_http_auth_ldap_dn_shape(cf->pool, template);
-    return NGX_OK;
 }
 
 /**
