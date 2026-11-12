@@ -347,13 +347,13 @@ When a bucket is full the oldest entry is replaced.
 
 ```text
 Syntax:  auth_ldap_servers_size number;
-Default: auth_ldap_servers_size 7;
+Default: -
 Context: http
 ```
 
-Number of `ldap_server` blocks to allocate room for at first, at least 1.
-It is not a limit: more blocks can be defined. It only has an effect before the first
-`ldap_server` block. There is rarely a reason to set it.
+Has no effect and is accepted only so that old configurations still load:
+any number of `ldap_server` blocks can be defined. It used to set the
+room allocated for them at first.
 
 ### location level
 

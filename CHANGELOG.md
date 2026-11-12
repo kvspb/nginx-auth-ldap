@@ -14,6 +14,9 @@ Entries refer to issues of the original repository as kvspb#N
   later server of the same location, one with a `require valid_user`
   template, allowed them, with the cache on or a `$ldap_attr_<name>`
   variable in use.
+- `auth_ldap_servers_size 0;` corrupted memory while the configuration was
+  read. The directive no longer has an effect and is accepted only for old
+  configurations.
 
 ## [1.3.0] - 2026-11-12
 

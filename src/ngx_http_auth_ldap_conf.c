@@ -103,10 +103,8 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     }
 
     if (cnf->servers == NULL) {
-        if (cnf->servers_size == NGX_CONF_UNSET) {
-            cnf->servers_size = NGX_HTTP_AUTH_LDAP_MAX_SERVERS_SIZE;
-        }
-        cnf->servers = ngx_array_create(cf->pool, cnf->servers_size,
+        /* It grows as needed: auth_ldap_servers_size is not used. */
+        cnf->servers = ngx_array_create(cf->pool, 4,
                                         sizeof(ngx_http_auth_ldap_server_t *));
         if (cnf->servers == NULL) {
             return NGX_CONF_ERROR;

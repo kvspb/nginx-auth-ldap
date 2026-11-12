@@ -156,6 +156,12 @@ auth_ldap_servers s1;
             "auth_ldap_servers_size 1;\n" + ldap_server("s1") + HTTP_LEVEL_AUTH + ldap_server("s2"),
             id="servers-size-1-second-server-after-reference",
         ),
+        # The value sized the array of servers: with 0 the pointer to a server
+        # was written past an empty array and overwritten by the next block.
+        pytest.param(
+            "auth_ldap_servers_size 0;\n" + ldap_server("s1") + HTTP_LEVEL_AUTH + ldap_server("s2"),
+            id="servers-size-0",
+        ),
     ],
 )
 def test_server_referenced_before_a_later_ldap_server_block(nginx, http):
