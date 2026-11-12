@@ -8,6 +8,8 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-12
+
 ### Changed
 
 - nginx warns when it reads an `ldap_server` block with an `ldaps://` url
@@ -19,6 +21,8 @@ Entries refer to issues of the original repository as kvspb#N
 - `binddn` without a password (`binddn_passwd` left out or empty) is a
   configuration error: a server takes such a bind for an anonymous one
   without checking anything.
+- A release can be built again with a higher package revision (`1.4.0-2`),
+  for a distribution that moved its `nginx` to another version.
 
 ### Fixed
 
@@ -408,7 +412,8 @@ Known before this release:
 First tagged version by Valery Komarov. Later upstream changes until 2024
 were not released under a version number.
 
-[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.1.0...v1.2.0
