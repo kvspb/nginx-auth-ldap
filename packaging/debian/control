@@ -1,0 +1,23 @@
+Source: libnginx-mod-http-auth-ldap
+Section: httpd
+Priority: optional
+Maintainer: Valery Komarov <komarov@valerka.net>
+Build-Depends: debhelper-compat (= 13),
+               dh-sequence-nginx,
+               libldap-dev,
+               nginx-dev,
+Standards-Version: 4.6.2
+Homepage: https://github.com/kvspb/nginx-auth-ldap
+Vcs-Git: https://github.com/kvspb/nginx-auth-ldap.git
+Vcs-Browser: https://github.com/kvspb/nginx-auth-ldap
+Rules-Requires-Root: no
+
+Package: libnginx-mod-http-auth-ldap
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: LDAP authentication module for nginx
+ Checks HTTP Basic credentials against LDAP servers: finds the user DN,
+ checks require user / require group rules, binds as the user to verify
+ the password, and caches the results. Supports ldap://, ldaps://,
+ StartTLS and ldapi://, several servers with failover, and passes the DN
+ and attributes of the user on in variables.

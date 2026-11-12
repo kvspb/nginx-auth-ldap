@@ -8,6 +8,26 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-12
+
+### Added
+
+- README: how to build the module for the `nginx` package of Debian and
+  Ubuntu.
+- Packages for the `nginx` package of Debian 12 and 13, Ubuntu 24.04,
+  Fedora 43 and 44 and Enterprise Linux 10, amd64 and arm64, on the
+  release page.
+- Docker images on GHCR: the official nginx image with the module loaded,
+  stable and mainline, amd64 and arm64.
+- Releases carry the source archive, `SHA256SUMS` and GitHub build
+  provenance attestations of every file.
+
+### Fixed
+
+- The Dockerfile in the README built the module without TLS: `ldaps://`
+  urls and `starttls` were rejected. It now configures nginx with
+  `--with-http_ssl_module`.
+
 ## [1.2.1] - 2026-11-11
 
 ### Changed
@@ -361,7 +381,8 @@ Known before this release:
 First tagged version by Valery Komarov. Later upstream changes until 2024
 were not released under a version number.
 
-[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.0.1...v1.1.0

@@ -1,0 +1,10 @@
+#!/usr/bin/make -f
+# The nginx_mod build system of nginx-dev configures the module against
+# /usr/share/nginx/src, the source of the nginx package with its configure
+# arguments; dh_nginx adds the nginx-abi dependency and the
+# modules-enabled link.
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@ --buildsystem=nginx_mod

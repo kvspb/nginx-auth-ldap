@@ -50,7 +50,8 @@ jobs:
           shellcheck tests/runner/run-tests.sh \
             tests/mutation/run-mutation.sh \
             tests/ldap/entrypoint.sh \
-            tests/ldap/tls/generate.sh
+            tests/ldap/tls/generate.sh \
+            packaging/*.sh packaging/apt/*.sh
       - name: Python (ruff)
         working-directory: tests
         run: |
