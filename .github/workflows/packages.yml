@@ -9,7 +9,7 @@
 # On a release tag (vX.Y.Z), or a manual run for an existing tag, also:
 # the source tarball, SHA256SUMS and build provenance attestations, the
 # GitHub release with the notes of CHANGELOG.md, the image on GHCR and the
-# APT repository on GitHub Pages (only with the APT_SIGNING_KEY secret).
+# APT repository on GitHub Pages (off until APT_REPOSITORY is set, see apt).
 name: packages
 
 on:
@@ -296,9 +296,13 @@ jobs:
           fi
 
   apt:
-    # The APT repository on GitHub Pages (Settings, Pages, Source: GitHub
-    # Actions), signed with the APT_SIGNING_KEY secret. Skipped without it.
-    if: needs.source.outputs.publish == 'true'
+    # The APT repository on GitHub Pages, signed with the APT_SIGNING_KEY
+    # secret. Off until the repository variable APT_REPOSITORY is "true";
+    # to turn it on also allow tags v* to deploy to the github-pages
+    # environment (Settings, Environments), which allows master only.
+    if: >-
+      needs.source.outputs.publish == 'true'
+      && vars.APT_REPOSITORY == 'true'
     needs: [source, package, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -312,30 +316,17 @@ jobs:
     env:
       SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
     steps:
-      - name: Signing key
-        id: key
-        run: |
-          if [ -z "${SIGNING_KEY}" ]; then
-            echo "No APT_SIGNING_KEY secret: the APT repository is not" \
-              "published." | tee -a "${GITHUB_STEP_SUMMARY}"
-            echo "present=false" >>"${GITHUB_OUTPUT}"
-          else
-            echo "present=true" >>"${GITHUB_OUTPUT}"
-          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.key.outputs.present == 'true'
         with:
           ref: ${{ env.REF }}
           persist-credentials: false
       # actions/download-artifact v8.0.2
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        if: steps.key.outputs.present == 'true'
         with:
           pattern: package-*
           merge-multiple: true
           path: dist
       - name: Repository
-        if: steps.key.outputs.present == 'true'
         run: |
           docker run --rm -e SIGNING_KEY \
             -v "${PWD}/packaging/apt:/apt:ro" -v "${PWD}/dist:/dist:ro" \
@@ -345,10 +336,8 @@ jobs:
       # actions/upload-pages-artifact v5.0.0
       # yamllint disable-line rule:line-length
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
-        if: steps.key.outputs.present == 'true'
         with:
           path: site
       # actions/deploy-pages v5.0.1
       - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
         id: deploy
-        if: steps.key.outputs.present == 'true'
