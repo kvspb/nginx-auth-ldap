@@ -8,6 +8,37 @@ Entries refer to issues of the original repository as kvspb#N
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-12
+
+### Changed
+
+- nginx warns when it reads an `ldap_server` block with an `ldaps://` url
+  or `starttls on` and no `ssl_check_cert`: such a server accepts any
+  certificate.
+- `require group` without `group_attribute` is a configuration error. It
+  used to fail every login with `ldap_search_ext() failed (1: Operations
+  error)` in the log.
+- `binddn` without a password (`binddn_passwd` left out or empty) is a
+  configuration error: a server takes such a bind for an anonymous one
+  without checking anything.
+- A release can be built again with a higher package revision (`1.4.0-2`),
+  for a distribution that moved its `nginx` to another version.
+
+### Fixed
+
+- A worker crashed when a server with `user_attributes` denied a user and a
+  later server of the same location, one with a `require valid_user`
+  template, allowed them, with the cache on or a `$ldap_attr_<name>`
+  variable in use.
+- A user with the right password got `503` when the connection broke
+  between the answer to the user bind and the bind back as `binddn`.
+- The warning about a DN that does not have the RDNs of its
+  `require valid_user` template logged the login as the client sent it; it
+  is escaped now, as in every other message.
+- `auth_ldap_servers_size 0;` corrupted memory while the configuration was
+  read. The directive no longer has an effect and is accepted only for old
+  configurations.
+
 ## [1.3.0] - 2026-11-12
 
 ### Added
@@ -381,7 +412,8 @@ Known before this release:
 First tagged version by Valery Komarov. Later upstream changes until 2024
 were not released under a version number.
 
-[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/kvspb/nginx-auth-ldap/compare/v1.1.0...v1.2.0

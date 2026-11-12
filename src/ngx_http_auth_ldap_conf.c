@@ -39,7 +39,6 @@ static char * ngx_http_auth_ldap_parse_referral(ngx_conf_t *cf);
 static char * ngx_http_auth_ldap_parse_flag(ngx_conf_t *cf, ngx_flag_t *flag);
 static char * ngx_http_auth_ldap_read_passwd(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server, ngx_str_t *name);
 static char * ngx_http_auth_ldap_parse_keepalive(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
-static ngx_int_t ngx_http_auth_ldap_template_shape(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server, ngx_str_t *template);
 static ngx_int_t ngx_http_auth_ldap_check_filter(const char *filter);
 static char * ngx_http_auth_ldap_parse_ldapi(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
 static char * ngx_http_auth_ldap_parse_user_filter(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server);
@@ -103,10 +102,8 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     }
 
     if (cnf->servers == NULL) {
-        if (cnf->servers_size == NGX_CONF_UNSET) {
-            cnf->servers_size = NGX_HTTP_AUTH_LDAP_MAX_SERVERS_SIZE;
-        }
-        cnf->servers = ngx_array_create(cf->pool, cnf->servers_size,
+        /* It grows as needed: auth_ldap_servers_size is not used. */
+        cnf->servers = ngx_array_create(cf->pool, 4,
                                         sizeof(ngx_http_auth_ldap_server_t *));
         if (cnf->servers == NULL) {
             return NGX_CONF_ERROR;
@@ -145,6 +142,7 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
     server->request_timeout = 10000;
     /* Find connections a firewall forgot long before the kernel would. */
     server->so_keepalive = 1;
+    server->ssl_check_cert = NGX_CONF_UNSET;
 #if (NGX_HAVE_KEEPALIVE_TUNABLE)
     server->keepidle = 60;
     server->keepintvl = 10;
@@ -210,6 +208,22 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         return NGX_CONF_ERROR;
     }
 
+    /* An unauthenticated bind (RFC 4513, 5.1.2): anonymous in fact. */
+    if (server->bind_dn.len != 0 && server->bind_dn_passwd.len == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: \"binddn\" without a password in ldap_server \"%V\": "
+            "set \"binddn_passwd\" or \"binddn_passwd_file\", or leave "
+            "\"binddn\" out to bind anonymously", &server->alias);
+        return NGX_CONF_ERROR;
+    }
+
+    if (server->require_group != NULL && server->group_attribute.len == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: \"require group\" needs \"group_attribute\" in "
+            "ldap_server \"%V\"", &server->alias);
+        return NGX_CONF_ERROR;
+    }
+
     if (server->user_filter == NULL) {
         if (server->ludpp->lud_attrs == NULL) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
@@ -245,6 +259,19 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
             "http_auth_ldap: \"starttls\" needs nginx built with OpenSSL");
         return NGX_CONF_ERROR;
+#endif
+    }
+
+    if (server->ssl_check_cert == NGX_CONF_UNSET) {
+        server->ssl_check_cert = 0;
+#if (NGX_OPENSSL)
+        /* Off by default: say what ldaps:// alone does not give. */
+        if (server->ssl.ctx != NULL) {
+            ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                "http_auth_ldap: ldap_server \"%V\" accepts any certificate "
+                "without \"ssl_check_cert on\", which exposes passwords to a "
+                "man in the middle", &server->alias);
+        }
 #endif
     }
 
@@ -1153,10 +1180,17 @@ ngx_http_auth_ldap_parse_require(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *se
         return NGX_CONF_ERROR;
     }
 
-    if (target == &server->require_valid_user_dn
-        && ngx_http_auth_ldap_template_shape(cf, server, &value[2]) != NGX_OK)
-    {
-        return NGX_CONF_ERROR;
+    /*
+     * The shape of a "require valid_user" template. '$' is a plain
+     * character in a DN string, so the template as written parses into the
+     * RDNs a DN built from it must keep, whatever its variables hold:
+     * neither $remote_user, escaped by the module, nor a copy of the login
+     * made by "set" or "map" may add an RDN or an attribute-value pair
+     * (audit V-03). A template that is not a DN as written, such as a whole
+     * DN in one variable, has no shape (NULL) and is not checked.
+     */
+    if (target == &server->require_valid_user_dn) {
+        server->user_dn_shape = ngx_http_auth_ldap_dn_shape(cf->pool, &value[2]);
     }
 
     return NGX_CONF_OK;
@@ -1166,22 +1200,6 @@ invalid_args:
     ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
         "http_auth_ldap: invalid number of arguments in \"require\"");
     return NGX_CONF_ERROR;
-}
-
-/*
- * Record the shape of a "require valid_user" template. '$' is a plain
- * character in a DN string, so the template as written parses into the
- * RDNs a DN built from it must keep, whatever its variables hold: neither
- * $remote_user, escaped by the module, nor a copy of the login made by
- * "set" or "map" may add an RDN or an attribute-value pair (audit V-03).
- * A template that is not a DN as written, such as a whole DN in one
- * variable, is not checked.
- */
-static ngx_int_t
-ngx_http_auth_ldap_template_shape(ngx_conf_t *cf, ngx_http_auth_ldap_server_t *server, ngx_str_t *template)
-{
-    server->user_dn_shape = ngx_http_auth_ldap_dn_shape(cf->pool, template);
-    return NGX_OK;
 }
 
 /**

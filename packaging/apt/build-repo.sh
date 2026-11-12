@@ -33,7 +33,13 @@ for dir in /dist/*/; do
         debian-bookworm) codename=bookworm ;;
         debian-trixie) codename=trixie ;;
         ubuntu-24.04) codename=noble ;;
-        *) continue ;;
+        *)
+            # .rpm packages have no suite; .deb packages must get one.
+            if ls "${dir}"*.deb >/dev/null 2>&1; then
+                echo "build-repo: no suite for ${image}: add its codename" >&2
+                exit 1
+            fi
+            continue ;;
     esac
     if ! grep -q "^Codename: ${codename}\$" "${work}/conf/distributions"; then
         cat >>"${work}/conf/distributions" <<EOF

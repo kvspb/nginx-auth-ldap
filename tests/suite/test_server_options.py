@@ -112,3 +112,21 @@ def test_binddn_passwd_file_of_the_largest_size(nginx):
     )
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "http",
+    [
+        pytest.param(ldap_server("users", bind_secret=""), id="empty"),
+        pytest.param(without_password(ldap_server("users")), id="left-out"),
+    ],
+)
+def test_binddn_without_a_password_is_refused(nginx, http):
+    # A bind with a DN and no password is an unauthenticated bind (RFC 4513,
+    # 5.1.2): a server lets it through as anonymous, checking nothing, and
+    # the module went on as if it were the service account. An empty
+    # binddn_passwd_file was refused already.
+    result = nginx.check_config(http=http, server=protected_location("users"))
+
+    assert result.returncode == 1, result.stderr
+    assert '"binddn" without a password in ldap_server "users"' in result.stderr

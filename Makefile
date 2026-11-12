@@ -26,8 +26,9 @@ OPENSSL_OLD ?= 1.1.1w
 PACKAGE_IMAGE ?= debian:bookworm
 # 1.2.1 on the tag v1.2.1, else 1.2.1+git20261111.dce534a.
 PACKAGE_VERSION ?= $(shell packaging/version.sh)
+# Raised to build a release again, e.g. for a new nginx of a distribution.
+PACKAGE_REVISION ?= 1
 PACKAGE_DIR ?= $(CURDIR)/dist/$(subst :,-,$(PACKAGE_IMAGE))
-PACKAGE_BUILD ?= build-$(patsubst debian,deb,$(patsubst ubuntu,deb,$(patsubst fedora,rpm,$(patsubst almalinux,rpm,$(firstword $(subst :, ,$(PACKAGE_IMAGE))))))).sh
 
 # The Docker image of packaging/docker, on the nginx image of NGINX_VERSION.
 IMAGE ?= nginx-auth-ldap:$(NGINX_VERSION)
@@ -61,13 +62,17 @@ mutate:
 test-down:
 	$(COMPOSE) down -v
 
-# Into dist/<image>/, e.g. dist/debian-bookworm/.
+# Into dist/<image>/, e.g. dist/debian-bookworm/. A .deb where the image
+# has dpkg, else an .rpm.
 package:
 	rm -rf $(PACKAGE_DIR) && mkdir -p $(PACKAGE_DIR)
 	docker run --rm -v $(CURDIR):/src:ro -v $(PACKAGE_DIR):/out \
-		-e VERSION=$(PACKAGE_VERSION) -e OWNER=$$(id -u):$$(id -g) \
+		-e VERSION=$(PACKAGE_VERSION) -e REVISION=$(PACKAGE_REVISION) \
+		-e OWNER=$$(id -u):$$(id -g) \
 		-e SOURCE_DATE_EPOCH=$$(git log -1 --format=%ct) \
-		$(PACKAGE_IMAGE) /src/packaging/$(PACKAGE_BUILD)
+		$(PACKAGE_IMAGE) sh -c 'if command -v dpkg >/dev/null; \
+			then exec /src/packaging/build-deb.sh; \
+			else exec /src/packaging/build-rpm.sh; fi'
 
 package-smoke:
 	PACKAGE_IMAGE=$(PACKAGE_IMAGE) PACKAGE_DIR=$(PACKAGE_DIR) \

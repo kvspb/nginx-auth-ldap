@@ -93,15 +93,16 @@ Ubuntu, `/usr/share/nginx/modules` on the others); reload nginx after
 installing it:
 
 ```sh
-apt install ./libnginx-mod-http-auth-ldap_1.3.0-1+deb12_amd64.deb
-dnf install ./nginx-mod-http-auth-ldap-1.3.0-1.fc44.x86_64.rpm
+apt install ./libnginx-mod-http-auth-ldap_1.4.0-1+deb12_amd64.deb
+dnf install ./nginx-mod-http-auth-ldap-1.4.0-1.fc44.x86_64.rpm
 ```
 
 A package depends on the exact build of nginx it was made for
 (`nginx-abi-1.22.1-7`, `nginx(abi) = 1.30.6`), so the package manager
 refuses a module that nginx would not load. When the distribution moves
 `nginx` to another version, take the package of a newer release of this
-module, or build it as below. Ubuntu 22.04 (nginx 1.18) and Enterprise
+module or a rebuilt one of the same release (a higher revision, `1.4.0-2`),
+or build it as below. Ubuntu 22.04 (nginx 1.18) and Enterprise
 Linux 9 (nginx 1.20 by default) are older than this module supports.
 
 The release also has the source archive and `SHA256SUMS`. Every file is
@@ -130,7 +131,7 @@ Get the source, from git or as the archive of a release:
 
 ```sh
 git clone https://github.com/kvspb/nginx-auth-ldap.git
-curl -fsSL https://github.com/kvspb/nginx-auth-ldap/archive/refs/tags/v1.3.0.tar.gz | tar -xz
+curl -fsSL https://github.com/kvspb/nginx-auth-ldap/archive/refs/tags/v1.4.0.tar.gz | tar -xz
 ```
 
 ### Static module
@@ -188,10 +189,10 @@ version. The `nginx` of these distributions is configured with
 apt-get install nginx curl gcc make libc6-dev libldap-dev libssl-dev libpcre2-dev zlib1g-dev
 v=$(nginx -v 2>&1 | grep -o '[0-9]*\.[0-9]*\.[0-9]*')
 curl -fsSL "https://nginx.org/download/nginx-${v}.tar.gz" | tar -xz
-curl -fsSL https://github.com/kvspb/nginx-auth-ldap/archive/refs/tags/v1.3.0.tar.gz | tar -xz
+curl -fsSL https://github.com/kvspb/nginx-auth-ldap/archive/refs/tags/v1.4.0.tar.gz | tar -xz
 cd "nginx-${v}"
 ./configure --with-compat --with-http_ssl_module \
-    --add-dynamic-module=../nginx-auth-ldap-1.3.0
+    --add-dynamic-module=../nginx-auth-ldap-1.4.0
 make modules
 install -m 644 objs/ngx_http_auth_ldap_module.so /usr/lib/nginx/modules/
 echo 'load_module modules/ngx_http_auth_ldap_module.so;' \
@@ -212,12 +213,12 @@ and arm64:
 
 | Image | nginx |
 |---|---|
-| `ghcr.io/kvspb/nginx-auth-ldap:latest`, `:1.3.0` | current stable |
+| `ghcr.io/kvspb/nginx-auth-ldap:latest`, `:1.4.0` | current stable |
 | `ghcr.io/kvspb/nginx-auth-ldap:mainline` | current mainline |
-| `ghcr.io/kvspb/nginx-auth-ldap:1.3.0-nginx1.30.6` | that version |
+| `ghcr.io/kvspb/nginx-auth-ldap:1.4.0-nginx1.30.6` | that version |
 
 Check one with
-`gh attestation verify oci://ghcr.io/kvspb/nginx-auth-ldap:1.3.0 --repo kvspb/nginx-auth-ldap`.
+`gh attestation verify oci://ghcr.io/kvspb/nginx-auth-ldap:1.4.0 --repo kvspb/nginx-auth-ldap`.
 
 To build such an image yourself, add the module as a dynamic module built
 against the nginx source of the same version. Run it from a directory that
@@ -347,13 +348,13 @@ When a bucket is full the oldest entry is replaced.
 
 ```text
 Syntax:  auth_ldap_servers_size number;
-Default: auth_ldap_servers_size 7;
+Default: -
 Context: http
 ```
 
-Number of `ldap_server` blocks to allocate room for at first, at least 1.
-It is not a limit: more blocks can be defined. It only has an effect before the first
-`ldap_server` block. There is rarely a reason to set it.
+Has no effect and is accepted only so that old configurations still load:
+any number of `ldap_server` blocks can be defined. It used to set the
+room allocated for them at first.
 
 ### location level
 
@@ -555,7 +556,8 @@ Default: - (anonymous bind)
 
 The DN of the account that the module binds as to search for users and
 groups. Use an account that can only read. Without `binddn` the connections
-bind anonymously.
+bind anonymously. With `binddn`, a password is required
+(`binddn_passwd` or `binddn_passwd_file`).
 
 #### binddn_passwd
 
@@ -633,7 +635,7 @@ Default: -
 ```
 
 The attribute of a group entry that lists its members, for example `member`,
-`uniqueMember` or `memberUid`. Without it every `require group` rule fails.
+`uniqueMember` or `memberUid`. Required with `require group`.
 
 #### group_attribute_is_dn
 
@@ -769,7 +771,8 @@ must lead to a trusted CA, and the certificate must name the host of the
 subjectAltName. An IP subjectAltName does not match a host name, even one
 that resolves to that address, and the subject CN is not used. With `off`
 any certificate is accepted, which exposes passwords to a man in the
-middle.
+middle; nginx warns about a server that uses TLS and leaves
+`ssl_check_cert` out when it reads the configuration.
 
 #### ssl_ca_file
 

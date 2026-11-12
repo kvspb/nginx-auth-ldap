@@ -164,6 +164,12 @@ def server_case(
             'http_auth_ldap: "require valid_user" template is duplicate',
             'require valid_user "uid=$remote_user,ou=a";\nrequire valid_user "uid=$remote_user,ou=b";',
         ),
+        # Every login failed at run time, with "Operations error" in the log.
+        server_case(
+            "require-group-without-group-attribute",
+            '"require group" needs "group_attribute" in ldap_server "users"',
+            "require group cn=admins;",
+        ),
         server_case(
             "satisfy-unknown-value",
             "Incorrect value for auth_ldap_satisfy",

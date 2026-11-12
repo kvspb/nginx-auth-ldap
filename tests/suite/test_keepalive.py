@@ -13,8 +13,6 @@ pidfd_getfd(2): nginx is a child of the test process, so it may be traced.
 
 from __future__ import annotations
 
-import ctypes
-import os
 import socket
 from collections.abc import Iterator
 from pathlib import Path
@@ -22,10 +20,10 @@ from pathlib import Path
 import pytest
 
 from conftest import ldap_server, protected_location, url_for
+from harness import ldap_sockets
 from ldapdata import creds
 from ldapproxy import LdapProxy
 
-SYS_PIDFD_GETFD = 438
 SYSTEM = tuple(
     int(Path(f"/proc/sys/net/ipv4/tcp_keepalive_{name}").read_text()) for name in ("time", "intvl", "probes")
 )
@@ -35,32 +33,6 @@ SYSTEM = tuple(
 def proxy() -> Iterator[LdapProxy]:
     with LdapProxy() as proxy:
         yield proxy
-
-
-def ldap_sockets(pid: int, port: int) -> list[socket.socket]:
-    """Copies of the worker's established connections to port."""
-    inodes = set()
-    for line in Path("/proc/net/tcp").read_text().splitlines()[1:]:
-        fields = line.split()
-        if int(fields[2].split(":")[1], 16) == port and fields[3] == "01":
-            inodes.add(fields[9])
-    libc = ctypes.CDLL(None, use_errno=True)
-    pidfd = os.pidfd_open(pid)
-    try:
-        found = []
-        for fd in Path(f"/proc/{pid}/fd").iterdir():
-            try:
-                target = os.readlink(fd)
-            except FileNotFoundError:
-                # Another descriptor (the client connection) just closed.
-                continue
-            if target.removeprefix("socket:[").removesuffix("]") in inodes:
-                copy = libc.syscall(SYS_PIDFD_GETFD, pidfd, int(fd.name), 0)
-                assert copy >= 0, os.strerror(ctypes.get_errno())
-                found.append(socket.socket(fileno=copy))
-        return found
-    finally:
-        os.close(pidfd)
 
 
 def keepalive(sock: socket.socket) -> tuple[int, int, int, int]:

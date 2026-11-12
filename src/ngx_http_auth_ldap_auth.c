@@ -526,6 +526,8 @@ ngx_http_auth_ldap_authenticate(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
                 ctx->server = ((ngx_http_auth_ldap_server_t **) conf->servers->elts)[ctx->server_index];
                 ctx->outcome = OUTCOME_UNCERTAIN;
                 ctx->resent = 0;
+                /* The attributes a previous server found are not this one's. */
+                ctx->search_attrs = NULL;
 
                 ngx_add_timer(r->connection->write, ctx->server->request_timeout);
                 ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: request_timeout=%d",ctx->server->request_timeout);
@@ -853,7 +855,7 @@ ngx_http_auth_ldap_expand_user_dn(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_
     {
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
             "http_auth_ldap: DN built from the template for \"%V\" "
-            "does not have the RDNs of the template", &r->headers_in.user);
+            "does not have the RDNs of the template", ngx_http_auth_ldap_login(r, ctx));
         return NGX_DECLINED;
     }
 
@@ -1197,24 +1199,19 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search user in group \"%V\"", &val);
 
-    if (ctx->server->group_attribute.data == NULL) {
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-            "http_auth_ldap: group_attribute is not set, the group check fails");
-        rc = !LDAP_SUCCESS;
-    } else {
-        for_filter = ctx->server->group_attribute.len + user_val.len + ngx_strlen("(=)") + 1;
-        filter = ngx_pcalloc(
-            r->pool,
-            for_filter);
-        if (filter == NULL) {
-            goto failed;
-        }
-        ngx_sprintf(filter, "(%V=%V)", &ctx->server->group_attribute, &user_val);
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search group filter is \"%s\"", (const char *) filter);
-        attrs[0] = LDAP_NO_ATTRS;
-        attrs[1] = NULL;
-        rc = ldap_search_ext(ctx->c->ld, group, LDAP_SCOPE_BASE, (const char *) filter, attrs, 0, NULL, NULL, NULL, 0, &ctx->c->msgid);
+    /* group_attribute is set: the configuration is refused without it. */
+    for_filter = ctx->server->group_attribute.len + user_val.len + ngx_strlen("(=)") + 1;
+    filter = ngx_pcalloc(
+        r->pool,
+        for_filter);
+    if (filter == NULL) {
+        goto failed;
     }
+    ngx_sprintf(filter, "(%V=%V)", &ctx->server->group_attribute, &user_val);
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search group filter is \"%s\"", (const char *) filter);
+    attrs[0] = LDAP_NO_ATTRS;
+    attrs[1] = NULL;
+    rc = ldap_search_ext(ctx->c->ld, group, LDAP_SCOPE_BASE, (const char *) filter, attrs, 0, NULL, NULL, NULL, 0, &ctx->c->msgid);
 
     return ngx_http_auth_ldap_wait_result(r, ctx, "ldap_search_ext", rc, STATE_SEARCHING);
 
@@ -1298,7 +1295,8 @@ ngx_http_auth_ldap_recover_bind(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t 
 
 /*
  * Finish sending an LDAP operation on ctx->c. If "call" failed, the
- * request fails on this server. A failed send (LDAP_SERVER_DOWN) left the
+ * request fails on this server, except for the rebind, which comes after
+ * the decision. A failed send (LDAP_SERVER_DOWN) left the
  * connection without its socket inside OpenLDAP: close it, and since the
  * server was not asked, decide nothing about the credentials. Any other
  * error (a bad filter from the configuration) gives the connection back.
@@ -1311,17 +1309,25 @@ ngx_http_auth_ldap_wait_result(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
     if (rc != LDAP_SUCCESS) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "http_auth_ldap: %s() failed (%d: %s)",
             call, rc, ldap_err2string(rc));
+        if (ctx->phase == PHASE_REBIND) {
+            /*
+             * The user bind has decided, and its outcome stands. The
+             * connection is still bound as the user: never hand it to the
+             * next request (nal-k8u).
+             */
+            ngx_http_auth_ldap_close_request_connection(ctx);
+            return NGX_ERROR;
+        }
         if (rc == LDAP_SERVER_DOWN) {
             ngx_http_auth_ldap_close_request_connection(ctx);
 
             /*
              * The server never got it: the connection was gone, as one the
              * server closed while idle before nginx read the close. Send
-             * it again, once, on another connection. Not the rebind: its
-             * connection, bound as the user, is closed now anyway. Nor a
-             * later group: the phase would take its state for an answer.
+             * it again, once, on another connection. Not a later group:
+             * the phase would take its state for an answer.
              */
-            if (!ctx->resent && ctx->iteration == 0 && ctx->phase != PHASE_REBIND) {
+            if (!ctx->resent && ctx->iteration == 0) {
                 ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
                     "http_auth_ldap: The connection to server \"%V\" was gone, sending it again",
                     &ctx->server->alias);

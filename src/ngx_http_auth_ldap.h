@@ -56,8 +56,6 @@ extern int ldap_init_fd(ber_socket_t fd, int proto, const char *url, LDAP **ld);
 #define OUTCOME_UNCERTAIN       4 /* Not yet decided */
 #define OUTCOME_UNAVAILABLE     5 /* The server could not decide; not cached */
 
-#define NGX_HTTP_AUTH_LDAP_MAX_SERVERS_SIZE 7
-
 
 typedef struct {
     LDAPURLDesc *ludpp;
@@ -119,7 +117,7 @@ typedef struct {
     ngx_flag_t cache_enabled;
     ngx_msec_t cache_expiration_time;
     size_t cache_size;
-    ngx_int_t servers_size;
+    ngx_int_t servers_size;      /* auth_ldap_servers_size: read, not used */
 } ngx_http_auth_ldap_main_conf_t;
 
 typedef struct {
