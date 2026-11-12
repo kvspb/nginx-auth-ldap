@@ -13,6 +13,9 @@ Entries refer to issues of the original repository as kvspb#N
 - nginx warns when it reads an `ldap_server` block with an `ldaps://` url
   or `starttls on` and no `ssl_check_cert`: such a server accepts any
   certificate.
+- `require group` without `group_attribute` is a configuration error. It
+  used to fail every login with `ldap_search_ext() failed (1: Operations
+  error)` in the log.
 
 ### Fixed
 

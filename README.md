@@ -633,7 +633,7 @@ Default: -
 ```
 
 The attribute of a group entry that lists its members, for example `member`,
-`uniqueMember` or `memberUid`. Without it every `require group` rule fails.
+`uniqueMember` or `memberUid`. Required with `require group`.
 
 #### group_attribute_is_dn
 

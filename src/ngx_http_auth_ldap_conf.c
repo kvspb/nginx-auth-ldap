@@ -209,6 +209,13 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         return NGX_CONF_ERROR;
     }
 
+    if (server->require_group != NULL && server->group_attribute.len == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: \"require group\" needs \"group_attribute\" in "
+            "ldap_server \"%V\"", &server->alias);
+        return NGX_CONF_ERROR;
+    }
+
     if (server->user_filter == NULL) {
         if (server->ludpp->lud_attrs == NULL) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,

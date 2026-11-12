@@ -1199,24 +1199,19 @@ ngx_http_auth_ldap_check_group(ngx_http_request_t *r, ngx_http_auth_ldap_ctx_t *
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search user in group \"%V\"", &val);
 
-    if (ctx->server->group_attribute.data == NULL) {
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-            "http_auth_ldap: group_attribute is not set, the group check fails");
-        rc = !LDAP_SUCCESS;
-    } else {
-        for_filter = ctx->server->group_attribute.len + user_val.len + ngx_strlen("(=)") + 1;
-        filter = ngx_pcalloc(
-            r->pool,
-            for_filter);
-        if (filter == NULL) {
-            goto failed;
-        }
-        ngx_sprintf(filter, "(%V=%V)", &ctx->server->group_attribute, &user_val);
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search group filter is \"%s\"", (const char *) filter);
-        attrs[0] = LDAP_NO_ATTRS;
-        attrs[1] = NULL;
-        rc = ldap_search_ext(ctx->c->ld, group, LDAP_SCOPE_BASE, (const char *) filter, attrs, 0, NULL, NULL, NULL, 0, &ctx->c->msgid);
+    /* group_attribute is set: the configuration is refused without it. */
+    for_filter = ctx->server->group_attribute.len + user_val.len + ngx_strlen("(=)") + 1;
+    filter = ngx_pcalloc(
+        r->pool,
+        for_filter);
+    if (filter == NULL) {
+        goto failed;
     }
+    ngx_sprintf(filter, "(%V=%V)", &ctx->server->group_attribute, &user_val);
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http_auth_ldap: Search group filter is \"%s\"", (const char *) filter);
+    attrs[0] = LDAP_NO_ATTRS;
+    attrs[1] = NULL;
+    rc = ldap_search_ext(ctx->c->ld, group, LDAP_SCOPE_BASE, (const char *) filter, attrs, 0, NULL, NULL, NULL, 0, &ctx->c->msgid);
 
     return ngx_http_auth_ldap_wait_result(r, ctx, "ldap_search_ext", rc, STATE_SEARCHING);
 

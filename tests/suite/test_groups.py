@@ -194,12 +194,6 @@ require group "{group_dn("posix-staff")}";
 @pytest.mark.parametrize(
     ("body", "log_text"),
     [
-        # Debug builds crashed here: a NULL u_char * was logged with %V (nal-5br.13).
-        pytest.param(
-            f'require group "{group_dn("admins")}";',
-            None,
-            id="no-group-attribute",
-        ),
         pytest.param(
             'group_attribute member;\ngroup_attribute_is_dn on;\nrequire group "admins";',
             'Incorrect group DN: "admins"',
@@ -218,5 +212,4 @@ def test_misconfigured_group_denies_even_members(nginx, body, log_text):
     server = nginx.start(http=ldap_server("groups", body), server=protected_location("groups"))
 
     assert server.get(auth=creds("alice")).status_code == 401
-    if log_text is not None:
-        assert log_text in server.log()
+    assert log_text in server.log()
