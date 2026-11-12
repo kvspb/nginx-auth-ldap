@@ -209,6 +209,15 @@ ngx_http_auth_ldap_ldap_server_block(ngx_conf_t *cf, ngx_command_t *cmd, void *c
         return NGX_CONF_ERROR;
     }
 
+    /* An unauthenticated bind (RFC 4513, 5.1.2): anonymous in fact. */
+    if (server->bind_dn.len != 0 && server->bind_dn_passwd.len == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+            "http_auth_ldap: \"binddn\" without a password in ldap_server \"%V\": "
+            "set \"binddn_passwd\" or \"binddn_passwd_file\", or leave "
+            "\"binddn\" out to bind anonymously", &server->alias);
+        return NGX_CONF_ERROR;
+    }
+
     if (server->require_group != NULL && server->group_attribute.len == 0) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
             "http_auth_ldap: \"require group\" needs \"group_attribute\" in "

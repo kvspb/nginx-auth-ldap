@@ -555,7 +555,8 @@ Default: - (anonymous bind)
 
 The DN of the account that the module binds as to search for users and
 groups. Use an account that can only read. Without `binddn` the connections
-bind anonymously.
+bind anonymously. With `binddn`, a password is required
+(`binddn_passwd` or `binddn_passwd_file`).
 
 #### binddn_passwd
 

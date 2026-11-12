@@ -16,6 +16,9 @@ Entries refer to issues of the original repository as kvspb#N
 - `require group` without `group_attribute` is a configuration error. It
   used to fail every login with `ldap_search_ext() failed (1: Operations
   error)` in the log.
+- `binddn` without a password (`binddn_passwd` left out or empty) is a
+  configuration error: a server takes such a bind for an anonymous one
+  without checking anything.
 
 ### Fixed
 
